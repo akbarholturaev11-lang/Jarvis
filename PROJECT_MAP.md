@@ -29,12 +29,14 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
 
 6. Prompt/rules layer
    - `core/prompt.txt`
+   - `core/i18n.py`
    - `AI_RULES.md`
    - `CLAUDE.md`
    - `PROJECT_MEMORY.md`
 
 7. Config layer
    - `config/api_keys.json`
+   - `config/settings.json`
    - `config/certs/`
 
 8. Local runtime
@@ -64,8 +66,10 @@ main.py
 -> actions/dev_agent.py
 -> actions/proactive.py
 -> core/session_context.py
+-> core/i18n.py
 -> core/prompt.txt
 -> config/api_keys.json
+-> config/settings.json
 ```
 
 More detailed runtime relationship:
@@ -104,7 +108,9 @@ main.py
 - Resource guide: `AI_RESOURCES.md`
 - Prompt: `core/prompt.txt`
 - Runtime session context: `core/session_context.py`
+- UI localization: `core/i18n.py`
 - Secret config: `config/api_keys.json`
+- Safe local settings: `config/settings.json`
 
 ### Edges
 
@@ -119,6 +125,8 @@ main.py
 - `main.py` owns a runtime `SessionContext` instance from `core/session_context.py`.
 - `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file targets, user corrections, and verified/failed/uncertain result status.
 - `main.py` reads the Gemini key from `config/api_keys.json`.
+- `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.
+- `config/settings.json` stores safe non-secret settings such as `ui_language` and only supports `ru` / `en`.
 - `memory_manager.py` saves user facts to `memory/long_term.json`.
 - `memory_manager.py` formats memory context for prompts.
 - `setup.py` installs requirements and Playwright browsers.

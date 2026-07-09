@@ -96,7 +96,9 @@ Do not use `PROJECT_MEMORY.md` as a diary or changelog dump. Store only context 
 
 ## UI Localization Rule
 
-Visible fixed UI text is localized through a simple dictionary-based English/Russian system in `core/i18n.py`. Russian is the default UI language, and English remains available as fallback through `JARVIS_UI_LANG=en`.
+Visible fixed UI text is localized through a simple dictionary-based English/Russian system in `core/i18n.py`. Russian is the default UI language.
+
+The active UI language is stored in `config/settings.json` as `ui_language`, with only `ru` and `en` allowed. `core/i18n.py` loads `config/settings.json` first, then falls back to `JARVIS_UI_LANG`, then falls back to `ru`. Jarvis can change the setting through typed/remote commands or the `set_ui_language` tool, but the app must be restarted for existing UI labels to fully apply the new language.
 
 From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
 

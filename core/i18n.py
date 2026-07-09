@@ -2,17 +2,47 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
+from pathlib import Path
+
+
+SUPPORTED_UI_LANGUAGES = {"en", "ru"}
+BASE_DIR = Path(__file__).resolve().parent.parent
+CONFIG_DIR = BASE_DIR / "config"
+SETTINGS_FILE = CONFIG_DIR / "settings.json"
 
 
 def _normalise_lang(value: str | None) -> str:
-    code = (value or "ru").strip().lower().replace("_", "-")
-    return code.split("-", 1)[0].split(".", 1)[0] or "ru"
+    code = (value or "").strip().lower().replace("_", "-")
+    code = code.split("-", 1)[0].split(".", 1)[0]
+    if code in SUPPORTED_UI_LANGUAGES:
+        return code
+    return ""
 
 
-LANG = _normalise_lang(
-    os.environ.get("JARVIS_UI_LANG") or os.environ.get("JARVIS_LANG") or "ru"
-)
+def _load_settings() -> dict:
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def load_ui_language() -> str:
+    settings_lang = _normalise_lang(str(_load_settings().get("ui_language", "")))
+    if settings_lang in SUPPORTED_UI_LANGUAGES:
+        return settings_lang
+
+    env_lang = _normalise_lang(os.environ.get("JARVIS_UI_LANG") or os.environ.get("JARVIS_LANG"))
+    if env_lang in SUPPORTED_UI_LANGUAGES:
+        return env_lang
+
+    return "ru"
+
+
+LANG = load_ui_language()
 
 
 _MESSAGES: dict[str, dict[str, str]] = {
@@ -111,6 +141,8 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "weather.browser_failed": "Sir, I couldn't open the browser for the weather report: {error}",
         "weather.showing": "Showing the weather for {city}, {when}, sir.",
         "date.today": "today",
+        "ui_language.changed": "UI language changed to English. Restart the app to apply.",
+        "ui_language.unsupported": "Unsupported UI language. Use English or Russian.",
     },
     "ru": {
         "status.initialising": "ЗАПУСК",
@@ -207,12 +239,77 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "weather.browser_failed": "Сэр, не удалось открыть браузер для прогноза погоды: {error}",
         "weather.showing": "Показываю погоду для {city}, {when}, сэр.",
         "date.today": "сегодня",
+        "ui_language.changed": "Язык интерфейса изменён на русский. Перезапустите приложение.",
+        "ui_language.unsupported": "Неподдерживаемый язык интерфейса. Используйте английский или русский.",
     },
 }
 
 
 def active_lang() -> str:
-    return LANG if LANG in _MESSAGES else "en"
+    return LANG if LANG in _MESSAGES else "ru"
+
+
+def set_ui_language(language: str) -> str:
+    lang = _normalise_lang(language)
+    if lang not in SUPPORTED_UI_LANGUAGES:
+        raise ValueError(t("ui_language.unsupported"))
+
+    settings = _load_settings()
+    settings["ui_language"] = lang
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    global LANG
+    LANG = lang
+    return lang
+
+
+def ui_language_change_message(language: str) -> str:
+    lang = _normalise_lang(language)
+    if lang not in SUPPORTED_UI_LANGUAGES:
+        raise ValueError(t("ui_language.unsupported"))
+    return _MESSAGES[lang]["ui_language.changed"]
+
+
+def change_ui_language(language: str) -> str:
+    lang = set_ui_language(language)
+    return ui_language_change_message(lang)
+
+
+def detect_ui_language_command(text: str) -> str | None:
+    raw = re.sub(r"\s+", " ", str(text).casefold()).strip()
+    if not raw:
+        return None
+
+    if re.search(r"\b(inglis|ingliz)(cha)?\s+qil\b", raw):
+        return "en"
+    if re.search(r"\brus(cha)?\s+qil\b", raw):
+        return "ru"
+
+    wants_en = any(term in raw for term in (
+        "english", "inglis", "ingliz", "английск", "английский"
+    ))
+    wants_ru = any(term in raw for term in (
+        "russian", "русск", "русский", "rus", "ruscha"
+    ))
+    has_switch = any(term in raw for term in (
+        "switch", "change", "set", "enable", "make",
+        "переключ", "включ", "измени", "поменяй", "сделай",
+        "qil", "almashtir", "o'zgartir", "ozgartir",
+    ))
+    has_ui = any(term in raw for term in (
+        "ui", "interface", "interfeys", "интерфейс", "язык интерфейса",
+    ))
+
+    if has_switch and has_ui:
+        if wants_en:
+            return "en"
+        if wants_ru:
+            return "ru"
+    return None
 
 
 def t(key: str, **kwargs: object) -> str:

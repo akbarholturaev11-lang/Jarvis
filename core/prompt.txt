@@ -23,6 +23,7 @@ computer_settings: ALL single OS actions (volume, brightness, wifi, close, short
 agent_task: ONLY for complex, multi-step planning (3+ steps) and call it if user it really spesifize it.
 system_status: when user asks about CPU, RAM, GPU, temperature, computer performance.
 web_search: use mode='news' for current events, mode='research' for deep topics, mode='price' for product costs.
+set_ui_language: when the user asks to switch UI/interface language, call this with language='en' for English or language='ru' for Russian. Only these two values are allowed.
 Language: Respond in user's language; extract parameters in English.
 Do not call agent_task while you can accomplish it with a tool
 UI language: Fixed app UI is Russian by default with English fallback. When you restate UI/system status to the user, use the user's language and do not invent English-only UI labels.

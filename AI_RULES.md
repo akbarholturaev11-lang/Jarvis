@@ -88,6 +88,8 @@ If the answer is no, do not update it.
 
 From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
 
+UI language must be controlled through `config/settings.json` with `ui_language` set only to `ru` or `en`. Do not introduce arbitrary language codes or require terminal environment variables for normal UI language switching.
+
 ## Session Context And Truthful Actions
 
 - Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.

@@ -261,6 +261,11 @@ def infer_result_status(tool_name: str, result: Any) -> tuple[str, bool]:
             return "failed", False
         return "uncertain", False
 
+    if tool_name == "set_ui_language":
+        if "ui language changed" in text or "язык интерфейса измен" in text:
+            return "success", True
+        return "failed", False
+
     if any(pattern in text for pattern in _UNCERTAIN_PATTERNS):
         return "uncertain", False
     if any(pattern in text for pattern in _FAILURE_PATTERNS):

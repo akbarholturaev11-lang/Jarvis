@@ -1,5 +1,20 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - UI Language Settings Command
+
+### Added
+
+- Added `config/settings.json` with safe `ui_language` storage.
+- Updated `core/i18n.py` to load UI language from `config/settings.json`, then `JARVIS_UI_LANG`, then default to Russian.
+- Added strict `ru` / `en` validation for UI language changes.
+- Added typed/remote command detection for English/Russian UI switching, including mixed Uzbek commands like `inglis qil` and `rus qil`.
+- Added a `set_ui_language` tool so spoken Jarvis commands can change the UI language setting.
+
+### Changed
+
+- UI language changes now return a clear restart message in English or Russian.
+- Documented the settings-file language rule in `AI_RULES.md` and `PROJECT_MEMORY.md`.
+
 ## 2026-07-10 - AkbarCustom v0.3 Session Context And Truthful Actions
 
 ### Added

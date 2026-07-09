@@ -29,6 +29,7 @@ import sounddevice as sd
 from google import genai
 from google.genai import types
 from ui import JarvisUI
+from core.i18n import change_ui_language, detect_ui_language_command
 from core.session_context import (
     SessionContext,
     detect_active_app,
@@ -162,6 +163,24 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {},
+        }
+    },
+    {
+        "name": "set_ui_language",
+        "description": (
+            "Changes the app UI/interface language setting. Use only when the user asks to switch "
+            "the UI/interface language to English or Russian, including mixed Uzbek commands like "
+            "'inglis qil' or 'rus qil'. Only pass 'en' or 'ru'. The app must be restarted to apply."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "language": {
+                    "type": "STRING",
+                    "description": "UI language code. Allowed values only: en | ru"
+                }
+            },
+            "required": ["language"]
         }
     },
     {
@@ -591,11 +610,26 @@ class JarvisLive:
         manual = self._dashboard.get_manual_url()
         return url, key, f"{url}/auto-login?key={key}", manual
 
+    def _handle_ui_language_command(self, text: str, log_web_user: bool = False) -> bool:
+        lang = detect_ui_language_command(text)
+        if not lang:
+            return False
+        try:
+            msg = change_ui_language(lang)
+        except Exception as e:
+            msg = str(e)
+        if log_web_user:
+            self.ui.write_log(f"[Web]: {text}")
+        self.ui.write_log(f"Jarvis: {msg}")
+        return True
+
     def _on_text_command(self, text: str):
-        if not self._loop or not self.session:
-            return
-        text = _clean_transcript(text)
+        text = _clean_transcript(str(text or ""))
         if not text:
+            return
+        if self._handle_ui_language_command(text):
+            return
+        if not self._loop or not self.session:
             return
         self._active_user_text = text
         self.session_context.observe_user_text(text)
@@ -877,6 +911,10 @@ class JarvisLive:
             if name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
                 result = r or UNVERIFIED_TOOL_RESULT
+
+            elif name == "set_ui_language":
+                result = change_ui_language(str(args.get("language", "")))
+                self.ui.write_log(f"Jarvis: {result}")
 
             elif name == "weather_report":
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
@@ -1433,7 +1471,10 @@ class JarvisLive:
                 text = await asyncio.wait_for(
                     self._dashboard._command_queue.get(), timeout=0.5
                 )
+                text = _clean_transcript(str(text or ""))
                 if not text:
+                    continue
+                if self._handle_ui_language_command(text, log_web_user=True):
                     continue
                 # Wait up to 8s for session to become ready after a wake
                 for _ in range(80):

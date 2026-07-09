@@ -19,8 +19,9 @@ Current next steps for MARK XLVIII - AkbarCustom.
    - File processor
 4. Review any remaining English-only action/tool result wording that should be promoted into the shared English/Russian UI dictionary.
 5. Add Akbar-specific assistant personality/rules.
-6. Manually verify runtime session context in the Mac app with browser/media follow-ups and safe message drafts.
-7. Later add custom features.
+6. Manually verify UI language switching in the full Mac app with restart: Russian -> English -> Russian.
+7. Manually verify runtime session context in the Mac app with browser/media follow-ups and safe message drafts.
+8. Later add custom features.
 
 ## Context System Follow-Up
 
