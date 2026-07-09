@@ -76,6 +76,7 @@ The initial context foundation is markdown-based instead of an external Graphiti
 - `main.py` is the high-risk app runtime entry point. It manages Gemini Live, audio input/output, tool declarations, reconnect flow, and action dispatch.
 - `ui.py` is the PyQt6 HUD/UI layer.
 - `actions/*.py` contains tool implementations for app control, browser control, screen capture, reminders, web search, file processing, code help, proactive behavior, and related tasks.
+- `core/session_context.py` stores runtime-only short-term action context for the current process. It keeps the last 5 meaningful actions, summarizes sensitive parameters, tracks recent browser/app/message/file targets, records verified/failed/uncertain status, and attaches user corrections.
 - `memory/memory_manager.py` stores and formats long-term user memory in `memory/long_term.json`.
 - `core/prompt.txt` controls assistant behavior, language, and tool routing rules.
 - `config/api_keys.json` stores local secret configuration and must not be touched unless Akbar explicitly asks.
@@ -98,6 +99,16 @@ Do not use `PROJECT_MEMORY.md` as a diary or changelog dump. Store only context 
 Visible fixed UI text is localized through a simple dictionary-based English/Russian system in `core/i18n.py`. Russian is the default UI language, and English remains available as fallback through `JARVIS_UI_LANG=en`.
 
 From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
+
+## Session Context And Truthful Action Rule
+
+Jarvis has a runtime-only `SessionContext` / action history layer in `core/session_context.py`. It does not write to `memory/long_term.json`. It keeps only the last 5 meaningful action records and stores summaries for private or long text.
+
+Vague follow-up commands such as `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `oldingi ishni davom ettir`, `qayerga yubording?`, and `nima qilding?` must be resolved from recent action context before selecting a tool. Recent browser/app/contact/file/media context has priority over random defaults.
+
+Jarvis must never claim action success unless the tool result is `result_status=success` and `verified=true`. If a result is failed, say `Bajara olmadim.` If uncertain, say `Aniq tasdiqlay olmadim.` If confirmation is required, say `Tasdiqlaysizmi?`
+
+For message sending, Jarvis must not say a message was sent unless the contact/chat and message placement or delivery were verified. Desktop automation that cannot verify the contact/chat should return an uncertain draft/attempt result instead of a sent claim.
 
 ## GitHub And Commit Workflow
 

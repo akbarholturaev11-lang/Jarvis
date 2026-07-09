@@ -87,3 +87,16 @@ If the answer is no, do not update it.
 ## Bilingual UI Rule
 
 From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
+
+## Session Context And Truthful Actions
+
+- Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.
+- Jarvis must use recent action context before handling vague follow-up commands such as `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `oldingi ishni davom ettir`, `qayerga yubording?`, and `nima qilding?`.
+- Jarvis must never claim an action succeeded unless success was verified by the tool result.
+- Allowed action status language:
+  - verified success: `Bajarildi.`
+  - failed: `Bajara olmadim.`
+  - uncertain: `Aniq tasdiqlay olmadim.`
+  - needs confirmation: `Tasdiqlaysizmi?`
+- For message sending, never say a message was sent unless the correct target/contact/chat and the message placement or delivery were verified. If verification is not safe, ask for confirmation or report uncertainty.
+- If the user corrects Jarvis after an action, attach the correction to recent action context and avoid repeating the same target/tool mistake.

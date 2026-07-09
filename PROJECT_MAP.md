@@ -17,6 +17,7 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Tool declarations in `main.py`
    - Audio input/output constants and queues in `main.py`
    - Reconnect/session handling in `main.py`
+   - Runtime action history and truthful result status in `core/session_context.py`
 
 4. Tool/action layer
    - `actions/*.py`
@@ -62,6 +63,7 @@ main.py
 -> actions/code_helper.py
 -> actions/dev_agent.py
 -> actions/proactive.py
+-> core/session_context.py
 -> core/prompt.txt
 -> config/api_keys.json
 ```
@@ -101,6 +103,7 @@ main.py
 - Project memory: `PROJECT_MEMORY.md`
 - Resource guide: `AI_RESOURCES.md`
 - Prompt: `core/prompt.txt`
+- Runtime session context: `core/session_context.py`
 - Secret config: `config/api_keys.json`
 
 ### Edges
@@ -113,6 +116,8 @@ main.py
 - Gemini tool calls are dispatched by `main.py`.
 - Tool calls execute code in `actions/*.py`.
 - `main.py` loads `core/prompt.txt`.
+- `main.py` owns a runtime `SessionContext` instance from `core/session_context.py`.
+- `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file targets, user corrections, and verified/failed/uncertain result status.
 - `main.py` reads the Gemini key from `config/api_keys.json`.
 - `memory_manager.py` saves user facts to `memory/long_term.json`.
 - `memory_manager.py` formats memory context for prompts.

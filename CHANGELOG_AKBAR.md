@@ -1,5 +1,25 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - AkbarCustom v0.3 Session Context And Truthful Actions
+
+### Added
+
+- Added runtime-only `SessionContext` / action history in `core/session_context.py`.
+- Session context stores the last 5 meaningful actions with summarized user text, assistant intent, tool name, parameter summary, target app/context, execution method, result status, verification flag, visible claim, and user correction.
+- Added helper tests for last-5 action retention, vague browser follow-up resolution, opened-browser app normalization, uncertain action claims, and correction attachment.
+
+### Changed
+
+- Wired `JarvisLive` tool dispatch to record action context and return structured `result_status`, `verified`, `truthful_user_claim`, and recent action context in tool responses.
+- Added vague follow-up handling so recent browser/message/file context can fill missing tool parameters before falling back to defaults.
+- Replaced generic `Done.` / fabricated send/open fallbacks with uncertain result language when verification is missing.
+- Changed message automation to avoid claiming messages were sent when contact/chat or delivery cannot be verified; default behavior now returns an uncertain draft/attempt result.
+- Added truthful-action and recent-context rules to `core/prompt.txt`, `AI_RULES.md`, `AGENTS.md`, `CLAUDE.md`, and `PROJECT_MEMORY.md`.
+
+### Rule
+
+Jarvis must not create narrow one-off fixes when a reusable context layer is needed, must inspect recent action context before vague follow-up commands, and must never claim success unless the tool result is verified.
+
 ## 2026-07-10 - Russian UI Localization
 
 ### Added

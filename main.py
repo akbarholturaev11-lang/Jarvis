@@ -29,6 +29,12 @@ import sounddevice as sd
 from google import genai
 from google.genai import types
 from ui import JarvisUI
+from core.session_context import (
+    SessionContext,
+    detect_active_app,
+    infer_result_status,
+    truthful_claim,
+)
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
@@ -81,6 +87,9 @@ OUT_QUEUE_MAXSIZE   = 200
 RECONNECT_BACKOFF_INITIAL = 3
 RECONNECT_BACKOFF_MAX     = 12
 RECONNECT_STABLE_RESET_SECONDS = 30
+UNVERIFIED_TOOL_RESULT = (
+    "Tool completed without a detailed verification result; exact outcome is uncertain."
+)
 
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -174,7 +183,14 @@ TOOL_DECLARATIONS = [
             "properties": {
                 "receiver":     {"type": "STRING", "description": "Recipient contact name"},
                 "message_text": {"type": "STRING", "description": "The message to send"},
-                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."}
+                "platform":     {"type": "STRING", "description": "Platform: WhatsApp, Telegram, etc."},
+                "confirmed":    {
+                    "type": "BOOLEAN",
+                    "description": (
+                        "True only after the user explicitly confirms sending the current draft. "
+                        "Do not claim sent unless the contact/chat and delivery were verified."
+                    )
+                }
             },
             "required": ["receiver", "message_text", "platform"]
         }
@@ -559,6 +575,8 @@ class JarvisLive:
         self._session_connected_at = None
         self._session_generation = 0
         self._session_tasks      = set()
+        self.session_context     = SessionContext()
+        self._active_user_text   = ""
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -576,9 +594,15 @@ class JarvisLive:
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
             return
+        text = _clean_transcript(text)
+        if not text:
+            return
+        self._active_user_text = text
+        self.session_context.observe_user_text(text)
+        payload_text = self.session_context.build_user_turn_context(text)
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
+                turns={"parts": [{"text": payload_text}]},
                 turn_complete=True
             ),
             self._loop
@@ -786,6 +810,7 @@ class JarvisLive:
         parts = [time_ctx]
         if mem_str:
             parts.append(mem_str)
+        parts.append(self.session_context.build_prompt_context())
         parts.append(sys_prompt)
 
         return types.LiveConnectConfig(
@@ -804,11 +829,31 @@ class JarvisLive:
             ),
         )
 
-    async def _execute_tool(self, fc) -> types.FunctionResponse:
+    def _describe_tool_intent(self, name: str, args: dict) -> str:
+        if name == "open_app":
+            return f"open app: {args.get('app_name', '')}"
+        if name == "browser_control":
+            target = args.get("url") or args.get("query") or args.get("text") or args.get("description") or ""
+            return f"browser {args.get('action', '')}: {target}"
+        if name == "send_message":
+            return f"send message via {args.get('platform', '')} to {args.get('receiver', '')}"
+        if name in {"file_processor", "file_controller"}:
+            return f"{name}: {args.get('action', '')}"
+        if name in {"computer_settings", "computer_control"}:
+            return f"computer action: {args.get('action') or args.get('description') or ''}"
+        return f"{name}: {args.get('action') or args.get('description') or ''}"
+
+    async def _execute_tool(self, fc, user_text: str = "") -> types.FunctionResponse:
         name = fc.name
-        args = dict(fc.args or {})
+        original_args = dict(fc.args or {})
+        user_text = user_text or self._active_user_text
+        args, context_note = self.session_context.apply_context_to_tool(
+            user_text, name, original_args
+        )
 
         print(f"[JARVIS] 🔧 {name}  {args}")
+        if context_note:
+            print(f"[SessionContext] Applied: {context_note}")
         self.ui.set_state("THINKING")
 
         if name == "save_memory":
@@ -826,36 +871,36 @@ class JarvisLive:
             )
 
         loop   = asyncio.get_event_loop()
-        result = "Done."
+        result = UNVERIFIED_TOOL_RESULT
 
         try:
             if name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
-                result = r or f"Opened {args.get('app_name')}."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "weather_report":
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
-                result = r or "Weather delivered."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "browser_control":
                 r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "file_controller":
                 r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
+                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=self.session_context))
+                result = r or "Message tool returned no verification result; exact status is uncertain."
 
             elif name == "reminder":
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
-                result = r or "Reminder set."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "youtube_video":
                 r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "screen_process":
                 import time as _t_mod
@@ -869,7 +914,7 @@ class JarvisLive:
                     self._vision_busy      = True
                     self._vision_last_time = _now
                     angle     = args.get("angle", "screen").lower()
-                    user_text = args.get("text", "What do you see?")
+                    vision_question = args.get("text", "What do you see?")
                     if angle == "camera":
                         img_b, mime_t = await loop.run_in_executor(None, _capture_camera)
                         self.ui.start_camera_stream()
@@ -880,7 +925,7 @@ class JarvisLive:
                         img_b, mime_t = await loop.run_in_executor(None, _capture_screen)
                         print(f"[Vision] 🖥️  Screen: {len(img_b):,} bytes")
                         _stall = "screen"
-                    self._pending_vision = (img_b, mime_t, user_text, angle)
+                    self._pending_vision = (img_b, mime_t, vision_question, angle)
                     result = (
                         f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
                         f"Immediately say ONE natural sentence in the user's language "
@@ -895,23 +940,23 @@ class JarvisLive:
 
             elif name == "computer_settings":
                 r = await loop.run_in_executor(None, lambda: computer_settings(parameters=args, response=None, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "desktop_control":
                 r = await loop.run_in_executor(None, lambda: desktop_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "code_helper":
                 r = await loop.run_in_executor(None, lambda: code_helper(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "dev_agent":
                 r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "web_search":
                 r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
                 # Mirror results to the on-screen content panel
                 _mode = args.get("mode", "search")
                 if r and not r.startswith(_EMPTY_SEARCH_PREFIXES):
@@ -925,19 +970,19 @@ class JarvisLive:
                     None,
                     lambda: file_processor(parameters=args, player=self.ui, speak=self.speak)
                 )
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "computer_control":
                 r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "game_updater":
                 r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "flight_finder":
                 r = await loop.run_in_executor(None, lambda: flight_finder(parameters=args, player=self.ui))
-                result = r or "Done."
+                result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "system_status":
                 r = await loop.run_in_executor(None, get_system_status)
@@ -946,6 +991,7 @@ class JarvisLive:
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
+                result = "Shutdown requested."
                 def _shutdown():
                     import time, os
                     time.sleep(1)
@@ -960,13 +1006,41 @@ class JarvisLive:
             traceback.print_exc()
             self.speak_error(name, e)
 
+        status, verified = infer_result_status(name, result)
+        claim = truthful_claim(status, verified)
+        active_app = await loop.run_in_executor(None, detect_active_app)
+        self.session_context.record_action(
+            user_text=user_text,
+            assistant_intent=self._describe_tool_intent(name, args),
+            tool_name=name,
+            tool_parameters=args,
+            execution_method=name,
+            result=result,
+            active_app=active_app,
+            result_status=status,
+            verified=verified,
+            user_visible_claim=claim,
+        )
+
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
+        print(f"[JARVIS] 📤 {name} → {str(result)[:80]} [{status}, verified={verified}]")
         return types.FunctionResponse(
             id=fc.id, name=name,
-            response={"result": result}
+            response={
+                "result": result,
+                "result_status": status,
+                "verified": verified,
+                "truthful_user_claim": claim,
+                "recent_action_context": self.session_context.build_prompt_context(),
+                "context_applied": context_note,
+                "assistant_rule": (
+                    "Never claim done/sent/opened/completed unless "
+                    "result_status is success and verified is true. "
+                    "For uncertain results say: Aniq tasdiqlay olmadim."
+                ),
+            }
         )
 
     async def _send_realtime(self, session_generation: int):
@@ -1058,6 +1132,7 @@ class JarvisLive:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
                                 in_buf.append(txt)
+                                self._active_user_text = " ".join(in_buf).strip()
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
@@ -1074,6 +1149,8 @@ class JarvisLive:
 
                             full_in = " ".join(in_buf).strip()
                             if full_in:
+                                self._active_user_text = full_in
+                                self.session_context.observe_user_text(full_in)
                                 self.ui.write_log(f"You: {full_in}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
@@ -1085,6 +1162,7 @@ class JarvisLive:
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
+                                self.session_context.note_assistant_claim(full_out)
                                 self.ui.write_log(f"Jarvis: {full_out}")
                                 if self._dashboard:
                                     asyncio.create_task(self._dashboard.broadcast({
@@ -1126,10 +1204,11 @@ class JarvisLive:
                                 asyncio.create_task(_cam_close())
 
                     if response.tool_call:
+                        current_user_text = " ".join(in_buf).strip() or self._active_user_text
                         fn_responses = []
                         for fc in response.tool_call.function_calls:
                             print(f"[JARVIS] 📞 {fc.name}")
-                            fr = await self._execute_tool(fc)
+                            fr = await self._execute_tool(fc, user_text=current_user_text)
                             fn_responses.append(fr)
                         await session.send_tool_response(
                             function_responses=fn_responses

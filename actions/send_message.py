@@ -134,7 +134,7 @@ def _search_in_app(query: str) -> None:
     _clear_and_paste(query)
     time.sleep(1.0)
 
-def _desktop_send(app_name: str, receiver: str, message: str) -> str:
+def _desktop_send(app_name: str, receiver: str, message: str, confirmed: bool = False) -> str:
     if not _open_app(app_name):
         return f"Could not open {app_name}."
 
@@ -145,25 +145,33 @@ def _desktop_send(app_name: str, receiver: str, message: str) -> str:
 
     _paste_text(message)
     time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.3)
-    return f"Message sent to {receiver} via {app_name}."
+    if confirmed:
+        pyautogui.press("enter")
+        time.sleep(0.3)
+        return (
+            f"Message send attempt completed for {receiver} via {app_name}, "
+            "but recipient/chat and delivery were not verified."
+        )
+    return (
+        f"Message drafted for {receiver} via {app_name}, but recipient/chat was not verified "
+        "and it was not sent. Ask the user to confirm before sending."
+    )
 
-def _send_whatsapp(receiver: str, message: str) -> str:
-    return _desktop_send("WhatsApp", receiver, message)
+def _send_whatsapp(receiver: str, message: str, confirmed: bool = False) -> str:
+    return _desktop_send("WhatsApp", receiver, message, confirmed)
 
-def _send_telegram(receiver: str, message: str) -> str:
-    return _desktop_send("Telegram", receiver, message)
+def _send_telegram(receiver: str, message: str, confirmed: bool = False) -> str:
+    return _desktop_send("Telegram", receiver, message, confirmed)
 
-def _send_signal(receiver: str, message: str) -> str:
-    return _desktop_send("Signal", receiver, message)
-
-
-def _send_discord(receiver: str, message: str) -> str:
-    return _desktop_send("Discord", receiver, message)
+def _send_signal(receiver: str, message: str, confirmed: bool = False) -> str:
+    return _desktop_send("Signal", receiver, message, confirmed)
 
 
-def _send_instagram(receiver: str, message: str) -> str:
+def _send_discord(receiver: str, message: str, confirmed: bool = False) -> str:
+    return _desktop_send("Discord", receiver, message, confirmed)
+
+
+def _send_instagram(receiver: str, message: str, confirmed: bool = False) -> str:
     _require_pyautogui()
 
     if not _open_browser_url("https://www.instagram.com/direct/new/"):
@@ -185,13 +193,21 @@ def _send_instagram(receiver: str, message: str) -> str:
 
     _paste_text(message)
     time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.3)
+    if confirmed:
+        pyautogui.press("enter")
+        time.sleep(0.3)
+        return (
+            f"Message send attempt completed for {receiver} via Instagram, "
+            "but recipient/chat and delivery were not verified."
+        )
 
-    return f"Message sent to {receiver} via Instagram."
+    return (
+        f"Message drafted for {receiver} via Instagram, but recipient/chat was not verified "
+        "and it was not sent. Ask the user to confirm before sending."
+    )
 
 
-def _send_messenger(receiver: str, message: str) -> str:
+def _send_messenger(receiver: str, message: str, confirmed: bool = False) -> str:
     _require_pyautogui()
 
     if not _open_browser_url("https://www.messenger.com/"):
@@ -207,10 +223,18 @@ def _send_messenger(receiver: str, message: str) -> str:
 
     _paste_text(message)
     time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.3)
+    if confirmed:
+        pyautogui.press("enter")
+        time.sleep(0.3)
+        return (
+            f"Message send attempt completed for {receiver} via Messenger, "
+            "but recipient/chat and delivery were not verified."
+        )
 
-    return f"Message sent to {receiver} via Messenger."
+    return (
+        f"Message drafted for {receiver} via Messenger, but recipient/chat was not verified "
+        "and it was not sent. Ask the user to confirm before sending."
+    )
 
 _PLATFORM_MAP = [
     ({"whatsapp", "wp", "wapp"},              _send_whatsapp),
@@ -227,7 +251,7 @@ def _resolve_platform(platform_str: str):
     for keywords, handler in _PLATFORM_MAP:
         if any(k in key for k in keywords):
             return handler
-    return lambda r, m: _desktop_send(platform_str.strip().title(), r, m)
+    return lambda r, m, confirmed=False: _desktop_send(platform_str.strip().title(), r, m, confirmed)
 
 
 def send_message(
@@ -240,6 +264,7 @@ def send_message(
     receiver     = params.get("receiver", "").strip()
     message_text = params.get("message_text", "").strip()
     platform     = params.get("platform", "whatsapp").strip()
+    confirmed    = str(params.get("confirmed", "false")).lower() in ("true", "1", "yes", "confirm")
 
     if not receiver:
         return "Please specify a recipient."
@@ -255,11 +280,11 @@ def send_message(
 
     try:
         handler = _resolve_platform(platform)
-        result  = handler(receiver, message_text)
+        result  = handler(receiver, message_text, confirmed)
     except Exception as e:
         result = f"Could not send message: {e}"
 
-    print(f"[SendMessage] {'✅' if 'sent' in result.lower() else '❌'} {result}")
+    print(f"[SendMessage] {'✅' if 'verified sent' in result.lower() else '⚠️'} {result}")
     if player:
         player.write_log(f"[msg] {result}")
 
