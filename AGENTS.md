@@ -1,0 +1,50 @@
+# AGENTS.md
+
+Mandatory startup instructions for AI coding agents working on this repository.
+
+## Required Read Order
+
+Before changing anything, read these files from the project root:
+
+1. `AI_RULES.md`
+2. `PROJECT_MEMORY.md`
+3. `PROJECT_MAP.md`
+4. `NEXT_STEPS.md`
+
+If any of these files are missing, stop and ask Akbar before making code changes.
+
+## Safety Rules
+
+- This is Akbar's personal customized version of `FatihMakes/Mark-XLVIII`.
+- Keep changes small, testable, and Mac-compatible.
+- Do not edit `config/api_keys.json` unless Akbar explicitly asks.
+- Do not touch `.venv/`.
+- Do not expose secrets, API keys, private local memory, or payment credentials.
+- Always run `git status` before code changes.
+- Do not install packages randomly. Explain why first, then use `python -m pip`.
+- Preserve original app functionality unless Akbar explicitly asks to change it.
+
+## Git Commit And Push Rules
+
+- After every reliable change that passes verification/tests, create a clear git commit and push it to GitHub.
+- Do not push broken, untested, secret-containing, or uncertain changes.
+- Always run `git status` before commit.
+- Always verify `.gitignore` protects API keys, local memory, `.venv/`, cache files, and logs before push.
+- Use small commits.
+- Commit messages must be clear.
+- Final reports must include the commit hash and push result.
+- If tests fail, do not commit or push unless Akbar explicitly orders it.
+- If the change is documentation-only, `py_compile` is enough unless runtime files changed.
+- If runtime code changes, run at minimum `.venv/bin/python -m py_compile main.py` and relevant manual/runtime checks.
+
+## Memory Updates
+
+Update `PROJECT_MEMORY.md` only when a change adds durable context that will help a future assistant understand, debug, or safely continue the project.
+
+Do not write small UI edits, typo fixes, temporary experiments, console cleanup, or minor CSS/text changes into `PROJECT_MEMORY.md`.
+
+Implementation changes should be logged in `CHANGELOG_AKBAR.md`.
+
+## Reporting
+
+Final reports to Akbar must be in Uzbek.
