@@ -26,7 +26,11 @@ If any of these files are missing, stop and ask Akbar before making code changes
 - From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
 - Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.
 - Jarvis must use recent action context before handling vague follow-up commands.
+- Vague follow-up commands must go through SessionContext/resolver logic before generic close/settings/send routing.
+- For recent YouTube/media/audio/browser playback, stop/pause/o'chir follow-ups must prefer media pause/stop, not browser close or settings close.
+- On macOS, pause media first and never close/kill apps for media control without Akbar's confirmation.
 - Jarvis must never claim an action succeeded unless success was verified.
+- Warning filters must stay narrow and source-specific; do not hide unrelated warnings or change dependency versions for log cleanup.
 
 ## Git Commit And Push Rules
 
@@ -54,6 +58,8 @@ Implementation changes should be logged in `CHANGELOG_AKBAR.md`.
 - Keep short-term action context runtime-only unless Akbar explicitly asks for persistence.
 - Recent action records should summarize user text and tool parameters; never store API keys, secrets, or long private text fully.
 - For vague follow-ups like `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `qayerga yubording?`, and `nima qilding?`, use the last 2-5 meaningful action records before selecting a tool.
+- If the last relevant action is media playback, resolve stop/pause/o'chir to media control first.
+- If media/browser/message context is low-confidence, ask clarification instead of guessing.
 - Verified success may be reported as `Bajarildi.` Failed actions: `Bajara olmadim.` Uncertain actions: `Aniq tasdiqlay olmadim.` Confirmation needed: `Tasdiqlaysizmi?`
 - For message sending, do not report `sent` unless the contact/chat and message placement or delivery were verified.
 

@@ -28,8 +28,12 @@ Instructions for Claude, Codex, and other AI coding agents working on MARK XLVII
 - From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
 - Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.
 - Jarvis must use recent action context before handling vague follow-up commands.
+- Vague follow-up commands must be resolved through SessionContext before generic tool routing.
+- If recent context is YouTube/media/audio/browser playback, route stop/pause/o'chir follow-ups to media control before any close/settings action.
+- For macOS media control, pause/play-pause first; do not close, quit, or kill apps unless Akbar confirms.
 - Jarvis must never claim an action succeeded unless success was verified.
 - For message sending, never say a message was sent unless the correct target/contact/chat and message placement or delivery were verified.
+- Keep warning filters narrow and source-specific. Do not change dependency versions or patch third-party packages just to clean logs.
 
 ## After Work
 

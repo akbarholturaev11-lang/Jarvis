@@ -76,7 +76,8 @@ The initial context foundation is markdown-based instead of an external Graphiti
 - `main.py` is the high-risk app runtime entry point. It manages Gemini Live, audio input/output, tool declarations, reconnect flow, and action dispatch.
 - `ui.py` is the PyQt6 HUD/UI layer.
 - `actions/*.py` contains tool implementations for app control, browser control, screen capture, reminders, web search, file processing, code help, proactive behavior, and related tasks.
-- `core/session_context.py` stores runtime-only short-term action context for the current process. It keeps the last 5 meaningful actions, summarizes sensitive parameters, tracks recent browser/app/message/file targets, records verified/failed/uncertain status, and attaches user corrections.
+- `actions/media_control.py` provides safe media pause/play-pause behavior, especially for macOS. It must pause first and must not close/kill apps without confirmation.
+- `core/session_context.py` stores runtime-only short-term action context for the current process. It keeps the last 5 meaningful actions, summarizes sensitive parameters, tracks recent browser/app/message/file/media targets, records verified/failed/uncertain/confirmation status, resolves vague follow-up intents, and attaches user corrections.
 - `memory/memory_manager.py` stores and formats long-term user memory in `memory/long_term.json`.
 - `core/prompt.txt` controls assistant behavior, language, and tool routing rules.
 - `config/api_keys.json` stores local secret configuration and must not be touched unless Akbar explicitly asks.
@@ -108,9 +109,15 @@ Jarvis has a runtime-only `SessionContext` / action history layer in `core/sessi
 
 Vague follow-up commands such as `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `oldingi ishni davom ettir`, `qayerga yubording?`, and `nima qilding?` must be resolved from recent action context before selecting a tool. Recent browser/app/contact/file/media context has priority over random defaults.
 
+`resolve_followup_intent(user_text, session_context)` / `SessionContext.resolve_follow_up(...)` returns a resolved intent, target context, confidence, and reason. For recent YouTube/media/audio/browser playback, stop/pause/o'chir follow-ups resolve to media pause/stop before generic browser close or settings close. If confidence is low, Jarvis should ask which app/browser instead of guessing.
+
+User corrections such as `GPT Atlas'da`, `Chrome'da`, `Safari emas`, `hali ham o'ynayapti`, `noto'g'ri`, and `ishlamadi` should attach to the latest relevant action. Corrections may update target app/context or mark a previous unverified media stop as failed so the next retry does not repeat the same target/tool mistake.
+
 Jarvis must never claim action success unless the tool result is `result_status=success` and `verified=true`. If a result is failed, say `Bajara olmadim.` If uncertain, say `Aniq tasdiqlay olmadim.` If confirmation is required, say `Tasdiqlaysizmi?`
 
 For message sending, Jarvis must not say a message was sent unless the contact/chat and message placement or delivery were verified. Desktop automation that cannot verify the contact/chat should return an uncertain draft/attempt result instead of a sent claim.
+
+For macOS media control, Jarvis should send a safe media pause/play-pause command first. If browser media can be verified, it may return verified success; otherwise it must report uncertainty, for example that music stopping could not be confirmed. Closing or killing media apps requires explicit confirmation.
 
 ## GitHub And Commit Workflow
 

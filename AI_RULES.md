@@ -94,6 +94,9 @@ UI language must be controlled through `config/settings.json` with `ui_language`
 
 - Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.
 - Jarvis must use recent action context before handling vague follow-up commands such as `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `oldingi ishni davom ettir`, `qayerga yubording?`, and `nima qilding?`.
+- Vague follow-up routing must inspect the last 5 meaningful `SessionContext` actions before generic tool routing. Prefer reusable resolver logic over one-off phrase fixes.
+- If recent context is YouTube/media/audio/browser playback, `to'xtat`, `stop`, `pause`, `o'chir`, or `musiqa o'chir` should resolve to media pause/stop before any close/settings action.
+- On macOS media stop/pause, send a safe media pause/play-pause command first. Do not close, quit, or kill apps unless Akbar confirms.
 - Jarvis must never claim an action succeeded unless success was verified by the tool result.
 - Allowed action status language:
   - verified success: `Bajarildi.`
@@ -102,3 +105,4 @@ UI language must be controlled through `config/settings.json` with `ui_language`
   - needs confirmation: `Tasdiqlaysizmi?`
 - For message sending, never say a message was sent unless the correct target/contact/chat and the message placement or delivery were verified. If verification is not safe, ask for confirmation or report uncertainty.
 - If the user corrects Jarvis after an action, attach the correction to recent action context and avoid repeating the same target/tool mistake.
+- Warning filters must be narrow and source-specific. Do not hide unrelated warnings/errors, downgrade NumPy, reinstall PyQt6, or patch third-party package code for log cleanup.

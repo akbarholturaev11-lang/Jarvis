@@ -22,8 +22,16 @@ import time
 import json
 import sys
 import traceback
+import warnings
 from datetime import datetime
 from pathlib import Path
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Setting the shape on a NumPy array has been deprecated.*",
+    category=DeprecationWarning,
+    module=r"sounddevice",
+)
 
 import sounddevice as sd
 from google import genai
@@ -47,6 +55,7 @@ from actions.weather_report    import weather_action
 from actions.send_message      import send_message
 from actions.reminder          import reminder
 from actions.computer_settings import computer_settings
+from actions.media_control     import media_control
 from actions.screen_processor  import _capture_camera, _capture_screen
 from actions.youtube_video     import youtube_video
 from actions.desktop           import desktop_control
@@ -241,6 +250,25 @@ TOOL_DECLARATIONS = [
                 "save":   {"type": "BOOLEAN", "description": "Save summary to Notepad (summarize only)"},
                 "region": {"type": "STRING", "description": "Country code for trending e.g. TR, US"},
                 "url":    {"type": "STRING", "description": "Video URL for get_info action"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "media_control",
+        "description": (
+            "Safely pauses/stops current media playback on macOS or system media. "
+            "Use for vague follow-up commands like to'xtat, stop, pause, o'chir, "
+            "musiqa o'chir when recent SessionContext shows YouTube/media/audio playback. "
+            "Do not close or kill apps with this tool."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "pause | stop | play_pause (default: pause)"},
+                "target_app": {"type": "STRING", "description": "Known source app/browser such as ChatGPT Atlas, Safari, Chrome, or system media"},
+                "target_context": {"type": "STRING", "description": "Short context such as YouTube playback or music query"},
+                "fallback_level": {"type": "STRING", "description": "normal | stronger. Use stronger only after the user says it is still playing."},
             },
             "required": []
         }
@@ -871,6 +899,9 @@ class JarvisLive:
             return f"browser {args.get('action', '')}: {target}"
         if name == "send_message":
             return f"send message via {args.get('platform', '')} to {args.get('receiver', '')}"
+        if name == "media_control":
+            target = args.get("target_app") or args.get("target_context") or "system media"
+            return f"media {args.get('action', 'pause')}: {target}"
         if name in {"file_processor", "file_controller"}:
             return f"{name}: {args.get('action', '')}"
         if name in {"computer_settings", "computer_control"}:
@@ -878,12 +909,82 @@ class JarvisLive:
         return f"{name}: {args.get('action') or args.get('description') or ''}"
 
     async def _execute_tool(self, fc, user_text: str = "") -> types.FunctionResponse:
-        name = fc.name
+        response_name = fc.name
+        name = response_name
         original_args = dict(fc.args or {})
         user_text = user_text or self._active_user_text
         args, context_note = self.session_context.apply_context_to_tool(
             user_text, name, original_args
         )
+        followup_resolution = self.session_context.resolve_follow_up(user_text)
+        preflight_result = None
+
+        if followup_resolution:
+            resolved_intent = followup_resolution.get("resolved_intent", "")
+            confidence = followup_resolution.get("confidence", "low")
+            hints = followup_resolution.get("parameter_hints", {})
+
+            if (
+                resolved_intent in {"media_pause", "media_stop"}
+                and confidence in {"high", "medium"}
+                and name != "media_control"
+            ):
+                args = {
+                    "action": followup_resolution.get("suggested_action") or "pause",
+                    "target_app": hints.get("target_app") or followup_resolution.get("target_app", ""),
+                    "target_context": hints.get("target_context") or followup_resolution.get("target_context_text", ""),
+                    "fallback_level": hints.get("fallback_level", "normal"),
+                }
+                name = "media_control"
+                context_note = (context_note + "; " if context_note else "") + (
+                    f"rerouted {response_name} to media_control from SessionContext"
+                )
+
+            elif resolved_intent == "browser_close" and confidence == "high":
+                close_args = {"action": followup_resolution.get("suggested_action") or "close_tab"}
+                if hints.get("browser"):
+                    close_args["browser"] = hints["browser"]
+                if name == "browser_control":
+                    args.update(close_args)
+                else:
+                    args = close_args
+                    name = "browser_control"
+                context_note = (context_note + "; " if context_note else "") + (
+                    f"rerouted {response_name} to browser close from SessionContext"
+                )
+
+            elif (
+                resolved_intent == "message_send_confirm"
+                and name == "send_message"
+                and not args.get("confirmed")
+            ):
+                platform = hints.get("platform") or args.get("platform", "")
+                receiver = hints.get("receiver") or args.get("receiver", "")
+                if platform and not args.get("platform"):
+                    args["platform"] = platform
+                if receiver and not args.get("receiver"):
+                    args["receiver"] = receiver
+                target = " ".join(part for part in (platform, receiver) if part).strip()
+                if target:
+                    preflight_result = (
+                        f"Confirmation needed: {target} uchun xabar yuborishni tasdiqlaysizmi? "
+                        "Tasdiqlaysizmi?"
+                    )
+                else:
+                    preflight_result = "Confirmation needed: Xabar yuborishni tasdiqlaysizmi? Tasdiqlaysizmi?"
+                context_note = (context_note + "; " if context_note else "") + (
+                    "blocked unconfirmed message send from SessionContext"
+                )
+
+            elif (
+                followup_resolution.get("needs_confirmation")
+                and resolved_intent in {"clarify", "clarify_media_target", "clarify_close_target"}
+                and name in {"computer_settings", "browser_control", "media_control", "youtube_video", "shutdown_jarvis"}
+            ):
+                preflight_result = "Confirmation needed: Qaysi app/browserda to'xtatay? Tasdiqlaysizmi?"
+                context_note = (context_note + "; " if context_note else "") + (
+                    "blocked vague follow-up with low-confidence SessionContext"
+                )
 
         print(f"[JARVIS] 🔧 {name}  {args}")
         if context_note:
@@ -900,7 +1001,7 @@ class JarvisLive:
             if not self.ui.muted:
                 self.ui.set_state("LISTENING")
             return types.FunctionResponse(
-                id=fc.id, name=name,
+                id=fc.id, name=response_name,
                 response={"result": "ok", "silent": True}
             )
 
@@ -908,7 +1009,10 @@ class JarvisLive:
         result = UNVERIFIED_TOOL_RESULT
 
         try:
-            if name == "open_app":
+            if preflight_result is not None:
+                result = preflight_result
+
+            elif name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
                 result = r or UNVERIFIED_TOOL_RESULT
 
@@ -939,6 +1043,10 @@ class JarvisLive:
             elif name == "youtube_video":
                 r = await loop.run_in_executor(None, lambda: youtube_video(parameters=args, response=None, player=self.ui))
                 result = r or UNVERIFIED_TOOL_RESULT
+
+            elif name == "media_control":
+                r = await loop.run_in_executor(None, lambda: media_control(parameters=args, response=None, player=self.ui, session_memory=self.session_context))
+                result = r or "Media pause command returned no verification result; exact status is uncertain."
 
             elif name == "screen_process":
                 import time as _t_mod
@@ -1065,7 +1173,7 @@ class JarvisLive:
 
         print(f"[JARVIS] 📤 {name} → {str(result)[:80]} [{status}, verified={verified}]")
         return types.FunctionResponse(
-            id=fc.id, name=name,
+            id=fc.id, name=response_name,
             response={
                 "result": result,
                 "result_status": status,
@@ -1073,6 +1181,8 @@ class JarvisLive:
                 "truthful_user_claim": claim,
                 "recent_action_context": self.session_context.build_prompt_context(),
                 "context_applied": context_note,
+                "actual_tool_executed": name,
+                "followup_resolution": followup_resolution,
                 "assistant_rule": (
                     "Never claim done/sent/opened/completed unless "
                     "result_status is success and verified is true. "
@@ -1482,8 +1592,11 @@ class JarvisLive:
                         break
                     await asyncio.sleep(0.1)
                 if self.session:
+                    self._active_user_text = text
+                    self.session_context.observe_user_text(text)
+                    payload_text = self.session_context.build_user_turn_context(text)
                     await self.session.send_client_content(
-                        turns={"parts": [{"text": text}]},
+                        turns={"parts": [{"text": payload_text}]},
                         turn_complete=True,
                     )
                     self.ui.write_log(f"[Web]: {text}")

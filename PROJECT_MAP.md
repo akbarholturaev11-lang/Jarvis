@@ -17,10 +17,11 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Tool declarations in `main.py`
    - Audio input/output constants and queues in `main.py`
    - Reconnect/session handling in `main.py`
-   - Runtime action history and truthful result status in `core/session_context.py`
+   - Runtime action history, follow-up intent routing, corrections, and truthful result status in `core/session_context.py`
 
 4. Tool/action layer
    - `actions/*.py`
+   - `actions/media_control.py` for safe macOS/system media pause/play-pause
 
 5. Memory layer
    - `memory/`
@@ -60,6 +61,7 @@ main.py
 -> actions/screen_processor.py
 -> actions/reminder.py
 -> actions/send_message.py
+-> actions/media_control.py
 -> actions/web_search.py
 -> actions/file_processor.py
 -> actions/code_helper.py
@@ -108,6 +110,7 @@ main.py
 - Resource guide: `AI_RESOURCES.md`
 - Prompt: `core/prompt.txt`
 - Runtime session context: `core/session_context.py`
+- Media control action: `actions/media_control.py`
 - UI localization: `core/i18n.py`
 - Secret config: `config/api_keys.json`
 - Safe local settings: `config/settings.json`
@@ -123,7 +126,9 @@ main.py
 - Tool calls execute code in `actions/*.py`.
 - `main.py` loads `core/prompt.txt`.
 - `main.py` owns a runtime `SessionContext` instance from `core/session_context.py`.
-- `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file targets, user corrections, and verified/failed/uncertain result status.
+- `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file/media targets, user corrections, and verified/failed/uncertain/confirmation result status.
+- `SessionContext` resolves vague follow-up commands before generic tool routing, including media stop/pause, browser close, message send confirmation, and correction handling.
+- `actions/media_control.py` sends safe media pause/play-pause commands on macOS and only reports verified success when playback state can be confirmed.
 - `main.py` reads the Gemini key from `config/api_keys.json`.
 - `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.
 - `config/settings.json` stores safe non-secret settings such as `ui_language` and only supports `ru` / `en`.
@@ -146,6 +151,7 @@ main.py
 - `memory/long_term.json` is PRIVATE. Never commit, expose, overwrite, or reset it unless Akbar explicitly asks.
 - `ui.py` is MEDIUM risk. UI changes can affect the Mac app experience.
 - `actions/*.py` depends on tool declarations in `main.py`. When changing an action signature, check the matching declaration and dispatch code.
+- `actions/media_control.py` must not close, quit, or kill apps by default. It should pause first and report uncertainty when playback cannot be verified.
 - `requirements.txt` is HIGH risk. Do not change dependency versions casually.
 
 ## Current Safe Foundation

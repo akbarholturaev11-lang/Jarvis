@@ -1,5 +1,28 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - AkbarCustom v0.3.1 Context Routing, Media Control, Log Cleanup
+
+### Added
+
+- Added `resolve_followup_intent(user_text, session_context)` and strengthened `SessionContext.resolve_follow_up(...)` to return resolved intent, target context, confidence, and reason.
+- Added `actions/media_control.py` for safe macOS/system media pause/play-pause handling.
+- Added dispatch-level rerouting so high-confidence vague media follow-ups execute media pause instead of generic close/settings close.
+- Added tests for media follow-up routing, ChatGPT Atlas target preservation, browser close routing, unknown-context clarification, message confirm-send routing, correction updates, still-playing fallback, and unverified media truthfulness.
+
+### Changed
+
+- Vague stop/pause/o'chir follow-ups now inspect the last 5 meaningful action records before selecting a tool.
+- Browser/page `yop` follow-ups resolve to browser close only when recent context supports it.
+- Message `yubor` follow-ups use recent message context but require confirmation/verification before any sent claim.
+- User corrections such as `GPT Atlas'da`, `Chrome'da`, `Safari emas`, `hali ham o'ynayapti`, and `ishlamadi` update recent runtime action context.
+- Unverified media stop/pause returns uncertainty instead of claiming stopped.
+- Added a narrow startup warning filter for the repeated `sounddevice` NumPy 2.5 shape `DeprecationWarning` without changing dependencies or hiding unrelated warnings.
+- Updated `core/prompt.txt`, AI rules, project memory, project map, next steps, and agent docs with the new routing/truthfulness/media-control rules.
+
+### Rule
+
+Jarvis must use SessionContext before generic routing for vague follow-ups, pause media before any app/browser close, and never claim stopped/sent/opened/closed/done unless the action result is successful and verified.
+
 ## 2026-07-10 - UI Language Settings Command
 
 ### Added

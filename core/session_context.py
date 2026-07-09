@@ -40,6 +40,21 @@ BROWSER_ALIASES = {
     "vivaldi": "vivaldi",
     "safari": "safari",
 }
+MEDIA_TARGET_ALIASES = {
+    "chatgpt atlas": "ChatGPT Atlas",
+    "gpt atlas": "ChatGPT Atlas",
+    "atlas": "ChatGPT Atlas",
+    "google chrome": "chrome",
+    "chrome": "chrome",
+    "safari": "safari",
+    "firefox": "firefox",
+    "edge": "edge",
+    "microsoft edge": "edge",
+    "brave": "brave",
+    "opera": "opera",
+    "spotify": "Spotify",
+    "music": "Music",
+}
 
 _SENSITIVE_KEY_PARTS = (
     "api",
@@ -93,6 +108,13 @@ _FAILURE_PATTERNS = (
     "no recipient",
 )
 
+_CONFIRMATION_PATTERNS = (
+    "please confirm",
+    "confirmation needed",
+    "tasdiqlaysizmi",
+    "qaysi app/browser",
+)
+
 _SUCCESS_STARTS = (
     "opened ",
     "opened:",
@@ -110,13 +132,20 @@ _SUCCESS_STARTS = (
     "reminder set",
     "volume set",
     "done:",
+    "media paused and verified",
+    "media playback paused and verified",
     "active browser",
     "all browsers closed",
 )
 
 _VAGUE_PATTERNS = (
-    r"\bo['‘`]?chir\b",
-    r"\bto['‘`]?xtat\b",
+    r"\bo['‘’`]?chir\b",
+    r"\bto['‘’`]?xtat\b",
+    r"\bpause\b",
+    r"\bto['‘’`]?xtatib qo['‘’`]?y\b",
+    r"\bmusiqa\s+o['‘’`]?chir\b",
+    r"\byop\b",
+    r"\btabni yop\b",
     r"\byubor\b",
     r"\byana qil\b",
     r"\bbekor qil\b",
@@ -133,18 +162,29 @@ _VAGUE_PATTERNS = (
     r"\bwhat did you do\b",
     r"\bwhere did you send\b",
     r"\bостанови\b",
+    r"\bпауза\b",
     r"\bзакрой\b",
     r"\bотправь\b",
     r"\bотмени\b",
+    r"\bhali ham o['‘’`]?ynayapti\b",
+    r"\bstill playing\b",
 )
 
 _CORRECTION_PATTERNS = (
-    r"\byo['‘`]?q[, ]+noto['‘`]?g['‘`]?ri\b",
-    r"\bnoto['‘`]?g['‘`]?ri\b",
+    r"\byo['‘’`]?q[, ]+noto['‘’`]?g['‘’`]?ri\b",
+    r"\bnoto['‘’`]?g['‘’`]?ri\b",
     r"\bboshqa joyga yubording\b",
+    r"\bhali ham o['‘’`]?ynayapti\b",
+    r"\bstill playing\b",
+    r"\bgpt atlas['‘’`]?da\b",
+    r"\bchatgpt atlas['‘’`]?da\b",
+    r"\batlas['‘’`]?da\b",
     r"\bsafari emas\b",
+    r"\bchrome['‘’`]?da\b",
+    r"\bsafari['‘’`]?da\b",
     r"\bmen buni demadim\b",
     r"\bbu ishlamadi\b",
+    r"\bishlamadi\b",
     r"\bwrong\b",
     r"\bnot that\b",
     r"\bthat did not work\b",
@@ -212,6 +252,89 @@ def _normalize_browser_name(value: Any) -> str:
     return ""
 
 
+def _detect_target_app_from_text(value: Any) -> str:
+    lowered = _squash(value).lower()
+    if not lowered:
+        return ""
+    if "safari emas" in lowered and not any(
+        app in lowered for app in ("chrome", "gpt atlas", "chatgpt atlas", "firefox", "edge")
+    ):
+        return ""
+    for alias, app_name in MEDIA_TARGET_ALIASES.items():
+        if re.search(rf"\b{re.escape(alias)}\b", lowered):
+            return app_name
+    return ""
+
+
+def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
+    return any(term in text for term in terms)
+
+
+def _is_assistant_shutdown_text(lowered_text: str) -> bool:
+    return "jarvis" in lowered_text and _contains_any(
+        lowered_text,
+        ("stop", "close", "shutdown", "quit", "exit", "to'xtat", "to‘xtat", "yop"),
+    )
+
+
+def _is_still_playing_text(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "hali ham o'ynayapti",
+            "hali ham o‘ynayapti",
+            "hali ham o’ynayapti",
+            "still playing",
+            "keeps playing",
+            "music is still",
+        ),
+    )
+
+
+def _is_media_stop_text(lowered_text: str) -> bool:
+    return _is_still_playing_text(lowered_text) or _contains_any(
+        lowered_text,
+        (
+            "to'xtat",
+            "to‘xtat",
+            "to’xtat",
+            "stop",
+            "pause",
+            "o'chir",
+            "o‘chir",
+            "o’chir",
+            "musiqa",
+            "останови",
+            "пауза",
+        ),
+    )
+
+
+def _is_close_text(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "yop",
+            "close",
+            "tabni yop",
+            "shuni yop",
+            "закрой",
+        ),
+    )
+
+
+def _is_send_text(lowered_text: str) -> bool:
+    return _contains_any(lowered_text, ("yubor", "send", "отправ"))
+
+
+def _is_where_sent_text(lowered_text: str) -> bool:
+    return _contains_any(lowered_text, ("qayerga yubording", "where did you send"))
+
+
+def _is_what_done_text(lowered_text: str) -> bool:
+    return _contains_any(lowered_text, ("nima qilding", "what did you do"))
+
+
 def _safe_param_value(key: str, value: Any) -> Any:
     if _is_sensitive_key(key):
         return "[redacted]"
@@ -246,6 +369,8 @@ def truthful_claim(result_status: str, verified: bool) -> str:
         return "Bajarildi."
     if result_status == "failed":
         return "Bajara olmadim."
+    if result_status == "needs_confirmation":
+        return "Tasdiqlaysizmi?"
     return "Aniq tasdiqlay olmadim."
 
 
@@ -266,6 +391,8 @@ def infer_result_status(tool_name: str, result: Any) -> tuple[str, bool]:
             return "success", True
         return "failed", False
 
+    if any(pattern in text for pattern in _CONFIRMATION_PATTERNS):
+        return "needs_confirmation", False
     if any(pattern in text for pattern in _UNCERTAIN_PATTERNS):
         return "uncertain", False
     if any(pattern in text for pattern in _FAILURE_PATTERNS):
@@ -372,11 +499,10 @@ class SessionContext:
         if not self.actions:
             return False
         correction = _short_text(correction_text)
-        for record in reversed(self.actions):
-            if not record.user_correction:
-                record.user_correction = correction
-                return True
-        self.actions[-1].user_correction = correction
+        lowered = _squash(correction_text).lower()
+        record = self._select_correction_target(lowered) or self.actions[-1]
+        record.user_correction = correction
+        self._apply_correction_to_record(record, lowered)
         return True
 
     def note_assistant_claim(self, claim_text: str) -> None:
@@ -385,41 +511,99 @@ class SessionContext:
         self.actions[-1].user_visible_claim = _short_text(claim_text)
 
     def resolve_follow_up(self, user_text: str, lookback: int = MAX_ACTIONS) -> dict[str, Any]:
-        if not is_vague_follow_up(user_text):
+        if not (is_vague_follow_up(user_text) or is_user_correction(user_text)):
             return {}
 
         lowered = _squash(user_text).lower()
+        if _is_assistant_shutdown_text(lowered):
+            return {}
+
         recent = list(self.actions)[-lookback:]
         selected = self._select_relevant_record(lowered, recent)
         if not selected:
             return {
+                "resolved_intent": "clarify",
+                "target_context": {},
+                "confidence": "low",
                 "needs_confirmation": True,
-                "reason": "No recent action context is available.",
+                "reason": "No recent action context is available. Ask which app/browser should be targeted.",
             }
 
-        suggested_tool = selected.tool_name
+        target_context = self._resolution_target_context(selected)
         parameter_hints: dict[str, Any] = {}
+        suggested_tool = selected.tool_name
+        suggested_action = ""
+        resolved_intent = "repeat_context"
+        confidence = "medium"
+        needs_confirmation = False
+        reason = "Resolved from the most recent relevant action context."
 
         target_browser = _normalize_browser_name(selected.target_app)
-        if selected.tool_name == "browser_control" or target_browser:
-            suggested_tool = "browser_control"
-            if target_browser:
-                parameter_hints["browser"] = target_browser
-        elif selected.tool_name == "send_message":
+
+        if _is_send_text(lowered) or _is_where_sent_text(lowered):
+            is_where_sent = _is_where_sent_text(lowered)
             suggested_tool = "send_message"
             parameter_hints.update(self._message_hints(selected))
-        elif selected.tool_name in {"file_processor", "file_controller"}:
-            suggested_tool = selected.tool_name
-            if self.last_file_action_target:
-                parameter_hints["path"] = self.last_file_action_target
-                parameter_hints["file_path"] = self.last_file_action_target
+            resolved_intent = "message_status" if is_where_sent else "message_send_confirm"
+            needs_confirmation = not is_where_sent
+            confidence = "medium" if parameter_hints else "low"
+            reason = (
+                "Recent message context found; sending still needs confirmation/verification."
+                if not is_where_sent
+                else "Recent message context found for delivery-status follow-up."
+            )
+
+        elif _is_media_stop_text(lowered) and self._record_is_media_context(selected):
+            suggested_tool = "media_control"
+            suggested_action = "pause"
+            target_app = self._media_target_app(selected)
+            if target_app:
+                parameter_hints["target_app"] = target_app
+            if selected.target_context:
+                parameter_hints["target_context"] = selected.target_context
+            if _is_still_playing_text(lowered):
+                parameter_hints["fallback_level"] = "stronger"
+            resolved_intent = "media_pause"
+            confidence = "high"
+            reason = "Stop/pause follow-up matched recent YouTube/media/audio playback context."
+
+        elif _is_close_text(lowered) and self._record_is_browser_context(selected):
+            suggested_tool = "browser_control"
+            suggested_action = "close_tab"
+            if target_browser:
+                parameter_hints["browser"] = target_browser
+            resolved_intent = "browser_close"
+            confidence = "high"
+            reason = "Close follow-up matched recent browser/page context."
+
+        elif _is_what_done_text(lowered):
+            resolved_intent = "action_status"
+            confidence = "medium"
+            reason = "User asked what the previous action did."
+
+        elif _is_media_stop_text(lowered):
+            resolved_intent = "clarify_media_target"
+            confidence = "low"
+            needs_confirmation = True
+            reason = "Stop/pause command is vague and recent context is not media playback."
+
+        elif _is_close_text(lowered):
+            resolved_intent = "clarify_close_target"
+            confidence = "low"
+            needs_confirmation = True
+            reason = "Close command is vague and no browser/page context was found."
 
         return {
-            "needs_confirmation": False,
+            "resolved_intent": resolved_intent,
+            "target_context": target_context,
+            "confidence": confidence,
+            "reason": reason,
+            "needs_confirmation": needs_confirmation,
             "source_tool": selected.tool_name,
             "suggested_tool": suggested_tool,
+            "suggested_action": suggested_action,
             "target_app": selected.target_app,
-            "target_context": selected.target_context,
+            "target_context_text": selected.target_context,
             "previous_result_status": selected.result_status,
             "previous_verified": selected.verified,
             "previous_correction": selected.user_correction,
@@ -440,6 +624,20 @@ class SessionContext:
 
         notes: list[str] = []
         hints = resolution.get("parameter_hints", {})
+
+        if tool_name == "media_control":
+            if not args.get("action"):
+                args["action"] = resolution.get("suggested_action") or "pause"
+                notes.append("action=pause from recent media context")
+            if not args.get("target_app") and hints.get("target_app"):
+                args["target_app"] = hints["target_app"]
+                notes.append(f"target_app={hints['target_app']} from recent media context")
+            if not args.get("target_context") and hints.get("target_context"):
+                args["target_context"] = hints["target_context"]
+                notes.append("target_context from recent media context")
+            if not args.get("fallback_level") and hints.get("fallback_level"):
+                args["fallback_level"] = hints["fallback_level"]
+                notes.append("stronger fallback from user correction")
 
         if tool_name == "browser_control" and not args.get("browser"):
             browser = hints.get("browser") or self.last_browser_used
@@ -515,20 +713,22 @@ class SessionContext:
         lowered_text: str,
         recent: list[ActionRecord],
     ) -> ActionRecord | None:
-        if any(word in lowered_text for word in ("yubor", "send", "отправ")):
+        if _is_send_text(lowered_text) or _is_where_sent_text(lowered_text):
             for record in reversed(recent):
                 if record.tool_name == "send_message":
                     return record
 
-        if any(word in lowered_text for word in ("qayerga yubording", "where did you send")):
+        if _is_media_stop_text(lowered_text):
             for record in reversed(recent):
-                if record.tool_name == "send_message":
+                if self._record_is_media_context(record):
                     return record
 
-        if any(word in lowered_text for word in ("o'chir", "o‘chir", "to'xtat", "to‘xtat", "stop", "close", "закрой", "останови")):
+        if _is_close_text(lowered_text):
             for record in reversed(recent):
-                if record.tool_name in {"browser_control", "youtube_video"} or record.target_app in BROWSER_NAMES:
+                if self._record_is_browser_context(record):
                     return record
+
+        if _is_media_stop_text(lowered_text) or _is_close_text(lowered_text):
             for record in reversed(recent):
                 if record.target_app:
                     return record
@@ -553,7 +753,9 @@ class SessionContext:
         if tool_name in {"file_processor", "file_controller"}:
             return "", _short_text(params.get("file_path") or params.get("path"), 120)
         if tool_name == "youtube_video":
-            return "browser/media", _short_text(params.get("query") or params.get("url") or params.get("action"), 120)
+            return _short_text(params.get("target_app") or "browser/media", 90), _short_text(params.get("query") or params.get("url") or params.get("action"), 120)
+        if tool_name == "media_control":
+            return _short_text(params.get("target_app") or self.last_active_app, 90), _short_text(params.get("target_context") or params.get("action"), 120)
         if tool_name in {"computer_settings", "computer_control"}:
             context = params.get("description") or params.get("action") or params.get("key") or params.get("keys")
             return self.last_active_app, _short_text(context, 120)
@@ -581,7 +783,13 @@ class SessionContext:
             self.last_media_search_browser_action = f"{record.tool_name}:{record.target_app}:{record.target_context}"
 
         if record.tool_name == "youtube_video":
+            if active_app and record.target_app == "browser/media":
+                record.target_app = _short_text(active_app, 90)
             self.last_media_search_browser_action = f"{record.tool_name}:{record.target_context}"
+
+        if record.tool_name == "media_control":
+            if record.target_app or record.target_context:
+                self.last_media_search_browser_action = f"{record.tool_name}:{record.target_app}:{record.target_context}"
 
         if record.tool_name == "send_message":
             platform = _short_text(params.get("platform"), 90)
@@ -608,3 +816,128 @@ class SessionContext:
             return _short_text(data.get(field), 90)
         except Exception:
             return ""
+
+    def _select_correction_target(self, lowered_text: str) -> ActionRecord | None:
+        recent = list(self.actions)
+        if _is_still_playing_text(lowered_text):
+            for record in reversed(recent):
+                if self._record_is_media_control_action(record):
+                    return record
+            for record in reversed(recent):
+                if self._record_is_media_context(record):
+                    return record
+
+        if _detect_target_app_from_text(lowered_text) or "safari emas" in lowered_text:
+            for record in reversed(recent):
+                if self._record_is_media_context(record) or self._record_is_browser_context(record):
+                    return record
+
+        if "yubording" in lowered_text or "send" in lowered_text:
+            for record in reversed(recent):
+                if record.tool_name == "send_message":
+                    return record
+
+        return recent[-1] if recent else None
+
+    def _apply_correction_to_record(self, record: ActionRecord, lowered_text: str) -> None:
+        corrected_app = _detect_target_app_from_text(lowered_text)
+        if corrected_app:
+            record.target_app = _short_text(corrected_app, 90)
+            if self._record_is_media_context(record) and not record.target_context:
+                record.target_context = "media playback"
+
+        if "safari emas" in lowered_text and record.target_app.lower() == "safari":
+            record.target_app = ""
+
+        if _is_still_playing_text(lowered_text):
+            record.result_status = "failed"
+            record.verified = False
+            record.user_visible_claim = truthful_claim("failed", False)
+
+    def _record_is_media_control_action(self, record: ActionRecord) -> bool:
+        haystack = self._record_haystack(record)
+        return record.tool_name == "media_control" or _contains_any(
+            haystack,
+            (
+                "media_pause",
+                "media_stop",
+                "play_pause",
+                "pause_video",
+                "mac media pause",
+            ),
+        )
+
+    def _record_is_media_context(self, record: ActionRecord) -> bool:
+        haystack = self._record_haystack(record)
+        if record.tool_name in {"youtube_video", "media_control"}:
+            return True
+        if "browser/media" in record.target_app.lower():
+            return True
+        return _contains_any(
+            haystack,
+            (
+                "youtube",
+                "music",
+                "musiqa",
+                "audio",
+                "video",
+                "song",
+                "qo'shiq",
+                "qo‘shiq",
+                "relaxing",
+                "playback",
+                "playing",
+                "o'ynay",
+                "o‘ynay",
+                "media",
+            ),
+        )
+
+    def _record_is_browser_context(self, record: ActionRecord) -> bool:
+        browser = _normalize_browser_name(record.target_app)
+        if browser in BROWSER_NAMES:
+            return True
+        if record.tool_name == "browser_control":
+            return True
+        if record.tool_name == "open_app" and _normalize_browser_name(record.target_app):
+            return True
+        return False
+
+    def _record_haystack(self, record: ActionRecord) -> str:
+        return " ".join(
+            (
+                record.user_text,
+                record.assistant_intent,
+                record.tool_name,
+                record.tool_parameters_summary,
+                record.target_app,
+                record.target_context,
+                record.execution_method,
+                record.user_correction,
+            )
+        ).lower()
+
+    def _media_target_app(self, record: ActionRecord) -> str:
+        if record.target_app and record.target_app != "browser/media":
+            return record.target_app
+        if self.last_active_app:
+            return self.last_active_app
+        if self.last_browser_used:
+            return self.last_browser_used
+        return record.target_app
+
+    def _resolution_target_context(self, record: ActionRecord) -> dict[str, str]:
+        return {
+            "source_tool": record.tool_name,
+            "target_app": record.target_app,
+            "target_context": record.target_context,
+            "assistant_intent": record.assistant_intent,
+            "previous_result_status": record.result_status,
+            "previous_verified": str(record.verified),
+            "previous_correction": record.user_correction,
+        }
+
+
+def resolve_followup_intent(user_text: str, session_context: SessionContext) -> dict[str, Any]:
+    """Resolve a vague follow-up command against recent SessionContext actions."""
+    return session_context.resolve_follow_up(user_text)
