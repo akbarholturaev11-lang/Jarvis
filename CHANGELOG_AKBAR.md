@@ -1,5 +1,13 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - Audio Queue Overflow Guard
+
+### Changed
+
+- Added a guarded outgoing audio queue helper in `main.py`.
+- When mic or phone audio fills the outgoing queue, stale queued audio is drained and the newest chunk is kept.
+- Prevented `asyncio.QueueFull` from escaping through the mic callback and spamming logs or crashing the runtime.
+
 ## 2026-07-10 - GitHub Remote And Commit Rules
 
 ### Changed

@@ -41,6 +41,7 @@ Current known status as of 2026-07-10:
 - Microphone starts.
 - Audio playback starts.
 - `save_memory` / memory persistence works.
+- Mic and phone audio input use a bounded outgoing queue; if it fills, stale queued audio is discarded and the newest chunk is kept so `QueueFull` does not crash or spam logs.
 
 ## Known Problems
 
