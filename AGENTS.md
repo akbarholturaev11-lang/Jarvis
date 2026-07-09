@@ -23,6 +23,7 @@ If any of these files are missing, stop and ask Akbar before making code changes
 - Always run `git status` before code changes.
 - Do not install packages randomly. Explain why first, then use `python -m pip`.
 - Preserve original app functionality unless Akbar explicitly asks to change it.
+- From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
 
 ## Git Commit And Push Rules
 

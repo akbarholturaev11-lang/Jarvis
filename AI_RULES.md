@@ -83,3 +83,7 @@ If the answer is no, do not update it.
 - Do not modify runtime logic during documentation/context-foundation tasks.
 - Do not overwrite local user memory in `memory/long_term.json`.
 - Keep Mac permissions in mind: Microphone, Accessibility, Screen Recording, and Camera may be required.
+
+## Bilingual UI Rule
+
+From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.

@@ -53,6 +53,15 @@ from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
 
+_EMPTY_SEARCH_PREFIXES = (
+    "No results",
+    "No news",
+    "Search failed",
+    "Результаты не найдены",
+    "Новости не найдены",
+    "Поиск не выполнен",
+)
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -905,7 +914,7 @@ class JarvisLive:
                 result = r or "Done."
                 # Mirror results to the on-screen content panel
                 _mode = args.get("mode", "search")
-                if r and not r.startswith("No results") and not r.startswith("Search failed"):
+                if r and not r.startswith(_EMPTY_SEARCH_PREFIXES):
                     _query = args.get("query") or ", ".join(args.get("items", []))
                     _label = f"{_mode.upper()} — {_query[:38]}" if _query else _mode.upper()
                     self.ui.show_content(_label, r)

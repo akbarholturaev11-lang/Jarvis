@@ -17,7 +17,7 @@ Current next steps for MARK XLVIII - AkbarCustom.
    - Set reminder
    - Web search
    - File processor
-4. Translate UI to Russian if Akbar wants.
+4. Review any remaining English-only action/tool result wording that should be promoted into the shared English/Russian UI dictionary.
 5. Add Akbar-specific assistant personality/rules.
 6. Add stronger project memory/context system.
 7. Later add custom features.

@@ -1,5 +1,23 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - Russian UI Localization
+
+### Added
+
+- Added simple dictionary-based English/Russian UI localization in `core/i18n.py`.
+- Localized main PyQt UI labels, buttons, HUD status text, file upload text, setup overlay, remote overlay, camera labels, footer text, and common UI log messages to Russian by default.
+- Added English fallback support through `JARVIS_UI_LANG=en`.
+
+### Changed
+
+- Updated `setup.py` installer messages to use the localization dictionary.
+- Added the bilingual UI rule to `AI_RULES.md`, `AGENTS.md`, `CLAUDE.md`, and `PROJECT_MEMORY.md`.
+- Added prompt guidance so assistant-restated UI/system status does not introduce English-only UI labels.
+
+### Rule
+
+From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
+
 ## 2026-07-10 - Reconnect Session Isolation
 
 ### Changed

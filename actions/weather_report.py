@@ -1,6 +1,8 @@
 import webbrowser
 from urllib.parse import quote_plus
 
+from core.i18n import t
+
 
 def weather_action(
     parameters: dict,
@@ -8,15 +10,16 @@ def weather_action(
     session_memory=None,
 ) -> str:
     city     = parameters.get("city")
-    when     = parameters.get("time", "today")  
+    when     = parameters.get("time", "today")
 
     if not city or not isinstance(city, str) or not city.strip():
-        msg = "Sir, the city is missing for the weather report."
+        msg = t("weather.city_missing")
         _log(msg, player)
         return msg
 
     city = city.strip()
     when = (when or "today").strip()
+    display_when = t("date.today") if when.lower() == "today" else when
 
     search_query  = f"weather in {city} {when}"
     url           = f"https://www.google.com/search?q={quote_plus(search_query)}"
@@ -26,11 +29,11 @@ def weather_action(
         if not opened:
             raise RuntimeError("webbrowser.open returned False")
     except Exception as e:
-        msg = f"Sir, I couldn't open the browser for the weather report: {e}"
+        msg = t("weather.browser_failed", error=e)
         _log(msg, player)
         return msg
 
-    msg = f"Showing the weather for {city}, {when}, sir."
+    msg = t("weather.showing", city=city, when=display_when)
     _log(msg, player)
 
     if session_memory:

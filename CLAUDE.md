@@ -25,6 +25,7 @@ Instructions for Claude, Codex, and other AI coding agents working on MARK XLVII
 - Preserve original functionality unless Akbar explicitly asks for a behavior change.
 - Use Python 3.12.
 - Prefer `python -m pip` over `pip` if package installation is explicitly needed.
+- From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
 
 ## After Work
 

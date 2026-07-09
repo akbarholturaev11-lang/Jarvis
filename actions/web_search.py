@@ -3,6 +3,9 @@ import json
 import sys
 from pathlib import Path
 
+from core.i18n import t
+
+
 def _get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).parent
@@ -81,22 +84,22 @@ def _ddg_news(query: str, max_results: int = 8) -> list[dict]:
 
 def _format_ddg(query: str, results: list[dict]) -> str:
     if not results:
-        return f"No results found for: {query}"
+        return t("result.no_results", query=query)
 
-    lines = [f"Search results for: {query}\n"]
+    lines = [f"{t('result.search_results_for', query=query)}\n"]
     for i, r in enumerate(results, 1):
         if r.get("title"):   lines.append(f"{i}. {r['title']}")
         if r.get("snippet"): lines.append(f"   {r['snippet']}")
-        if r.get("url"):     lines.append(f"   Source: {r['url']}")
+        if r.get("url"):     lines.append(f"   {t('result.source')}: {r['url']}")
         lines.append("")
     return "\n".join(lines).strip()
 
 
 def _format_news(query: str, results: list[dict]) -> str:
     if not results:
-        return f"No news found for: {query}"
+        return t("result.no_news", query=query)
 
-    lines = [f"Latest news: {query}\n"]
+    lines = [f"{t('result.latest_news', query=query)}\n"]
     for i, r in enumerate(results, 1):
         title = r.get("title", "")
         if not title:
@@ -208,7 +211,7 @@ def _news(query: str) -> str:
     threading.Thread(target=_try_ddg,    daemon=True).start()
 
     done_evt.wait(timeout=10.0)
-    return result_box[0] or f"No news found for: {query}"
+    return result_box[0] or t("result.no_news", query=query)
 
 
 def _research(query: str) -> str:
@@ -256,7 +259,7 @@ def _compare(items: list[str], aspect: str) -> str:
         except Exception:
             all_results[item] = []
 
-    lines = [f"Comparison — {aspect.upper()}", "─" * 40]
+    lines = [t("result.comparison", aspect=aspect.upper()), "─" * 40]
     for item in items:
         lines.append(f"\n▸ {item}")
         for r in all_results.get(item, [])[:2]:
@@ -282,7 +285,7 @@ def web_search(
     aspect = params.get("aspect", "general").strip() or "general"
 
     if not query and not items:
-        return "Please provide a search query."
+        return t("result.search_query_required")
 
     if items and mode not in ("compare",):
         mode = "compare"
@@ -305,4 +308,4 @@ def web_search(
 
     except Exception as e:
         print(f"[WebSearch] ❌ All backends failed: {e}")
-        return f"Search failed: {e}"
+        return t("result.search_failed", error=e)

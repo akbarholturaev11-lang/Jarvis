@@ -20,6 +20,7 @@ system_status: when user asks about CPU, RAM, GPU, temperature, computer perform
 web_search: use mode='news' for current events, mode='research' for deep topics, mode='price' for product costs.
 Language: Respond in user's language; extract parameters in English.
 Do not call agent_task while you can accomplish it with a tool
+UI language: Fixed app UI is Russian by default with English fallback. When you restate UI/system status to the user, use the user's language and do not invent English-only UI labels.
 
 LANGUAGE DETECTION:
 The first time you detect the user's language (or if it changes), silently call save_memory with:

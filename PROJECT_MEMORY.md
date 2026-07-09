@@ -93,6 +93,12 @@ After meaningful implementation changes, update `PROJECT_MEMORY.md` when the cha
 
 Do not use `PROJECT_MEMORY.md` as a diary or changelog dump. Store only context that helps another assistant safely understand, debug, or continue the project.
 
+## UI Localization Rule
+
+Visible fixed UI text is localized through a simple dictionary-based English/Russian system in `core/i18n.py`. Russian is the default UI language, and English remains available as fallback through `JARVIS_UI_LANG=en`.
+
+From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
+
 ## GitHub And Commit Workflow
 
 - GitHub remote should point to `https://github.com/akbarholturaev11-lang/Jarvis.git`.
