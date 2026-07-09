@@ -69,6 +69,9 @@ SEND_SAMPLE_RATE    = 16000
 RECEIVE_SAMPLE_RATE = 24000
 CHUNK_SIZE          = 1024
 OUT_QUEUE_MAXSIZE   = 200
+RECONNECT_BACKOFF_INITIAL = 3
+RECONNECT_BACKOFF_MAX     = 12
+RECONNECT_STABLE_RESET_SECONDS = 30
 
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -543,6 +546,8 @@ class JarvisLive:
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
+        self._conn_backoff     = RECONNECT_BACKOFF_INITIAL
+        self._session_connected_at = None
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -602,18 +607,94 @@ class JarvisLive:
             # or spam the event loop with QueueFull tracebacks.
             pass
 
+    def _drain_queue(self, q) -> int:
+        if q is None:
+            return 0
+        drained = 0
+        while True:
+            try:
+                q.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:
+                break
+        return drained
+
+    def _reset_reconnect_backoff(self) -> None:
+        self._conn_backoff = RECONNECT_BACKOFF_INITIAL
+
+    def _consume_reconnect_delay(self) -> int:
+        delay = self._conn_backoff
+        self._conn_backoff = min(delay * 2, RECONNECT_BACKOFF_MAX)
+        return delay
+
+    def _iter_error_chain(self, exc: BaseException, seen: set[int] | None = None):
+        if seen is None:
+            seen = set()
+        if id(exc) in seen:
+            return
+        seen.add(id(exc))
+        yield exc
+
+        for child in getattr(exc, "exceptions", ()) or ():
+            yield from self._iter_error_chain(child, seen)
+
+        cause = getattr(exc, "__cause__", None)
+        if cause is not None:
+            yield from self._iter_error_chain(cause, seen)
+
+        context = getattr(exc, "__context__", None)
+        if context is not None:
+            yield from self._iter_error_chain(context, seen)
+
+    def _error_text(self, exc: BaseException) -> str:
+        parts = []
+        for item in self._iter_error_chain(exc):
+            msg = str(item).replace("\n", " ").strip()
+            parts.append(type(item).__name__)
+            if msg:
+                parts.append(msg)
+        return " | ".join(parts)
+
+    def _short_error(self, exc: BaseException) -> str:
+        for item in self._iter_error_chain(exc):
+            msg = str(item).splitlines()[0].strip() if str(item) else ""
+            if msg and "unhandled errors in a TaskGroup" not in msg:
+                return f"{type(item).__name__}: {msg[:180]}"
+        msg = str(exc).splitlines()[0].strip() if str(exc) else ""
+        return f"{type(exc).__name__}: {msg[:180]}" if msg else type(exc).__name__
+
+    def _is_invalid_api_key_error(self, exc: BaseException) -> bool:
+        text = self._error_text(exc).lower()
+        return any(k in text for k in (
+            "api key not valid",
+            "api_key_invalid",
+            "invalid api key",
+        ))
+
+    def _is_reconnectable_error(self, exc: BaseException) -> bool:
+        text = self._error_text(exc).lower()
+        return any(k in text for k in (
+            "1006",
+            "keepalive ping timeout",
+            "connectionclosed",
+            "connection closed",
+            "cannot connect",
+            "connectionrefusederror",
+            "getaddrinfo",
+            "network is unreachable",
+            "server disconnected",
+            "temporary failure in name resolution",
+            "timed out",
+            "timeouterror",
+            "websocket",
+        ))
+
     def interrupt(self) -> None:
         """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
         self._interrupted = True
         q = self.audio_in_queue
         if q:
-            drained = 0
-            while True:
-                try:
-                    q.get_nowait()
-                    drained += 1
-                except Exception:
-                    break
+            drained = self._drain_queue(q)
             if drained:
                 print(f"[JARVIS] ✋ Interrupted — {drained} audio chunks discarded")
         self.set_speaking(False)
@@ -869,8 +950,10 @@ class JarvisLive:
                 while True:
                     await asyncio.sleep(0.1)
         except Exception as e:
-            print(f"[JARVIS] ❌ Mic: {e}")
+            print(f"[JARVIS] Mic error: {self._short_error(e)}")
             raise
+        finally:
+            print("[JARVIS] Mic stopped.")
 
     async def _receive_audio(self):
         print("[JARVIS] 👂 Recv started")
@@ -982,22 +1065,24 @@ class JarvisLive:
                             function_responses=fn_responses
                         )
         except Exception as e:
-            print(f"[JARVIS] ❌ Recv: {e}")
-            traceback.print_exc()
+            if not self._is_reconnectable_error(e):
+                print(f"[JARVIS] Recv error: {self._short_error(e)}")
             raise
 
     async def _play_audio(self):
         print("[JARVIS] 🔊 Play started")
 
-        stream = sd.RawOutputStream(
-            samplerate=RECEIVE_SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype="int16",
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
+        stream = None
 
         try:
+            stream = sd.RawOutputStream(
+                samplerate=RECEIVE_SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype="int16",
+                blocksize=CHUNK_SIZE,
+            )
+            stream.start()
+
             while True:
                 try:
                     chunk = await asyncio.wait_for(
@@ -1019,12 +1104,21 @@ class JarvisLive:
                 except (RuntimeError, asyncio.CancelledError):
                     break   # executor shutting down — exit cleanly
         except Exception as e:
-            print(f"[JARVIS] ❌ Play: {e}")
+            print(f"[JARVIS] Play error: {self._short_error(e)}")
             raise
         finally:
             self.set_speaking(False)
-            stream.stop()
-            stream.close()
+            self._drain_queue(self.audio_in_queue)
+            if stream is not None:
+                try:
+                    stream.stop()
+                except Exception:
+                    pass
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            print("[JARVIS] Audio stopped.")
 
     # ── Morning briefing ────────────────────────────────────────────────────────
 
@@ -1222,6 +1316,7 @@ class JarvisLive:
             self._dashboard = None
 
         while True:
+            reconnect_delay = self._conn_backoff
             try:
                 print("[JARVIS] Connecting...")
                 self.ui.set_state("THINKING")
@@ -1249,6 +1344,7 @@ class JarvisLive:
                     self._vision_busy          = False
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
+                    self._session_connected_at = time.monotonic()
 
                     print("[JARVIS] Connected.")
                     self.ui.set_state("LISTENING")
@@ -1281,37 +1377,46 @@ class JarvisLive:
                 # externally, which `except Exception` would miss, letting the
                 # exception escape the while-loop and causing asyncio.run() to
                 # start shutdown — resulting in "executor after shutdown" errors).
-                err_str = str(e)
-                print(f"[JARVIS] Error ({type(e).__name__}): {e}")
-                traceback.print_exc()
+                if (
+                    self._session_connected_at is not None
+                    and time.monotonic() - self._session_connected_at >= RECONNECT_STABLE_RESET_SECONDS
+                ):
+                    self._reset_reconnect_backoff()
 
                 # Invalid API key — stop hammering the API, prompt re-configuration
-                if "API key not valid" in err_str or "1007" in err_str:
+                if self._is_invalid_api_key_error(e):
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
                     while not self.ui._win._ready:
                         await asyncio.sleep(1)
                     print("[JARVIS] New API key saved — reconnecting...")
-                    _conn_backoff = 3
+                    self._reset_reconnect_backoff()
+                    reconnect_delay = RECONNECT_BACKOFF_INITIAL
                     continue
 
-                # Network / timeout errors — log clearly and back off
-                is_net_err = any(k in err_str for k in (
-                    "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
-                    "ConnectionRefusedError", "OSError", "Cannot connect",
-                ))
-                if is_net_err:
-                    _conn_backoff = min(getattr(self, "_conn_backoff", 3) * 2, 60)
-                    self._conn_backoff = _conn_backoff
+                reconnect_delay = self._consume_reconnect_delay()
+                short = self._short_error(e)
+                if self._is_reconnectable_error(e):
+                    print(f"[JARVIS] Connection lost: {short}")
                     self.ui.write_log(
-                        f"NET: Bağlantı kurulamadı — {_conn_backoff}s sonra tekrar deneniyor. "
-                        "(VPN gerekiyor olabilir)"
+                        f"NET: Connection lost - reconnecting in {reconnect_delay}s."
                     )
                 else:
-                    self._conn_backoff = 3
+                    print(f"[JARVIS] Runtime recovered: {short}")
+                    self.ui.write_log(
+                        f"ERR: Runtime recovered - reconnecting in {reconnect_delay}s."
+                    )
             finally:
                 self.session = None
+                self._drain_queue(self.audio_in_queue)
+                self._drain_queue(self.out_queue)
+                self.audio_in_queue = None
+                self.out_queue = None
+                self._turn_done_event = None
+                self._session_connected_at = None
+                self._phone_active = False
+                self._interrupted = False
 
             self.set_speaking(False)
             self.ui.set_state("SLEEPING")
@@ -1319,9 +1424,8 @@ class JarvisLive:
             if self._dashboard:
                 await self._dashboard.broadcast({"type": "status", "state": "sleeping"})
 
-            delay = getattr(self, "_conn_backoff", 3)
-            print(f"[JARVIS] Reconnecting in {delay}s...")
-            await asyncio.sleep(delay)
+            print(f"[JARVIS] Reconnecting in {reconnect_delay}s...")
+            await asyncio.sleep(reconnect_delay)
 
 def main():
     ui = JarvisUI("face.png")

@@ -42,11 +42,11 @@ Current known status as of 2026-07-10:
 - Audio playback starts.
 - `save_memory` / memory persistence works.
 - Mic and phone audio input use a bounded outgoing queue; if it fills, stale queued audio is discarded and the newest chunk is kept so `QueueFull` does not crash or spam logs.
+- Gemini Live reconnect handling treats `1006` / keepalive disconnects as recoverable, closes mic/audio state cleanly, prints short terminal status, and retries with 3s, 6s, then 12s backoff.
 
 ## Known Problems
 
-- Gemini Live can disconnect with `APIError 1006` / keepalive ping timeout.
-- App reconnects automatically after some Live API disconnects.
+- Gemini Live can disconnect with `APIError 1006` / keepalive ping timeout; the app should recover automatically with capped backoff.
 - DuckDuckGo/news search can rate-limit sometimes.
 - Mac permissions may be needed for:
   - Microphone

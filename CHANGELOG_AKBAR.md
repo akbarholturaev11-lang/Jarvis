@@ -1,5 +1,15 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - Gemini 1006 Reconnect Stability
+
+### Changed
+
+- Treated Gemini Live `1006` / keepalive disconnects as recoverable reconnect events instead of crash-style runtime errors.
+- Replaced long reconnect tracebacks with short terminal status lines.
+- Added capped reconnect backoff: 3s, 6s, then 12s.
+- Cleaned mic/audio queues and session audio state between reconnect attempts.
+- Made audio output stream stop/close cleanup tolerant of shutdown-time errors.
+
 ## 2026-07-10 - Audio Queue Overflow Guard
 
 ### Changed

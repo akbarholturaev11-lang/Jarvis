@@ -4,7 +4,7 @@ Current next steps for MARK XLVIII - AkbarCustom.
 
 ## Immediate Next Steps
 
-1. Stabilize Gemini Live reconnect / `APIError 1006` if needed.
+1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.
 2. Test Mac permissions:
    - Microphone
    - Accessibility
