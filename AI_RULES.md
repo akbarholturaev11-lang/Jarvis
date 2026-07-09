@@ -28,7 +28,7 @@ If a future AI assistant does not read these files first, its work is invalid.
 17. Final report to the user must be in Uzbek.
 18. Do not assume this project is a commercial product. It is Akbar's personal assistant experiment/custom version.
 19. Do not talk about "audience" or "market" unless the user explicitly asks.
-20. Focus on Mac compatibility and personal-use workflow.
+20. Keep Mac compatibility and personal-use workflow working, but do not hardcode Mac-only behavior when a universal platform layer is needed.
 
 ## Git Commit And Push Rules
 
@@ -106,3 +106,14 @@ UI language must be controlled through `config/settings.json` with `ui_language`
 - For message sending, never say a message was sent unless the correct target/contact/chat and the message placement or delivery were verified. If verification is not safe, ask for confirmation or report uncertainty.
 - If the user corrects Jarvis after an action, attach the correction to recent action context and avoid repeating the same target/tool mistake.
 - Warning filters must be narrow and source-specific. Do not hide unrelated warnings/errors, downgrade NumPy, reinstall PyQt6, or patch third-party package code for log cleanup.
+
+## Universal Device Intelligence
+
+- Always detect the current platform before platform-specific commands.
+- Never assume the device is macOS, Windows, or Linux without checking `DeviceProfile`.
+- Always consult `DeviceProfile` before app, browser, media, message, screen, camera, microphone, clipboard, or UI automation actions.
+- `DeviceProfile` means what this device can do. `SessionContext` means what happened recently. Tool verification means what actually succeeded.
+- Browser routing priority is explicit user browser, recent `SessionContext`, user preferred browser from `DeviceProfile`, system default browser from `DeviceProfile`, installed browser from `DeviceProfile`, then ask.
+- Prefer reusable platform adapters in `core/platform_adapters/` over one-off OS fixes.
+- Unknown, blocked, unsupported, or permission-dependent capability must be reported as unknown/blocked/unsupported/permission-dependent, not as success.
+- `config/device_profile.json` is local operational metadata and must stay gitignored. Commit only `config/device_profile.example.json`.

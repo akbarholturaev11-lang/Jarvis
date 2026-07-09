@@ -34,6 +34,10 @@ Instructions for Claude, Codex, and other AI coding agents working on MARK XLVII
 - Jarvis must never claim an action succeeded unless success was verified.
 - For message sending, never say a message was sent unless the correct target/contact/chat and message placement or delivery were verified.
 - Keep warning filters narrow and source-specific. Do not change dependency versions or patch third-party packages just to clean logs.
+- Always consult DeviceProfile before app/browser/media/message/screen/camera/microphone/clipboard/UI automation actions.
+- Never assume this device is macOS, Windows, Linux, Chrome/Safari-capable, Telegram-capable, media-control-capable, or permission-ready without DeviceProfile evidence.
+- DeviceProfile = what this device can do. SessionContext = what happened recently. Tool verification = what actually succeeded.
+- Prefer reusable platform adapters in `core/platform_adapters/` over one-off OS fixes. Unknown capability must stay unknown.
 
 ## After Work
 

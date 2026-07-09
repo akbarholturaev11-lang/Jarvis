@@ -1,5 +1,31 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - AkbarCustom v0.4 Universal Device Intelligence
+
+### Added
+
+- Added `core/device_profile.py` for DeviceProfile schema defaults, privacy scrubbing, summary/query helpers, routing decisions, and permission gates.
+- Added `core/environment_discovery.py` for first-run and refresh-time environment discovery.
+- Added `core/platform_adapters/` with base, macOS, Windows, and Linux adapters.
+- Added `config/device_profile.example.json` and gitignored local `config/device_profile.json`.
+- Added `device_profile` tool plus direct local refresh/query handling for typed and dashboard commands.
+- Added `tests/test_device_profile.py` for profile creation, schema validation, platform detection, browser/media/message routing, permission gating, privacy, and `.gitignore` protection.
+- Added `UNIVERSAL_COMPATIBILITY_AUDIT.md`.
+
+### Changed
+
+- `main.py` now creates/loads DeviceProfile at startup and adds a concise DeviceProfile context to the model prompt.
+- Tool dispatch now consults `SessionContext` first, then `DeviceProfile`, then tool verification for platform-sensitive actions.
+- Browser routing no longer assumes Chrome/Safari; it uses explicit browser, recent session browser, preferred/default browser, installed browser, or asks.
+- App, media, messaging, screen/camera, and UI automation paths now have DeviceProfile preflight checks.
+- `actions/media_control.py` now uses the platform adapter for non-macOS media control instead of a Mac-only design.
+- Updated `AI_RULES.md`, `AGENTS.md`, `CLAUDE.md`, `PROJECT_MEMORY.md`, `PROJECT_MAP.md`, `NEXT_STEPS.md`, and `core/prompt.txt` with DeviceProfile rules.
+
+### Privacy
+
+- DeviceProfile stores operational metadata only and must not store API keys, tokens, passwords, full conversations, screenshots, audio, or private message/contact contents.
+- Local `config/device_profile.json` remains ignored by git; only the safe example schema is committed.
+
 ## 2026-07-10 - AkbarCustom v0.3.1 Context Routing, Media Control, Log Cleanup
 
 ### Added

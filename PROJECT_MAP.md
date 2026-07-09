@@ -18,6 +18,8 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Audio input/output constants and queues in `main.py`
    - Reconnect/session handling in `main.py`
    - Runtime action history, follow-up intent routing, corrections, and truthful result status in `core/session_context.py`
+   - Device intelligence and environment discovery in `core/device_profile.py` and `core/environment_discovery.py`
+   - Platform adapters in `core/platform_adapters/`
 
 4. Tool/action layer
    - `actions/*.py`
@@ -38,6 +40,8 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
 7. Config layer
    - `config/api_keys.json`
    - `config/settings.json`
+   - `config/device_profile.json` (local, gitignored)
+   - `config/device_profile.example.json`
    - `config/certs/`
 
 8. Local runtime
@@ -68,10 +72,17 @@ main.py
 -> actions/dev_agent.py
 -> actions/proactive.py
 -> core/session_context.py
+-> core/device_profile.py
+-> core/environment_discovery.py
+-> core/platform_adapters/base.py
+-> core/platform_adapters/macos.py
+-> core/platform_adapters/windows.py
+-> core/platform_adapters/linux.py
 -> core/i18n.py
 -> core/prompt.txt
 -> config/api_keys.json
 -> config/settings.json
+-> config/device_profile.json
 ```
 
 More detailed runtime relationship:
@@ -85,6 +96,7 @@ main.py
 -> streams microphone audio to Gemini
 -> receives audio/text/tool calls from Gemini
 -> dispatches tool calls to actions/*.py
+-> consults core/session_context.py and core/device_profile.py before platform-sensitive tool execution
 -> reads/writes memory through memory/memory_manager.py
 ```
 
@@ -110,10 +122,15 @@ main.py
 - Resource guide: `AI_RESOURCES.md`
 - Prompt: `core/prompt.txt`
 - Runtime session context: `core/session_context.py`
+- Device profile schema/routing: `core/device_profile.py`
+- Environment discovery: `core/environment_discovery.py`
+- Platform adapters: `core/platform_adapters/`
 - Media control action: `actions/media_control.py`
 - UI localization: `core/i18n.py`
 - Secret config: `config/api_keys.json`
 - Safe local settings: `config/settings.json`
+- Local device profile: `config/device_profile.json`
+- Safe device profile template: `config/device_profile.example.json`
 
 ### Edges
 
@@ -128,6 +145,9 @@ main.py
 - `main.py` owns a runtime `SessionContext` instance from `core/session_context.py`.
 - `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file/media targets, user corrections, and verified/failed/uncertain/confirmation result status.
 - `SessionContext` resolves vague follow-up commands before generic tool routing, including media stop/pause, browser close, message send confirmation, and correction handling.
+- `DeviceProfile` records current device capability metadata and is consulted before platform-sensitive app/browser/media/message/permission actions.
+- `EnvironmentDiscovery` creates or refreshes `config/device_profile.json` using the current platform adapter.
+- Platform adapters detect OS-specific facts through `base.py`, `macos.py`, `windows.py`, and `linux.py`.
 - `actions/media_control.py` sends safe media pause/play-pause commands on macOS and only reports verified success when playback state can be confirmed.
 - `main.py` reads the Gemini key from `config/api_keys.json`.
 - `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.
@@ -147,6 +167,7 @@ main.py
 
 - `main.py` is HIGH RISK. It controls Gemini Live, audio, reconnects, tool declarations, and dispatch.
 - `config/api_keys.json` is SECRET. Never print, commit, or edit it unless Akbar explicitly asks.
+- `config/device_profile.json` is LOCAL OPERATIONAL METADATA. It is gitignored because it can contain local paths/app facts. Commit only the example schema.
 - `.venv/` is DO NOT TOUCH. It is local runtime state.
 - `memory/long_term.json` is PRIVATE. Never commit, expose, overwrite, or reset it unless Akbar explicitly asks.
 - `ui.py` is MEDIUM risk. UI changes can affect the Mac app experience.

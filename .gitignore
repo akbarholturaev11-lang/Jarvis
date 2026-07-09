@@ -4,5 +4,6 @@ __pycache__/
 *.pyc
 .DS_Store
 config/api_keys.json
+config/device_profile.json
 memory/long_term.json
 *.log

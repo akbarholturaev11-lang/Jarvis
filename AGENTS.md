@@ -31,6 +31,10 @@ If any of these files are missing, stop and ask Akbar before making code changes
 - On macOS, pause media first and never close/kill apps for media control without Akbar's confirmation.
 - Jarvis must never claim an action succeeded unless success was verified.
 - Warning filters must stay narrow and source-specific; do not hide unrelated warnings or change dependency versions for log cleanup.
+- Always detect platform through DeviceProfile before platform-specific app/browser/media/message/screen/camera/microphone/UI automation commands.
+- Never assume macOS, Windows, Linux, Chrome, Safari, Telegram, permissions, or media controls exist without DeviceProfile evidence.
+- DeviceProfile = what this device can do. SessionContext = what happened recently. Tool verification = what actually succeeded.
+- Prefer reusable platform adapters over one-off OS fixes. Unknown capability must remain unknown, not fake success.
 
 ## Git Commit And Push Rules
 
@@ -60,6 +64,7 @@ Implementation changes should be logged in `CHANGELOG_AKBAR.md`.
 - For vague follow-ups like `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `qayerga yubording?`, and `nima qilding?`, use the last 2-5 meaningful action records before selecting a tool.
 - If the last relevant action is media playback, resolve stop/pause/o'chir to media control first.
 - If media/browser/message context is low-confidence, ask clarification instead of guessing.
+- For platform-sensitive commands, consult DeviceProfile after SessionContext and before tool execution.
 - Verified success may be reported as `Bajarildi.` Failed actions: `Bajara olmadim.` Uncertain actions: `Aniq tasdiqlay olmadim.` Confirmation needed: `Tasdiqlaysizmi?`
 - For message sending, do not report `sent` unless the contact/chat and message placement or delivery were verified.
 

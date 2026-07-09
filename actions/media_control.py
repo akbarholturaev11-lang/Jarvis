@@ -3,6 +3,8 @@ import subprocess
 import time
 from typing import Any
 
+from core.environment_discovery import select_platform_adapter
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -140,6 +142,7 @@ def media_control(
     response=None,
     player=None,
     session_memory=None,
+    device_profile=None,
 ) -> str:
     params = parameters or {}
     action = _clean(params.get("action") or "pause").lower().replace("-", "_")
@@ -157,15 +160,13 @@ def media_control(
         player.write_log(f"[Media] pause requested: {target_label}")
 
     if _OS != "Darwin":
-        if _PYAUTOGUI:
-            try:
-                pyautogui.press("playpause")
-                return (
-                    "Media pause/play-pause command sent, but playback status was not verified."
-                )
-            except Exception as e:
-                return f"Could not send media pause command: {e}"
-        return "Media pause is unavailable because pyautogui is not installed."
+        adapter = select_platform_adapter()
+        ok, detail = adapter.media_pause(target_app)
+        if ok is False:
+            return f"Could not send media pause command: {detail}"
+        if ok is None:
+            return detail or "Media pause command sent, but playback status was not verified."
+        return "Media paused and verified." if ok else "Media pause was not verified."
 
     native_ok, native_detail = _send_macos_media_pause()
     time.sleep(0.2)

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-07-10T00:00:00+00:00",
+  "updated_at": "2026-07-10T00:00:00+00:00",
+  "platform": {
+    "os": "macos/windows/linux/unknown",
+    "version": "unknown",
+    "architecture": "unknown",
+    "python_version": "unknown",
+    "venv_active": false,
+    "venv_path": "",
+    "shell": "unknown",
+    "desktop_session": {
+      "gui_available": false,
+      "desktop_environment": "unknown",
+      "session_type": "unknown",
+      "display_server": "unknown"
+    }
+  },
+  "capabilities": {
+    "gui_available": false,
+    "desktop": {
+      "available": false,
+      "desktop_environment": "unknown",
+      "session_type": "unknown",
+      "display_server": "unknown"
+    },
+    "app_launch": {
+      "supported": false,
+      "method": "open/start/xdg-open/unknown",
+      "verified": false
+    },
+    "browser_control": {
+      "supported": false,
+      "default_browser": "unknown",
+      "preferred_browser": "",
+      "installed_browsers": []
+    },
+    "media_control": {
+      "supported": false,
+      "method": "system_events/windows_media_key/playerctl/unknown",
+      "verified": false,
+      "status": "unknown"
+    },
+    "active_window": {
+      "supported": false,
+      "method": "applescript/pygetwindow/wmctrl/unknown",
+      "status": "unknown",
+      "requires_permission": false
+    },
+    "screen_capture": {
+      "status": "available/blocked/unknown",
+      "requires_permission": true,
+      "method": "unknown"
+    },
+    "camera": {
+      "status": "available/blocked/unknown",
+      "requires_permission": true,
+      "method": "unknown"
+    },
+    "audio_devices": {
+      "input": "available/blocked/unknown",
+      "output": "available/blocked/unknown",
+      "requires_permission": true,
+      "method": "unknown"
+    },
+    "clipboard": {
+      "status": "available/unknown/unsupported",
+      "method": "unknown"
+    },
+    "ui_automation": {
+      "status": "available/permission_required/unsupported/unknown",
+      "method": "unknown",
+      "requires_permission": false
+    }
+  },
+  "apps": {
+    "browsers": [],
+    "messaging": [],
+    "installed": [],
+    "common_aliases": {}
+  },
+  "permissions": {
+    "microphone": "available/blocked/unknown",
+    "camera": "available/blocked/unknown",
+    "screen_recording": "available/blocked/unknown",
+    "accessibility": "available/blocked/unknown",
+    "automation": "available/blocked/unknown"
+  },
+  "project": {
+    "project_root": "/safe/project/root/example",
+    "memory_docs": []
+  }
+}

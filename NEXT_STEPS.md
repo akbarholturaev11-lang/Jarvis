@@ -10,22 +10,30 @@ Current next steps for MARK XLVIII - AkbarCustom.
    - Accessibility
    - Screen Recording
    - Camera
-3. Test core commands:
+3. Manually verify Universal Device Intelligence:
+   - Start with no `config/device_profile.json` and confirm it is created.
+   - Ask `qaysi qurilmada ishlayapsan?`
+   - Ask `asosiy browser qaysi?`
+   - Ask `Telegram bormi?`
+   - Ask `musiqani to'xtat`
+   - Ask `qurilmani qayta tekshir`
+   - Confirm unknown permissions/capabilities are reported honestly.
+4. Test core commands:
    - Open Safari
    - Look at my screen
    - Open Telegram
    - Set reminder
    - Web search
    - File processor
-4. Review any remaining English-only action/tool result wording that should be promoted into the shared English/Russian UI dictionary.
-5. Add Akbar-specific assistant personality/rules.
-6. Manually verify UI language switching in the full Mac app with restart: Russian -> English -> Russian.
-7. Manually verify v0.3.1 runtime routing in the Mac app:
+5. Review any remaining English-only action/tool result wording that should be promoted into the shared English/Russian UI dictionary.
+6. Add Akbar-specific assistant personality/rules.
+7. Manually verify UI language switching in the full Mac app with restart: Russian -> English -> Russian.
+8. Manually verify v0.3.1 runtime routing in the Mac app:
    - YouTube/media play then `to'xtat` resolves to media pause, not close/settings close.
    - `hali ham o'ynayapti` attaches correction and uses safe fallback without claiming success.
    - message `yubor` follow-ups ask confirmation unless target/chat/delivery are verified.
    - terminal is no longer flooded by repeated sounddevice NumPy deprecation warnings.
-8. Later add custom features.
+9. Later add custom features.
 
 ## Context System Follow-Up
 

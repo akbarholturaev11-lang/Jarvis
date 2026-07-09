@@ -55,6 +55,7 @@ Current known status as of 2026-07-10:
   - Screen Recording
   - Camera
 - `config/api_keys.json` is local and must never be committed.
+- `config/device_profile.json` is local operational metadata and must never be committed. It may contain private local paths or installed app facts. Commit only `config/device_profile.example.json`.
 - `memory/long_term.json` is local personal memory and must never be committed.
 
 ## Current Purpose
@@ -78,9 +79,14 @@ The initial context foundation is markdown-based instead of an external Graphiti
 - `actions/*.py` contains tool implementations for app control, browser control, screen capture, reminders, web search, file processing, code help, proactive behavior, and related tasks.
 - `actions/media_control.py` provides safe media pause/play-pause behavior, especially for macOS. It must pause first and must not close/kill apps without confirmation.
 - `core/session_context.py` stores runtime-only short-term action context for the current process. It keeps the last 5 meaningful actions, summarizes sensitive parameters, tracks recent browser/app/message/file/media targets, records verified/failed/uncertain/confirmation status, resolves vague follow-up intents, and attaches user corrections.
+- `core/device_profile.py` stores DeviceProfile schema/defaults, privacy scrubbing, summary/query helpers, permission gates, and routing decisions for browser/app/media/message commands.
+- `core/environment_discovery.py` creates or refreshes `config/device_profile.json` on first run and through refresh commands.
+- `core/platform_adapters/` contains the reusable platform interface and macOS/Windows/Linux adapters for OS info, app/browser/message detection, default browser, media control, launch method, active window capability, screen/camera/audio/clipboard/UI automation capability, and permissions.
 - `memory/memory_manager.py` stores and formats long-term user memory in `memory/long_term.json`.
 - `core/prompt.txt` controls assistant behavior, language, and tool routing rules.
 - `config/api_keys.json` stores local secret configuration and must not be touched unless Akbar explicitly asks.
+- `config/device_profile.json` stores local safe operational metadata and is gitignored.
+- `config/device_profile.example.json` is the committed schema/template.
 
 ## AI Assistant Rule
 
@@ -118,6 +124,28 @@ Jarvis must never claim action success unless the tool result is `result_status=
 For message sending, Jarvis must not say a message was sent unless the contact/chat and message placement or delivery were verified. Desktop automation that cannot verify the contact/chat should return an uncertain draft/attempt result instead of a sent claim.
 
 For macOS media control, Jarvis should send a safe media pause/play-pause command first. If browser media can be verified, it may return verified success; otherwise it must report uncertainty, for example that music stopping could not be confirmed. Closing or killing media apps requires explicit confirmation.
+
+## DeviceProfile And Environment Discovery Rule
+
+Jarvis has a universal Device Intelligence layer. On first run, `core/environment_discovery.py` creates `config/device_profile.json` through `core/platform_adapters/`. Refresh commands rebuild it safely:
+
+- `refresh device profile`
+- `rescan device`
+- `scan my computer`
+- `qurilmani qayta tekshir`
+- `kompyuterni qayta o'rgan`
+- `Mac'ni qayta tekshir`
+- `Windows'ni qayta tekshir`
+
+`DeviceProfile` records operational metadata only: OS, version, architecture, Python/venv, shell, GUI/session type, available browsers, default/preferred browser, messaging apps, media control method, app launch method, active window method, screen/camera/audio/clipboard/UI automation capabilities, permission checklist, and safe project resource paths.
+
+Command routing must use this order:
+
+1. `SessionContext` for recent user/action target.
+2. `DeviceProfile` for what this device supports.
+3. Tool result verification for what actually succeeded.
+
+Browser routing must prefer explicit user browser, then recent session browser, user preferred browser, system default browser, installed browser, then ask. App/media/message/screen/camera/mic/UI automation commands must not assume a capability exists; unknown means unknown, not success.
 
 ## GitHub And Commit Workflow
 

@@ -37,6 +37,20 @@ import sounddevice as sd
 from google import genai
 from google.genai import types
 from ui import JarvisUI
+from core.device_profile import (
+    answer_device_profile_query,
+    check_permission_gate,
+    ensure_device_profile,
+    format_device_profile_for_prompt,
+    format_device_profile_summary,
+    is_device_profile_query_request,
+    is_device_profile_refresh_request,
+    refresh_device_profile,
+    resolve_app_route,
+    resolve_browser_route,
+    resolve_media_route,
+    resolve_messaging_route,
+)
 from core.i18n import change_ui_language, detect_ui_language_command
 from core.session_context import (
     SessionContext,
@@ -190,6 +204,28 @@ TOOL_DECLARATIONS = [
                 }
             },
             "required": ["language"]
+        }
+    },
+    {
+        "name": "device_profile",
+        "description": (
+            "Reads or refreshes the local DeviceProfile. Use when the user asks what device/system "
+            "Jarvis is running on, what browser is default, whether Telegram/WhatsApp/etc. is "
+            "installed, or asks to refresh/rescan/scan the device. Never guess platform facts."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {
+                    "type": "STRING",
+                    "description": "summary | query | refresh"
+                },
+                "query": {
+                    "type": "STRING",
+                    "description": "Optional specific question, e.g. default browser or Telegram availability"
+                }
+            },
+            "required": ["action"]
         }
     },
     {
@@ -624,6 +660,8 @@ class JarvisLive:
         self._session_tasks      = set()
         self.session_context     = SessionContext()
         self._active_user_text   = ""
+        self.device_profile      = ensure_device_profile(BASE_DIR)
+        print(format_device_profile_summary(self.device_profile))
 
     def _make_remote_key(self):
         """Called from Qt main thread when user presses Remote Control."""
@@ -651,11 +689,31 @@ class JarvisLive:
         self.ui.write_log(f"Jarvis: {msg}")
         return True
 
+    def _handle_device_profile_local_command(self, text: str, log_web_user: bool = False) -> bool:
+        if not (is_device_profile_refresh_request(text) or is_device_profile_query_request(text)):
+            return False
+        if is_device_profile_refresh_request(text):
+            self.device_profile = refresh_device_profile(BASE_DIR)
+            msg = (
+                "Device profile refreshed. / Профиль устройства обновлен.\n"
+                + format_device_profile_summary(self.device_profile)
+            )
+        else:
+            msg = answer_device_profile_query(self.device_profile, text)
+        if log_web_user:
+            self.ui.write_log(f"[Web]: {text}")
+        self.ui.write_log(f"Jarvis: {msg}")
+        if self.session:
+            self.speak(msg)
+        return True
+
     def _on_text_command(self, text: str):
         text = _clean_transcript(str(text or ""))
         if not text:
             return
         if self._handle_ui_language_command(text):
+            return
+        if self._handle_device_profile_local_command(text):
             return
         if not self._loop or not self.session:
             return
@@ -873,6 +931,7 @@ class JarvisLive:
         if mem_str:
             parts.append(mem_str)
         parts.append(self.session_context.build_prompt_context())
+        parts.append(format_device_profile_for_prompt(self.device_profile))
         parts.append(sys_prompt)
 
         return types.LiveConnectConfig(
@@ -907,6 +966,124 @@ class JarvisLive:
         if name in {"computer_settings", "computer_control"}:
             return f"computer action: {args.get('action') or args.get('description') or ''}"
         return f"{name}: {args.get('action') or args.get('description') or ''}"
+
+    def _device_profile_tool(self, args: dict, user_text: str) -> str:
+        action = str(args.get("action") or "summary").strip().lower()
+        query = str(args.get("query") or user_text or "").strip()
+        if action in {"refresh", "rescan", "scan"} or is_device_profile_refresh_request(query):
+            self.device_profile = refresh_device_profile(BASE_DIR)
+            return (
+                "Device profile refreshed. / Профиль устройства обновлен.\n"
+                + format_device_profile_summary(self.device_profile)
+            )
+        if action == "query" or query:
+            return answer_device_profile_query(self.device_profile, query)
+        return format_device_profile_summary(self.device_profile)
+
+    def _apply_device_profile_preflight(
+        self,
+        name: str,
+        args: dict,
+        user_text: str,
+    ) -> tuple[dict, str, str | None]:
+        notes: list[str] = []
+        result: str | None = None
+
+        if name == "browser_control":
+            route = resolve_browser_route(
+                self.device_profile,
+                args.get("browser", ""),
+                self.session_context,
+            )
+            status = route.get("status")
+            if status == "ok":
+                if not args.get("browser"):
+                    args["browser"] = route.get("browser", "")
+                    notes.append(
+                        f"browser={args['browser']} from DeviceProfile/{route.get('source')}"
+                    )
+            elif status == "failed":
+                result = (
+                    f"{route.get('reason')} I will not assume Chrome/Safari exists. "
+                    "Bajara olmadim."
+                )
+            else:
+                result = (
+                    "Confirmation needed: no installed browser is clear in DeviceProfile. "
+                    "Qaysi browserdan foydalanay? Tasdiqlaysizmi?"
+                )
+
+        elif name == "open_app":
+            route = resolve_app_route(self.device_profile, args.get("app_name", ""))
+            if route.get("status") == "ok":
+                if route.get("app_name") and route["app_name"] != args.get("app_name"):
+                    args["app_name"] = route["app_name"]
+                    notes.append("app_name normalized from DeviceProfile aliases")
+                notes.append(f"app_launch={route.get('method', 'unknown')} from DeviceProfile")
+            else:
+                result = f"{route.get('reason', 'Application not found in DeviceProfile.')} Bajara olmadim."
+
+        elif name == "media_control":
+            route = resolve_media_route(self.device_profile)
+            if route.get("status") == "ok":
+                args.setdefault("device_media_method", route.get("method", "unknown"))
+                notes.append(f"media_method={route.get('method', 'unknown')} from DeviceProfile")
+            else:
+                result = (
+                    f"{route.get('reason')} Aniq tasdiqlay olmadim. "
+                    "I will not close or kill an app without confirmation."
+                )
+
+        elif name == "send_message":
+            confirmed = str(args.get("confirmed", "false")).lower() in (
+                "true",
+                "1",
+                "yes",
+                "confirm",
+            )
+            route = resolve_messaging_route(
+                self.device_profile,
+                args.get("platform", ""),
+                args.get("receiver", ""),
+                confirmed,
+            )
+            if route.get("status") == "failed":
+                result = f"{route.get('reason')} Bajara olmadim."
+            elif route.get("status") == "needs_confirmation" and not confirmed:
+                result = f"Confirmation needed: {route.get('reason')} Tasdiqlaysizmi?"
+            else:
+                gate = check_permission_gate(self.device_profile, "ui_automation")
+                if not gate.get("allowed"):
+                    result = (
+                        f"UI automation is {gate.get('status')}; message automation is not safe. "
+                        "Aniq tasdiqlay olmadim."
+                    )
+                else:
+                    notes.append("messaging app checked through DeviceProfile")
+
+        elif name == "screen_process":
+            angle = str(args.get("angle") or "screen").lower()
+            capability = "camera" if angle == "camera" else "screen_capture"
+            gate = check_permission_gate(self.device_profile, capability)
+            if not gate.get("allowed"):
+                result = (
+                    f"{capability} is {gate.get('status')} in DeviceProfile. "
+                    "Permission or capability must be checked first. Aniq tasdiqlay olmadim."
+                )
+            elif gate.get("requires_permission"):
+                notes.append(f"{capability} may require platform permission")
+
+        elif name in {"computer_settings", "computer_control", "desktop_control"}:
+            gate = check_permission_gate(self.device_profile, "ui_automation")
+            if not gate.get("allowed"):
+                result = (
+                    f"UI automation is {gate.get('status')} in DeviceProfile. "
+                    "Aniq tasdiqlay olmadim."
+                )
+            elif gate.get("requires_permission"):
+                notes.append("ui_automation may require platform permission")
+
+        return args, "; ".join(notes), result
 
     async def _execute_tool(self, fc, user_text: str = "") -> types.FunctionResponse:
         response_name = fc.name
@@ -986,6 +1163,17 @@ class JarvisLive:
                     "blocked vague follow-up with low-confidence SessionContext"
                 )
 
+        if preflight_result is None and name != "save_memory":
+            args, device_note, device_preflight = self._apply_device_profile_preflight(
+                name,
+                args,
+                user_text,
+            )
+            if device_note:
+                context_note = (context_note + "; " if context_note else "") + device_note
+            if device_preflight is not None:
+                preflight_result = device_preflight
+
         print(f"[JARVIS] 🔧 {name}  {args}")
         if context_note:
             print(f"[SessionContext] Applied: {context_note}")
@@ -1020,6 +1208,10 @@ class JarvisLive:
                 result = change_ui_language(str(args.get("language", "")))
                 self.ui.write_log(f"Jarvis: {result}")
 
+            elif name == "device_profile":
+                result = self._device_profile_tool(args, user_text)
+                self.ui.write_log(f"Jarvis: {result}")
+
             elif name == "weather_report":
                 r = await loop.run_in_executor(None, lambda: weather_action(parameters=args, player=self.ui))
                 result = r or UNVERIFIED_TOOL_RESULT
@@ -1045,7 +1237,16 @@ class JarvisLive:
                 result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "media_control":
-                r = await loop.run_in_executor(None, lambda: media_control(parameters=args, response=None, player=self.ui, session_memory=self.session_context))
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: media_control(
+                        parameters=args,
+                        response=None,
+                        player=self.ui,
+                        session_memory=self.session_context,
+                        device_profile=self.device_profile,
+                    ),
+                )
                 result = r or "Media pause command returned no verification result; exact status is uncertain."
 
             elif name == "screen_process":
@@ -1585,6 +1786,8 @@ class JarvisLive:
                 if not text:
                     continue
                 if self._handle_ui_language_command(text, log_web_user=True):
+                    continue
+                if self._handle_device_profile_local_command(text, log_web_user=True):
                     continue
                 # Wait up to 8s for session to become ready after a wake
                 for _ in range(80):

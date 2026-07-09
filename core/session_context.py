@@ -134,6 +134,11 @@ _SUCCESS_STARTS = (
     "done:",
     "media paused and verified",
     "media playback paused and verified",
+    "device profile refreshed",
+    "[device profile summary]",
+    "default browser from deviceprofile",
+    "telegram is detected in deviceprofile",
+    "telegram is not detected in deviceprofile",
     "active browser",
     "all browsers closed",
 )
