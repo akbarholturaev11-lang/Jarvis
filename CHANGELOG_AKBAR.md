@@ -1,5 +1,14 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-10 - Reconnect Session Isolation
+
+### Changed
+
+- Added explicit Gemini Live session startup and cleanup helpers in `main.py`.
+- Added session generation guards for mic, phone audio, send, receive, playback, briefing, monitor, and proactive tasks.
+- Ensured stale mic callbacks from an old session cannot enqueue audio into a new session queue.
+- Ensured reconnect starts with fresh queues, reset transient flags, tracked session tasks, and a newly built Live audio config.
+
 ## 2026-07-10 - Gemini 1006 Reconnect Stability
 
 ### Changed
