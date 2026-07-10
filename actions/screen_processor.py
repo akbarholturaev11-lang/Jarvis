@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from core.runtime_warnings import install_runtime_warning_filters
+
+install_runtime_warning_filters()
+
 import numpy as np
 import sounddevice as sd
 

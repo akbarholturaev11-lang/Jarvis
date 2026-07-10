@@ -13,6 +13,10 @@ import queue as _queue
 import threading
 from typing import Callable, Optional
 
+from core.runtime_warnings import install_runtime_warning_filters
+
+install_runtime_warning_filters()
+
 import numpy as np
 import sounddevice as sd
 

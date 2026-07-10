@@ -26,7 +26,7 @@ It's not just an assistant — it's an extension of your digital life.
 | 👁️ Visual Awareness | Real-time screen capture and webcam vision piped into your main Gemini session |
 | 🧠 Persistent Memory | Deeply remembers projects, preferences, and personal context across sessions |
 | ⌨️ Hybrid Input | Seamlessly switch between keyboard typing and voice commands |
-| 🌅 Morning Briefing | On first boot: greets you, reads the time, fetches live news headlines, and checks weather |
+| 🌅 Personal Operations Briefing | On first boot: greets you, reads safe local project/Git status, and reports unavailable external sources honestly |
 | 🔔 Proactive Check-ins | After 15 minutes of silence JARVIS checks context and offers something genuinely useful — no hardcoded rules, Gemini decides |
 | 📊 Hardware Monitoring | Continuous CPU, RAM, GPU and temperature telemetry with localized voice alerts when thresholds are breached |
 | 🌤️ Weather Report | Live weather data for your city, personalized from memory |
@@ -59,8 +59,8 @@ News queries now run **Gemini Grounded Search and DuckDuckGo news simultaneously
 ### 🗞️ Real News Articles (Not Homepages)
 DDG news search was previously using `ddgs.text()`, which returned website homepage URLs for news queries. Mark XLVIII switches to `ddgs.news()`, which returns actual article URLs, titles, snippets, and source names — exactly what you want in a news briefing.
 
-### 🌅 Two-Phase Startup Briefing — Runs Concurrently
-The startup briefing now sends Phase 2 (news fetch) while Phase 1 audio (the greeting) is still playing. Previously, Phase 2 waited for Phase 1 to fully complete. The 1.5-second overlap means the news headline is ready by the time JARVIS finishes saying "Good morning."
+### 🌅 Two-Phase Personal Operations Briefing
+The AkbarCustom startup briefing now prepares verified local project/Git context while the greeting is playing. Generic world news is separate and runs only after an explicit news request. Telegram, Instagram, Messenger, and Zerno stay `not_configured` until real adapters are supplied; no placeholder statistics are generated.
 
 ### 🔁 Smarter Reconnection — Exponential Backoff
 Network timeouts now use exponential backoff: 3s → 6s → 12s → 60s (capped). Each retry shows a Turkish-language status message in the UI ("Bağlantı kurulamadı — Xs sonra tekrar deneniyor"). Previously, a dropped connection would loop tightly and show no useful information.
@@ -112,6 +112,7 @@ Mark XLVIII/
 ├── setup.py                 # First-run configuration wizard
 ├── actions/
 │   ├── web_search.py        # Gemini + DDG parallel search (news, research, price, compare)
+│   ├── personal_briefing.py # Safe local operations report + explicit external source status
 │   ├── screen_processor.py  # Screen capture & webcam vision via Gemini Live
 │   ├── reminder.py          # OS-native scheduled notifications
 │   ├── system_monitor.py    # CPU / RAM / GPU / temperature telemetry
@@ -132,6 +133,8 @@ Mark XLVIII/
 │   └── proactive.py        # Proactive silence-break suggestions
 ├── memory/                  # Persistent key-value memory store
 ├── core/
+│   ├── briefing_routing.py  # Narrow Personal Briefing / world-news route policy
+│   ├── runtime_warnings.py  # Exact source-specific runtime warning filter
 │   └── prompt.txt           # JARVIS personality and tool-routing rules
 └── config/
     └── api_keys.json        # API key and system configuration

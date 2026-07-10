@@ -1,5 +1,34 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - AkbarCustom v0.5 Personal Operations Briefing
+
+### Audited
+
+- Added `COMMAND_ARCHITECTURE_AUDIT.md` with the real voice/text input, Gemini function routing, central dispatch, startup/news, prompt, SessionContext, DeviceProfile, truthfulness, and sounddevice warning flows.
+- Confirmed normal intent detection is Gemini function calling, with local handlers only for UI language and DeviceProfile; there is no existing `men uydaman` command handler.
+- Confirmed generic world news was hardcoded into the once-per-process startup phase in `main.py`.
+
+### Added
+
+- Added `core/briefing_routing.py`, a narrow policy inside the existing command path for Personal Briefing phrases, explicit world news, named external-statistics requests, and defensive wrong-tool correction.
+- Added `actions/personal_briefing.py` with an allowlisted `local_projects` adapter and explicit offline Telegram, Instagram, Messenger, and Zerno `not_configured` adapters.
+- Added real central-dispatch, startup, source safety, no-fake-statistics, local docs/Git, and warning-filter tests.
+- Added `core/runtime_warnings.py` for the exact sounddevice NumPy 2.5 shape deprecation.
+
+### Changed
+
+- Automatic startup now collects Personal Operations Briefing locally and gives Gemini only the verified report for a short spoken summary. It no longer promises or requests world news.
+- `men uydaman`, `uydaman`, `ishga qaytdim`, `loyihalarimni tekshir`, `statistikani ayt`, and `personal briefing` now route to the registered `personal_briefing` tool.
+- Explicit `dunyo yangiliklari`, `world news`, and `latest news` remain on `web_search(mode="news")`; implicit generic world-news calls are guarded.
+- Personal Briefing returns evidence-based operational `foyda`, `zarar`, and `next_action`. Missing external integrations return `not_configured` and `statistics=None` without network calls or placeholder numbers.
+- The exact sounddevice warning filter is installed before all project sounddevice imports and reapplied immediately before the microphone stream; unrelated deprecations remain visible.
+- Added English/Russian Personal Briefing content-title and runtime-log localization.
+
+### Safety
+
+- No API keys, private long-term memory, dependency versions, `.venv` files, third-party package code, or unrelated reconnect/audio logic were changed.
+- Personal Briefing reads only its allowlisted docs and read-only Git metadata; paths from Git status are counted but not exposed.
+
 ## 2026-07-10 - AkbarCustom v0.4 Universal Device Intelligence
 
 ### Added

@@ -107,6 +107,16 @@ UI language must be controlled through `config/settings.json` with `ui_language`
 - If the user corrects Jarvis after an action, attach the correction to recent action context and avoid repeating the same target/tool mistake.
 - Warning filters must be narrow and source-specific. Do not hide unrelated warnings/errors, downgrade NumPy, reinstall PyQt6, or patch third-party package code for log cleanup.
 
+## Personal Operations Briefing
+
+- Automatic startup must prepare Akbar's Personal Operations Briefing from verified local sources. It must not fetch generic world news.
+- `men uydaman`, `uydaman`, `ishga qaytdim`, `loyihalarimni tekshir`, `statistikani ayt`, and `personal briefing` must use the existing `personal_briefing` tool path.
+- Generic world news may run only for an explicit request such as `dunyo yangiliklari`, `world news`, or `latest news`.
+- Personal Briefing local reads must stay on the documented allowlist and read-only Git metadata. Never read `config/api_keys.json` or `memory/long_term.json` for briefing statistics.
+- Telegram, Instagram, Messenger, Zerno, or future external statistics must come from a real configured adapter. Missing API/token/config means `not_configured`; never invent counts, revenue, engagement, or other metrics.
+- `foyda`, `zarar`, and `next_action` must be evidence-based operational fields. Do not present them as financial profit/loss without a real financial source.
+- Keep the briefing intent guard inside the existing Gemini tool/`_execute_tool` route. Do not add a text-only parallel command system that leaves voice commands unprotected.
+
 ## Universal Device Intelligence
 
 - Always detect the current platform before platform-specific commands.

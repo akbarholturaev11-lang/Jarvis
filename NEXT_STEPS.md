@@ -32,8 +32,15 @@ Current next steps for MARK XLVIII - AkbarCustom.
    - YouTube/media play then `to'xtat` resolves to media pause, not close/settings close.
    - `hali ham o'ynayapti` attaches correction and uses safe fallback without claiming success.
    - message `yubor` follow-ups ask confirmation unless target/chat/delivery are verified.
-   - terminal is no longer flooded by repeated sounddevice NumPy deprecation warnings.
-9. Later add custom features.
+9. Manually verify Personal Operations Briefing in the full Gemini Live app:
+   - Start the app and confirm startup gives Personal Operations Briefing, not generic world news.
+   - Say `men uydaman` and confirm the `personal_briefing` route is used.
+   - Say `dunyo yangiliklarini ayt` and confirm the existing world-news route is used.
+   - Ask `Telegram kanalim statistikasi qanday?` and confirm `not_configured` with no numbers.
+   - Confirm local project output contains evidence-based `foyda`, `zarar`, and `next_action`.
+10. Confirm a fresh runtime terminal is not flooded by the sounddevice NumPy 2.5 shape warning; unrelated warnings must remain visible.
+11. Supply an official Zerno API contract/config only before implementing a real network adapter. Telegram/Instagram/Messenger also remain `not_configured` until real supported APIs are provided.
+12. Later add custom features.
 
 ## Context System Follow-Up
 

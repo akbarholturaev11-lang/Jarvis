@@ -22,16 +22,12 @@ import time
 import json
 import sys
 import traceback
-import warnings
 from datetime import datetime
 from pathlib import Path
 
-warnings.filterwarnings(
-    "ignore",
-    message=r"Setting the shape on a NumPy array has been deprecated.*",
-    category=DeprecationWarning,
-    module=r"sounddevice",
-)
+from core.runtime_warnings import install_runtime_warning_filters
+
+install_runtime_warning_filters()
 
 import sounddevice as sd
 from google import genai
@@ -52,6 +48,11 @@ from core.device_profile import (
     resolve_messaging_route,
 )
 from core.i18n import change_ui_language, detect_ui_language_command
+from core.briefing_routing import (
+    DEFAULT_PERSONAL_SOURCES,
+    apply_briefing_route,
+    build_briefing_route_hint,
+)
 from core.session_context import (
     SessionContext,
     detect_active_app,
@@ -82,6 +83,7 @@ from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
 from actions.system_monitor    import SystemMonitor, get_system_status
 from actions.proactive         import ProactiveEngine
+from actions.personal_briefing import personal_briefing as personal_briefing_action
 
 _EMPTY_SEARCH_PREFIXES = (
     "No results",
@@ -161,7 +163,9 @@ TOOL_DECLARATIONS = [
         "description": (
             "Searches the web. Use for ANY question about current facts, events, prices, "
             "or topics — always prefer this over guessing. "
-            "Modes: 'search' (default), 'news' (latest headlines on a topic), "
+            "Use generic world-news mode only when the user explicitly asks for world news, "
+            "latest news, or dunyo yangiliklari. Never use world news for a personal briefing. "
+            "Modes: 'search' (default), 'news' (explicit latest headlines on a topic), "
             "'research' (deep comprehensive answer), 'price' (product cost lookup), "
             "'compare' (side-by-side comparison of items)."
         ),
@@ -187,6 +191,35 @@ TOOL_DECLARATIONS = [
             "type": "OBJECT",
             "properties": {},
         }
+    },
+    {
+        "name": "personal_briefing",
+        "description": (
+            "Builds Akbar's Personal Operations Briefing from verified local project docs/Git "
+            "and an explicit source registry. MUST be used for: men uydaman, uydaman, "
+            "ishga qaytdim, loyihalarimni tekshir, statistikani ayt, personal briefing, "
+            "and Telegram/Instagram/Messenger/Zerno statistics questions. "
+            "Missing external APIs return status=not_configured; never invent statistics. "
+            "Do not call world news for these requests."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "sources": {
+                    "type": "ARRAY",
+                    "items": {"type": "STRING"},
+                    "description": (
+                        "Sources to inspect: local_projects, telegram, instagram, messenger, zerno. "
+                        "Omit to include local projects and explicit not_configured external statuses."
+                    ),
+                },
+                "scope": {
+                    "type": "STRING",
+                    "description": "Optional scope such as operations or statistics",
+                },
+            },
+            "required": [],
+        },
     },
     {
         "name": "set_ui_language",
@@ -650,7 +683,7 @@ class JarvisLive:
         self.ui.on_interrupt      = self.interrupt
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
-        self._briefing_sent    = False          # morning briefing fires once per process
+        self._briefing_sent    = False          # personal briefing fires once per process
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
         self._last_user_speech = time.monotonic()  # updated on every user utterance
@@ -719,7 +752,10 @@ class JarvisLive:
             return
         self._active_user_text = text
         self.session_context.observe_user_text(text)
-        payload_text = self.session_context.build_user_turn_context(text)
+        payload_text = build_briefing_route_hint(
+            text,
+            self.session_context.build_user_turn_context(text),
+        )
         asyncio.run_coroutine_threadsafe(
             self.session.send_client_content(
                 turns={"parts": [{"text": payload_text}]},
@@ -784,6 +820,7 @@ class JarvisLive:
         self._vision_last_time     = 0.0
         self._phone_active         = False
         self._interrupted          = False
+        self._active_user_text     = ""
 
     def _cleanup_live_session_state(self) -> None:
         self._session_generation += 1
@@ -951,6 +988,9 @@ class JarvisLive:
         )
 
     def _describe_tool_intent(self, name: str, args: dict) -> str:
+        if name == "personal_briefing":
+            sources = args.get("sources") or list(DEFAULT_PERSONAL_SOURCES)
+            return f"personal operations briefing: {', '.join(str(item) for item in sources)}"
         if name == "open_app":
             return f"open app: {args.get('app_name', '')}"
         if name == "browser_control":
@@ -1087,12 +1127,18 @@ class JarvisLive:
 
     async def _execute_tool(self, fc, user_text: str = "") -> types.FunctionResponse:
         response_name = fc.name
-        name = response_name
         original_args = dict(fc.args or {})
         user_text = user_text or self._active_user_text
-        args, context_note = self.session_context.apply_context_to_tool(
-            user_text, name, original_args
+        name, routed_args, route_note = apply_briefing_route(
+            user_text,
+            response_name,
+            original_args,
         )
+        args, context_note = self.session_context.apply_context_to_tool(
+            user_text, name, routed_args
+        )
+        if route_note:
+            context_note = (context_note + "; " if context_note else "") + route_note
         followup_resolution = self.session_context.resolve_follow_up(user_text)
         preflight_result = None
 
@@ -1335,6 +1381,18 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, get_system_status)
                 result = str(r)
 
+            elif name == "personal_briefing":
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: personal_briefing_action(
+                        parameters=args,
+                        player=None,
+                        project_root=BASE_DIR,
+                    ),
+                )
+                result = r or "[PERSONAL_OPERATIONS_BRIEFING]\nstatus=failed"
+                self.ui.show_content("PERSONAL BRIEFING", result)
+
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
@@ -1426,6 +1484,9 @@ class JarvisLive:
                 )
 
         try:
+            # Reapply immediately before the callback stream in case a later
+            # dependency changed the process-global warning filter order.
+            install_runtime_warning_filters()
             with sd.InputStream(
                 samplerate=SEND_SAMPLE_RATE,
                 channels=CHANNELS,
@@ -1454,6 +1515,7 @@ class JarvisLive:
                 async for response in session.receive():
                     if session_generation != self._session_generation:
                         return
+                    turn_completed = False
 
                     if response.data:
                         if self._interrupted:
@@ -1485,6 +1547,7 @@ class JarvisLive:
                                 self._last_user_speech = time.monotonic()
 
                         if sc.turn_complete:
+                            turn_completed = True
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
@@ -1492,6 +1555,7 @@ class JarvisLive:
                             # flag and skip all further processing for that turn.
                             if self._interrupted:
                                 self._interrupted = False
+                                self._active_user_text = ""
                                 in_buf  = []
                                 out_buf = []
                                 continue
@@ -1562,6 +1626,11 @@ class JarvisLive:
                         await session.send_tool_response(
                             function_responses=fn_responses
                         )
+                    if turn_completed:
+                        # Do this only after a same-response tool call has read
+                        # the current turn. Never let a previous command reroute
+                        # the next voice tool call before fresh STT arrives.
+                        self._active_user_text = ""
         except Exception as e:
             if not self._is_reconnectable_error(e):
                 print(f"[JARVIS] Recv error: {self._short_error(e)}")
@@ -1621,13 +1690,13 @@ class JarvisLive:
                     pass
             print("[JARVIS] Audio stopped.")
 
-    # ── Morning briefing ────────────────────────────────────────────────────────
+    # ── Personal operations briefing ───────────────────────────────────────────
 
     async def _send_startup_briefing(self, session_generation: int) -> None:
         """
         Two-phase briefing for instant perceived response:
           Phase 1 — immediate greeting (no tools, no fetch) → Jarvis speaks in <2s
-          Phase 2 — news fetched in background, injected after greeting finishes
+          Phase 2 — verified local operations briefing, injected after greeting
         """
         await asyncio.sleep(0.3)
         session = self.session
@@ -1652,7 +1721,7 @@ class JarvisLive:
         lang_clause = f" Respond in {lang}." if lang else ""
         name_clause = f" Address the user as {name}." if name else ""
         p1 = (
-            f"Greet the user, mention it is {time_str}, and say you are fetching today's news headlines now. "
+            f"Greet the user, mention it is {time_str}, and say you are preparing the personal operations briefing now. "
             f"One short sentence only. Do not call any tools.{lang_clause}{name_clause}"
         )
 
@@ -1662,17 +1731,17 @@ class JarvisLive:
         )
         self.ui.write_log("SYS: Briefing phase 1 (greeting) sent.")
 
-        # ── Phase 2: fetch news in background, deliver after greeting plays ───
+        # ── Phase 2: verified personal operations data ────────────────────────
         try:
-            await self._briefing_news_phase(lang, session_generation)
+            await self._briefing_personal_phase(lang, session_generation)
         except Exception as e:
             print(f"[Briefing] Phase 2 error: {e}")
-            self.ui.write_log(f"SYS: Briefing news phase failed: {e}")
+            self.ui.write_log(f"SYS: Personal briefing phase failed: {e}")
 
-    async def _briefing_news_phase(self, lang: str, session_generation: int) -> None:
+    async def _briefing_personal_phase(self, lang: str, session_generation: int) -> None:
         """
-        Sends phase-2 (news) to Gemini ~1.5 s after phase-1 is dispatched so
-        Gemini starts working on it while phase-1 audio is still playing.
+        Collects safe local project state directly, then gives Gemini only the
+        verified report for a short spoken summary. World news is never implicit.
         """
         lang_str = f" Respond in {lang}." if lang else ""
 
@@ -1684,18 +1753,45 @@ class JarvisLive:
         if session_generation != self._session_generation or not session:
             return
 
+        parameters = {"sources": list(DEFAULT_PERSONAL_SOURCES), "scope": "operations"}
+        result = await asyncio.to_thread(
+            lambda: personal_briefing_action(
+                parameters=parameters,
+                player=None,
+                project_root=BASE_DIR,
+            )
+        )
+        session = self.session
+        if session_generation != self._session_generation or not session:
+            return
+        status, verified = infer_result_status("personal_briefing", result)
+        claim = truthful_claim(status, verified)
+        self.session_context.record_action(
+            user_text="[automatic startup briefing]",
+            assistant_intent="personal operations briefing",
+            tool_name="personal_briefing",
+            tool_parameters=parameters,
+            execution_method="startup_personal_briefing",
+            result=result,
+            result_status=status,
+            verified=verified,
+            user_visible_claim=claim,
+        )
+        self.ui.show_content("PERSONAL BRIEFING", result)
+
         p2 = (
-            "[BRIEFING] Call web_search with mode='news' and query='top world news today' "
-            "to find actual recent news articles with real event headlines (not just website names). "
-            "After the search, say ONE specific news event from the results in one sentence, "
-            f"then say the full list is displayed on screen.{lang_str}"
+            "[STARTUP_BRIEFING] The Personal Operations Briefing action already ran locally. "
+            "Use only the verified report below. Do not call web_search or any other tool. "
+            "Summarize the operational value, risk, and next action in one to three short sentences. "
+            "If an external source says status=not_configured, say that plainly and never invent numbers."
+            f"{lang_str}\n\n{result}"
         )
 
         await session.send_client_content(
             turns={"parts": [{"text": p2}]},
             turn_complete=True,
         )
-        self.ui.write_log("SYS: Briefing phase 2 (news) sent.")
+        self.ui.write_log("SYS: Personal briefing phase sent.")
 
     # ── System monitor ──────────────────────────────────────────────────────────
 
@@ -1797,7 +1893,10 @@ class JarvisLive:
                 if self.session:
                     self._active_user_text = text
                     self.session_context.observe_user_text(text)
-                    payload_text = self.session_context.build_user_turn_context(text)
+                    payload_text = build_briefing_route_hint(
+                        text,
+                        self.session_context.build_user_turn_context(text),
+                    )
                     await self.session.send_client_content(
                         turns={"parts": [{"text": payload_text}]},
                         turn_complete=True,
@@ -1864,7 +1963,7 @@ class JarvisLive:
                     if self._dashboard:
                         self._create_session_task(tg, self._relay_phone_audio(session_generation), "live-phone")
 
-                    # Morning briefing — fires once per process launch
+                    # Personal operations briefing — fires once per process launch
                     if not self._briefing_sent:
                         self._briefing_sent = True
                         self._create_session_task(tg, self._send_startup_briefing(session_generation), "live-briefing")

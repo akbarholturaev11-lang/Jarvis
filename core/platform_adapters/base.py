@@ -239,6 +239,9 @@ class PlatformAdapter:
         if not self._module_available("sounddevice"):
             return result
         try:
+            from core.runtime_warnings import install_runtime_warning_filters
+
+            install_runtime_warning_filters()
             import sounddevice as sd
 
             devices = sd.query_devices()

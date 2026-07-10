@@ -17,7 +17,7 @@ The original test version and AkbarCustom version are separate. AkbarCustom is t
 
 ## Current Mac Install Status
 
-Current known status as of 2026-07-10:
+Current known status as of 2026-07-11:
 
 - Project cloned.
 - Python 3.12 virtual environment exists.
@@ -28,6 +28,7 @@ Current known status as of 2026-07-10:
 - Gemini API is connected.
 - Microphone/audio works.
 - Some Gemini Live reconnect errors can happen, but the app reconnects.
+- The `.venv` was rebuilt successfully after a local environment failure.
 
 ## What Already Works
 
@@ -44,6 +45,10 @@ Current known status as of 2026-07-10:
 - Mic and phone audio input use a bounded outgoing queue; if it fills, stale queued audio is discarded and the newest chunk is kept so `QueueFull` does not crash or spam logs.
 - Gemini Live reconnect handling treats `1006` / keepalive disconnects as recoverable, closes mic/audio state cleanly, prints short terminal status, and retries with 3s, 6s, then 12s backoff.
 - Each Gemini Live reconnect creates a new session generation with fresh queues, reset transient flags, tracked session tasks, and fresh Live audio config; old mic/phone/send/receive/play tasks are generation-guarded so stale callbacks cannot write into the new session.
+- Automatic startup and the commands `men uydaman`, `uydaman`, `ishga qaytdim`, `loyihalarimni tekshir`, `statistikani ayt`, and `personal briefing` use the Personal Operations Briefing path instead of generic world news.
+- Personal Operations Briefing reads only allowlisted project docs and read-only Git metadata, reports evidence-based `foyda`, `zarar`, and `next_action`, and marks Telegram/Instagram/Messenger/Zerno as `not_configured` until real adapters exist.
+- Explicit world news remains on `web_search(mode="news")` for direct requests such as `dunyo yangiliklari`, `world news`, or `latest news`.
+- The sounddevice NumPy 2.5 warning filter is centralized and reinstalled immediately before the microphone callback stream while unrelated warnings remain visible.
 
 ## Known Problems
 
@@ -57,6 +62,7 @@ Current known status as of 2026-07-10:
 - `config/api_keys.json` is local and must never be committed.
 - `config/device_profile.json` is local operational metadata and must never be committed. It may contain private local paths or installed app facts. Commit only `config/device_profile.example.json`.
 - `memory/long_term.json` is local personal memory and must never be committed.
+- Final Gemini speech truthfulness is still guided by tool metadata rather than mechanically intercepted; action source output must remain explicit and non-fabricated.
 
 ## Current Purpose
 
@@ -68,9 +74,7 @@ Current known status as of 2026-07-10:
 
 ## Current Next Goal
 
-Build a clear project context foundation so future AI assistants, Codex, Claude, or any code bot can understand the project quickly and work safely.
-
-The initial context foundation is markdown-based instead of an external Graphiti/Gravity dependency because installing a new knowledge graph package is unnecessary risk at this stage.
+Manually verify Personal Operations Briefing and explicit world-news separation in the full Mac/Gemini Live app, then continue the existing reconnect, permission, SessionContext, and DeviceProfile runtime checks.
 
 ## Architecture Summary
 
@@ -78,6 +82,9 @@ The initial context foundation is markdown-based instead of an external Graphiti
 - `ui.py` is the PyQt6 HUD/UI layer.
 - `actions/*.py` contains tool implementations for app control, browser control, screen capture, reminders, web search, file processing, code help, proactive behavior, and related tasks.
 - `actions/media_control.py` provides safe media pause/play-pause behavior, especially for macOS. It must pause first and must not close/kill apps without confirmation.
+- `core/briefing_routing.py` is a narrow intent policy inside the existing command path. It recognizes Personal Operations Briefing phrases, explicit world-news phrases, named external-statistics requests, and defensively corrects a wrong briefing/news tool choice in `main.py::_execute_tool()`.
+- `actions/personal_briefing.py` provides the Personal Operations Briefing source registry. `local_projects` reads allowlisted docs and read-only Git metadata; Telegram, Instagram, Messenger, and Zerno are offline `not_configured` adapters until real integrations are supplied.
+- `core/runtime_warnings.py` installs the exact sounddevice/NumPy 2.5 shape warning filter before sounddevice imports and immediately before the microphone stream.
 - `core/session_context.py` stores runtime-only short-term action context for the current process. It keeps the last 5 meaningful actions, summarizes sensitive parameters, tracks recent browser/app/message/file/media targets, records verified/failed/uncertain/confirmation status, resolves vague follow-up intents, and attaches user corrections.
 - `core/device_profile.py` stores DeviceProfile schema/defaults, privacy scrubbing, summary/query helpers, permission gates, and routing decisions for browser/app/media/message commands.
 - `core/environment_discovery.py` creates or refreshes `config/device_profile.json` on first run and through refresh commands.
@@ -87,6 +94,24 @@ The initial context foundation is markdown-based instead of an external Graphiti
 - `config/api_keys.json` stores local secret configuration and must not be touched unless Akbar explicitly asks.
 - `config/device_profile.json` stores local safe operational metadata and is gitignored.
 - `config/device_profile.example.json` is the committed schema/template.
+
+## Personal Operations Briefing Rule
+
+Startup and Personal Briefing phrases must use the registered `personal_briefing` action through the existing Gemini tool and central dispatch architecture. Desktop/dashboard text gets an internal route hint, while voice protection is enforced by prompt rules plus the central `_execute_tool()` route guard.
+
+Generic world news is not part of startup or Personal Briefing. It is available only through an explicit user news request and the existing `web_search(mode="news")` action.
+
+The default source registry is:
+
+- `local_projects`: available when allowlisted docs or Git metadata can be read;
+- `telegram`: `not_configured`;
+- `instagram`: `not_configured`;
+- `messenger`: `not_configured`;
+- `zerno`: network-disabled `not_configured` placeholder.
+
+No external source may return guessed numbers. Real API/token/config and a verified adapter are required before its status can change from `not_configured`.
+
+The startup greeting retains the existing read-only use of long-term memory for the user's saved name/language. That memory is not a briefing statistics source and is never passed into `actions/personal_briefing.py`.
 
 ## AI Assistant Rule
 

@@ -18,12 +18,15 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Audio input/output constants and queues in `main.py`
    - Reconnect/session handling in `main.py`
    - Runtime action history, follow-up intent routing, corrections, and truthful result status in `core/session_context.py`
+   - Narrow Personal Briefing / explicit world-news intent policy in `core/briefing_routing.py`
    - Device intelligence and environment discovery in `core/device_profile.py` and `core/environment_discovery.py`
    - Platform adapters in `core/platform_adapters/`
+   - Narrow runtime warning policy in `core/runtime_warnings.py`
 
 4. Tool/action layer
    - `actions/*.py`
    - `actions/media_control.py` for safe macOS/system media pause/play-pause
+   - `actions/personal_briefing.py` for allowlisted local operations data and external source status
 
 5. Memory layer
    - `memory/`
@@ -71,9 +74,12 @@ main.py
 -> actions/code_helper.py
 -> actions/dev_agent.py
 -> actions/proactive.py
+-> actions/personal_briefing.py
 -> core/session_context.py
+-> core/briefing_routing.py
 -> core/device_profile.py
 -> core/environment_discovery.py
+-> core/runtime_warnings.py
 -> core/platform_adapters/base.py
 -> core/platform_adapters/macos.py
 -> core/platform_adapters/windows.py
@@ -95,6 +101,7 @@ main.py
 -> opens Gemini Live session
 -> streams microphone audio to Gemini
 -> receives audio/text/tool calls from Gemini
+-> applies the narrow Personal Briefing/world-news route guard
 -> dispatches tool calls to actions/*.py
 -> consults core/session_context.py and core/device_profile.py before platform-sensitive tool execution
 -> reads/writes memory through memory/memory_manager.py
@@ -122,6 +129,9 @@ main.py
 - Resource guide: `AI_RESOURCES.md`
 - Prompt: `core/prompt.txt`
 - Runtime session context: `core/session_context.py`
+- Briefing route policy: `core/briefing_routing.py`
+- Personal briefing action/source registry: `actions/personal_briefing.py`
+- Runtime warning policy: `core/runtime_warnings.py`
 - Device profile schema/routing: `core/device_profile.py`
 - Environment discovery: `core/environment_discovery.py`
 - Platform adapters: `core/platform_adapters/`
@@ -143,6 +153,10 @@ main.py
 - Tool calls execute code in `actions/*.py`.
 - `main.py` loads `core/prompt.txt`.
 - `main.py` owns a runtime `SessionContext` instance from `core/session_context.py`.
+- Desktop/dashboard text passes through `core/briefing_routing.py` for an internal Personal Briefing/world-news hint before Gemini; voice uses the same prompt plus central dispatch guard after Gemini selects a tool.
+- `main.py::_execute_tool()` applies `apply_briefing_route(...)` before SessionContext and DeviceProfile dispatch so Personal Briefing cannot be replaced by generic world news and explicit world news stays on the existing news action.
+- Automatic startup calls `actions/personal_briefing.py` directly for verified local/source-registry output, records it in SessionContext, and sends only that report to Gemini for a short spoken summary.
+- `actions/personal_briefing.py` reads allowlisted project docs and read-only Git counts, returns evidence-based operational fields, and reports missing Telegram/Instagram/Messenger/Zerno adapters as `not_configured` without numbers or network attempts.
 - `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file/media targets, user corrections, and verified/failed/uncertain/confirmation result status.
 - `SessionContext` resolves vague follow-up commands before generic tool routing, including media stop/pause, browser close, message send confirmation, and correction handling.
 - `DeviceProfile` records current device capability metadata and is consulted before platform-sensitive app/browser/media/message/permission actions.
@@ -173,6 +187,9 @@ main.py
 - `ui.py` is MEDIUM risk. UI changes can affect the Mac app experience.
 - `actions/*.py` depends on tool declarations in `main.py`. When changing an action signature, check the matching declaration and dispatch code.
 - `actions/media_control.py` must not close, quit, or kill apps by default. It should pause first and report uncertainty when playback cannot be verified.
+- `actions/personal_briefing.py` must not read `config/api_keys.json`, `memory/long_term.json`, arbitrary files, or invent external statistics. External adapters stay `not_configured` until a real integration exists.
+- `core/briefing_routing.py` is intentionally narrow. Do not grow it into a parallel command system; normal intent detection remains Gemini tool calling plus central dispatch.
+- `core/runtime_warnings.py` must remain limited to the exact sounddevice NumPy 2.5 shape deprecation; unrelated warnings must stay visible.
 - `requirements.txt` is HIGH risk. Do not change dependency versions casually.
 
 ## Current Safe Foundation

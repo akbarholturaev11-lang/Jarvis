@@ -35,6 +35,10 @@ If any of these files are missing, stop and ask Akbar before making code changes
 - Never assume macOS, Windows, Linux, Chrome, Safari, Telegram, permissions, or media controls exist without DeviceProfile evidence.
 - DeviceProfile = what this device can do. SessionContext = what happened recently. Tool verification = what actually succeeded.
 - Prefer reusable platform adapters over one-off OS fixes. Unknown capability must remain unknown, not fake success.
+- Startup and `men uydaman`-style commands must use the existing Personal Operations Briefing tool path, never implicit world news.
+- World news must require an explicit news request. Personal/local operations commands must not be redirected to `web_search(mode="news")`.
+- External Telegram/Instagram/Messenger/Zerno statistics require a real configured adapter. Return `not_configured` when absent and never fabricate metrics.
+- Personal Briefing may read only its allowlisted project docs and read-only Git metadata; it must not read secret config or private long-term memory.
 
 ## Git Commit And Push Rules
 

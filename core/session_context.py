@@ -384,6 +384,15 @@ def infer_result_status(tool_name: str, result: Any) -> tuple[str, bool]:
     if not text:
         return "uncertain", False
 
+    if tool_name == "personal_briefing":
+        if "[personal_operations_briefing]" in text and not any(
+            marker in text for marker in ("status=failed", "status=error")
+        ):
+            # The verification applies to the adapter statuses and local reads.
+            # External source data remains explicitly status=not_configured.
+            return "success", True
+        return "failed", False
+
     if tool_name == "send_message":
         if "verified sent" in text or "verified message sent" in text:
             return "success", True

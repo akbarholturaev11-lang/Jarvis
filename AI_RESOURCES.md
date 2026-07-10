@@ -36,6 +36,7 @@ Risk levels:
 | `actions/code_helper.py` | Code review, debugging, and code-generation helper action. | MEDIUM | Code helper behavior needs refinement. | General app runtime is failing. |
 | `actions/dev_agent.py` | Developer task agent for more complex multi-step coding tasks. | HIGH | Agent workflow is explicitly requested or broken. | A direct small patch is enough. |
 | `actions/proactive.py` | Proactive check-in logic during user silence. | MEDIUM | Timing, content, or usefulness of proactive checks needs adjustment. | The user wants reactive command behavior only. |
+| `actions/personal_briefing.py` | Builds evidence-based Personal Operations Briefing from allowlisted local docs/Git and explicit external adapter statuses. | MEDIUM | Briefing sources, formatting, or verified adapter support changes. | Do not add guessed external statistics or read secret/private files. |
 
 ## Additional Useful Files
 
@@ -47,6 +48,8 @@ Risk levels:
 | `actions/weather_report.py` | Weather lookup behavior. | MEDIUM | Weather command fails or city parsing needs changes. | Web search rate limits are unrelated. |
 | `actions/youtube_video.py` | YouTube search/play/summarize/control actions. | MEDIUM | YouTube command behavior fails. | Browser automation is generally broken. |
 | `actions/file_controller.py` | File system operations. | HIGH | File operations need a reviewed safety fix. | The request risks deleting or moving user data without confirmation. |
+| `core/briefing_routing.py` | Narrow Personal Briefing and explicit world-news routing policy used by the existing dispatcher. | HIGH | Exact briefing/news intent policy needs a tested change. | Do not turn it into a parallel general command system. |
+| `core/runtime_warnings.py` | Exact source-specific sounddevice NumPy 2.5 warning filter. | MEDIUM | The known warning signature or import coverage changes. | Do not hide broad warning categories or unrelated errors. |
 | `memory/memory_manager.py` | Loads, trims, saves, updates, and formats long-term memory. | HIGH | Memory behavior needs careful schema/runtime changes. | The goal is only documentation. |
 | `memory/long_term.json` | Local personal assistant memory. | HIGH / PRIVATE | Only if Akbar explicitly asks. | Never commit, expose, overwrite, or reset casually. |
 | `readme.md` | Original project README and capability overview. | LOW | Documentation needs alignment with AkbarCustom. | Runtime behavior needs fixing. |

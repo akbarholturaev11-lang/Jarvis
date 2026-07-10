@@ -108,6 +108,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "button.desktop_shortcut": "CREATE DESKTOP SHORTCUT",
         "input.placeholder": "Type a command or question...",
         "content.briefing": "BRIEFING",
+        "content.personal_briefing": "PERSONAL BRIEFING",
         "footer.shortcuts": "[F4] Mute  ·  [F11] Fullscreen",
         "footer.brand": "FatihMakes Industries  ·  MARK XLVIII  ·  CLASSIFIED",
         "footer.copyright": "© STARK INDUSTRIES",
@@ -206,6 +207,7 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "button.desktop_shortcut": "СОЗДАТЬ ЯРЛЫК",
         "input.placeholder": "Введите команду или вопрос...",
         "content.briefing": "СВОДКА",
+        "content.personal_briefing": "ЛИЧНАЯ СВОДКА",
         "footer.shortcuts": "[F4] Микрофон  ·  [F11] Полный экран",
         "footer.brand": "FatihMakes Industries  ·  MARK XLVIII  ·  СЕКРЕТНО",
         "footer.copyright": "© STARK INDUSTRIES",
@@ -347,6 +349,7 @@ def localize_content_title(title: str) -> str:
 
     labels = {
         "BRIEFING": t("content.briefing"),
+        "PERSONAL BRIEFING": t("content.personal_briefing"),
         "SEARCH": "ПОИСК",
         "NEWS": "НОВОСТИ",
         "RESEARCH": "ИССЛЕДОВАНИЕ",
@@ -370,7 +373,7 @@ def localize_log_message(text: str) -> str:
         "SYS: Interrupted — listening...": "СИСТЕМА: Прервано — слушаю...",
         "SYS: Shutdown requested.": "СИСТЕМА: Запрошено завершение.",
         "SYS: Briefing phase 1 (greeting) sent.": "СИСТЕМА: Сводка, этап 1 (приветствие) отправлен.",
-        "SYS: Briefing phase 2 (news) sent.": "СИСТЕМА: Сводка, этап 2 (новости) отправлен.",
+        "SYS: Personal briefing phase sent.": "СИСТЕМА: Личная сводка отправлена.",
         "SYS: Proactive check-in.": "СИСТЕМА: Проактивная проверка.",
         "SYS: Phone connected via Remote Dashboard.": "СИСТЕМА: Телефон подключен через удаленную панель.",
         "SYS: JARVIS online.": "СИСТЕМА: JARVIS онлайн.",
@@ -395,8 +398,8 @@ def localize_log_message(text: str) -> str:
     if raw.startswith("SYS: Dashboard unavailable. Run: "):
         cmd = raw.removeprefix("SYS: Dashboard unavailable. Run: ")
         return f"СИСТЕМА: Панель недоступна. Выполните: {cmd}"
-    if raw.startswith("SYS: Briefing news phase failed: "):
-        return "СИСТЕМА: Этап новостной сводки не выполнен: " + raw.rsplit(": ", 1)[1]
+    if raw.startswith("SYS: Personal briefing phase failed: "):
+        return "СИСТЕМА: Не удалось подготовить личную сводку: " + raw.rsplit(": ", 1)[1]
     if raw.startswith("NET: Connection lost - reconnecting in "):
         secs = raw.removeprefix("NET: Connection lost - reconnecting in ")
         return f"СЕТЬ: Соединение потеряно — переподключение через {secs}"

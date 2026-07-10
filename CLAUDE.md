@@ -38,6 +38,10 @@ Instructions for Claude, Codex, and other AI coding agents working on MARK XLVII
 - Never assume this device is macOS, Windows, Linux, Chrome/Safari-capable, Telegram-capable, media-control-capable, or permission-ready without DeviceProfile evidence.
 - DeviceProfile = what this device can do. SessionContext = what happened recently. Tool verification = what actually succeeded.
 - Prefer reusable platform adapters in `core/platform_adapters/` over one-off OS fixes. Unknown capability must stay unknown.
+- Preserve the existing Personal Operations Briefing route for startup, `men uydaman`, `uydaman`, `ishga qaytdim`, project checks, and statistics requests.
+- Keep generic world news separate and explicit; never reintroduce automatic startup world news.
+- Treat missing Telegram/Instagram/Messenger/Zerno API/token/config as `not_configured`. Never add placeholder or guessed statistics.
+- Keep local briefing reads allowlisted and read-only. Do not use `config/api_keys.json` or `memory/long_term.json` as briefing data sources.
 
 ## After Work
 
