@@ -1,5 +1,53 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - Mobile Remote Control: anywhere access, sleep resilience, macros, settings window
+
+### Added
+
+- **Control from anywhere (Cloudflare Tunnel).** `core/remote_tunnel.py` wraps
+  `cloudflared` (quick or named mode), parses the public
+  `https://…trycloudflare.com` URL, restarts on failure, and reports an honest
+  `not_installed` when cloudflared is absent — never a fake URL. Enabled via
+  `config/settings.json` → `remote_tunnel` and wired in `main.py`. The dashboard
+  now exposes the public URL in QR/PIN pairing (`set_public_url`,
+  `get_lan_url`) and rate-limits `/login` for public exposure.
+- **Sleep resilience.** The phone app auto-reconnects with backoff (device-token
+  refresh on process restart) instead of dropping to login. While a phone is
+  connected JARVIS keeps the computer awake cross-platform
+  (`core/power_manager.py` + `prevent_sleep`/`release_sleep` adapters: macOS
+  `caffeinate`, Windows `SetThreadExecutionState`, Linux `systemd-inhibit`),
+  released after a grace period on the last disconnect. Toggleable in settings.
+- **Command automation / macros.** `core/capabilities.py` (JARVIS's abilities as
+  pickable options) + `core/macros.py` (`config/macros.json`, gitignored). Build a
+  one-tap command from capabilities — one command → several actions — in the phone
+  app (capability picker sheet) or the desktop settings; shared via
+  `/api/capabilities` and `/api/macros`.
+- **Installable PWA.** `manifest.webmanifest`, `sw.js` (caches app shell only,
+  never API/ws), and app icons; served by new dashboard routes.
+- **Desktop settings window.** A corner **⚙** gear (`ui.py`) opens `SettingsOverlay`
+  with remote on/off, Show QR/PIN, keep-awake, language RU/EN, paired-device
+  revoke, connection status, and the macro builder — plus an animated native
+  `ToggleSwitch`. Native PyQt6; Unlumen used only as animation reference per
+  `AI_RULES.md`. Phone app gains Unlumen-inspired CSS animations.
+- New EN+RU strings in `core/i18n.py` (`tunnel.*`, `keepawake.*`, `settings.*`);
+  safe `remote_tunnel` / `keep_awake_enabled` settings via `core/app_settings.py`.
+
+### Verification
+
+- `py_compile` on all changed runtime modules: passed.
+- `python -m unittest discover -s tests`: 144 tests OK (124 existing + 20 new in
+  `test_remote_tunnel`, `test_power_manager`, `test_capabilities_macros`).
+- Live dashboard smoke test (curl, HTTPS): PWA login/app pages, manifest/sw/icons
+  (200), PIN→token, `/api/capabilities` (10), `/api/macros` compose — all verified.
+
+### Constraints kept
+
+- Cross-platform parity (keep-awake per OS + honest unsupported; tunnel honest
+  `not_installed`). Every new UI string bilingual EN+RU. No secrets in repo
+  (cloudflared creds in `~/.cloudflared`; `config/macros.json` gitignored). No
+  dependency changes; no new Gemini tool (main.py risk kept low). Truthful status
+  reporting throughout.
+
 ## 2026-07-11 - Canonical Workflow Skill + Rule De-duplication
 
 ### Added

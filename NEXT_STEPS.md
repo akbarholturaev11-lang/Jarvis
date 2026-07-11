@@ -8,6 +8,21 @@ Current next steps for MARK XLVIII - AkbarCustom.
 
 ## Immediate Next Steps
 
+0. Manually verify the new mobile remote-control feature in the full Mac app:
+   - Press the corner ⚙ gear → settings window opens with remote on/off, Show QR/PIN,
+     keep-awake, language RU/EN, paired devices (revoke), connection status, and
+     command automation.
+   - Pair a phone via QR/PIN; add the JARVIS PWA to the home screen; confirm it opens
+     standalone.
+   - `brew install cloudflared`, toggle **Remote access** ON, and confirm the QR shows
+     a `trycloudflare.com` URL reachable from mobile data. With cloudflared absent,
+     confirm the honest `not_installed` message and LAN-only behavior.
+   - Let the Mac idle → confirm keep-awake holds; put it to short sleep → confirm the
+     phone shows *Reconnecting…* (not kicked to login) and resumes on wake.
+   - Build a macro from capabilities on the phone and in the settings window; confirm
+     one tap runs the composed multi-action command and it appears on both surfaces.
+
+
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.
 2. Test Mac permissions:
    - Microphone

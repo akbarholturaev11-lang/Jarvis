@@ -1,0 +1,74 @@
+"""core/app_settings.py — safe read/modify/write for config/settings.json.
+
+Non-secret app settings only (ui_language, remote_tunnel, ...). Reads tolerate a
+missing or corrupt file; writes preserve unrelated keys so different features can
+own different settings without clobbering each other (i18n owns ui_language, the
+remote tunnel owns remote_tunnel, etc.). Never store secrets here — cloudflared
+credentials live in ~/.cloudflared, outside the repo.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+SETTINGS_FILE = BASE_DIR / "config" / "settings.json"
+
+_DEFAULT_TUNNEL = {
+    "enabled": False,
+    "provider": "cloudflare",
+    "mode": "quick",     # "quick" (no account) or "named" (stable hostname)
+    "hostname": "",
+}
+
+
+def load_settings() -> dict:
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_settings(settings: dict) -> None:
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def update_settings(patch: dict) -> dict:
+    """Merge `patch` into settings.json, preserving all other keys."""
+    settings = load_settings()
+    settings.update(patch)
+    save_settings(settings)
+    return settings
+
+
+def get_tunnel_config() -> dict:
+    cfg = load_settings().get("remote_tunnel")
+    merged = dict(_DEFAULT_TUNNEL)
+    if isinstance(cfg, dict):
+        for k in _DEFAULT_TUNNEL:
+            if k in cfg:
+                merged[k] = cfg[k]
+    return merged
+
+
+def set_tunnel_enabled(enabled: bool) -> dict:
+    cfg = get_tunnel_config()
+    cfg["enabled"] = bool(enabled)
+    update_settings({"remote_tunnel": cfg})
+    return cfg
+
+
+def get_keep_awake_enabled() -> bool:
+    val = load_settings().get("keep_awake_enabled", True)
+    return bool(val)
+
+
+def set_keep_awake_enabled(enabled: bool) -> bool:
+    update_settings({"keep_awake_enabled": bool(enabled)})
+    return bool(enabled)

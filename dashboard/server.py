@@ -35,10 +35,23 @@ try:
 except Exception:
     pass
 
+# Command automation (capabilities + macros) is optional — degrade gracefully.
+_CAPS_OK = False
+try:
+    from core.capabilities import list_capabilities
+    from core.macros import load_macros, set_macros
+    from core.i18n import active_lang
+    _CAPS_OK = True
+except Exception:
+    pass
+
 BASE_DIR    = Path(__file__).resolve().parent.parent
 STATIC_DIR  = Path(__file__).parent / "static"
 PORT        = 8000
 MAX_UPLOAD_MB = 500
+# /login brute-force guard (matters once the tunnel exposes /login publicly).
+LOGIN_MAX_FAILS = 8       # allowed failed PIN attempts per IP within the window
+LOGIN_WINDOW    = 60.0    # sliding window, seconds
 
 
 def _make_uploads_dir() -> Path:
@@ -378,6 +391,9 @@ class DashboardServer:
         self._command_queue               = asyncio.Queue()
         self._wake_callback               = None
         self._connect_callback            = None
+        self._client_count_callback       = None
+        self._public_url: str | None      = None
+        self._login_attempts: dict[str, list[float]] = {}
         self._pending_keys: dict[str, float] = {}
         self._device_sessions: dict[str, dict] = {}  # device_token → {session_key}
         self._phone_audio_queue: asyncio.Queue    = asyncio.Queue(maxsize=200)
@@ -400,15 +416,42 @@ class DashboardServer:
         certs = BASE_DIR / "config" / "certs"
         return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
 
+    def set_public_url(self, url: str | None) -> None:
+        """Set (or clear) the public tunnel URL. When set, QR/manual URLs and the
+        served page point at it so the phone can connect from anywhere."""
+        self._public_url = (url or "").rstrip("/") or None
+
     def get_url(self) -> str:
+        if self._public_url:
+            return self._public_url
         proto = "https" if self._ssl_enabled() else "http"
         return f"{proto}://{self._ip}:{PORT}"
 
     def get_manual_url(self) -> str:
         """URL for manual browser entry. When HTTPS active, points to alias port (also HTTPS)."""
+        if self._public_url:
+            # Strip scheme for the compact manual-entry label.
+            return self._public_url.split("://", 1)[-1]
         if self._ssl_enabled():
             return f"{self._ip}:{PORT + 1}"
         return f"{self._ip}:{PORT}"
+
+    def get_lan_url(self) -> str:
+        """Always the local-network URL, ignoring any active public tunnel."""
+        proto = "https" if self._ssl_enabled() else "http"
+        return f"{proto}://{self._ip}:{PORT}"
+
+    def client_count(self) -> int:
+        return len(self._clients)
+
+    def device_count(self) -> int:
+        return len(self._device_sessions)
+
+    def revoke_devices(self) -> int:
+        """Invalidate all persistent device tokens. Returns how many were removed."""
+        count = len(self._device_sessions)
+        self._device_sessions.clear()
+        return count
 
     def _aes_key(self, session_key: str) -> bytes:
         if session_key not in self._aes_cache:
@@ -431,6 +474,35 @@ class DashboardServer:
 
     def set_connect_callback(self, fn) -> None:
         self._connect_callback = fn
+
+    def set_client_count_callback(self, fn) -> None:
+        """fn(count:int) is called whenever the live WebSocket client count changes.
+        Used to keep the machine awake while a phone is remotely connected."""
+        self._client_count_callback = fn
+
+    def _notify_client_count(self) -> None:
+        cb = getattr(self, "_client_count_callback", None)
+        if cb:
+            try:
+                cb(len(self._clients))
+            except Exception:
+                pass
+
+    # ── /login brute-force guard ──────────────────────────────────────────
+    def _login_allowed(self, ip: str) -> bool:
+        now = time.time()
+        rec = [t for t in self._login_attempts.get(ip, []) if t > now - LOGIN_WINDOW]
+        self._login_attempts[ip] = rec
+        return len(rec) < LOGIN_MAX_FAILS
+
+    def _login_fail(self, ip: str) -> None:
+        now = time.time()
+        rec = [t for t in self._login_attempts.get(ip, []) if t > now - LOGIN_WINDOW]
+        rec.append(now)
+        self._login_attempts[ip] = rec
+
+    def _login_reset(self, ip: str) -> None:
+        self._login_attempts.pop(ip, None)
 
     # ── broadcast ────────────────────────────────────────────────────────
 
@@ -464,6 +536,33 @@ class DashboardServer:
             from fastapi.responses import RedirectResponse
             return RedirectResponse(_CRYPTOJS_CDN)
 
+        # ── PWA assets (installable home-screen app) ──────────────────────────
+        @app.get("/manifest.webmanifest")
+        async def serve_manifest():
+            return FileResponse(str(STATIC_DIR / "manifest.webmanifest"),
+                                media_type="application/manifest+json")
+
+        @app.get("/sw.js")
+        async def serve_sw():
+            # Served from the origin root so its scope covers the whole app.
+            return FileResponse(str(STATIC_DIR / "sw.js"),
+                                media_type="application/javascript")
+
+        _STATIC_TYPES = {
+            ".png": "image/png", ".ico": "image/x-icon", ".svg": "image/svg+xml",
+            ".webmanifest": "application/manifest+json",
+            ".js": "application/javascript", ".css": "text/css",
+        }
+
+        @app.get("/static/{asset}")
+        async def serve_static_asset(asset: str):
+            # Whitelisted static files (icons, etc.). crypto.js has its own route above.
+            safe = re.sub(r"[/\\]", "", asset)
+            path = STATIC_DIR / safe
+            if path.exists() and path.is_file() and path.suffix in _STATIC_TYPES:
+                return FileResponse(str(path), media_type=_STATIC_TYPES[path.suffix])
+            return JSONResponse({"error": "Not found"}, status_code=404)
+
         @app.get("/login", response_class=HTMLResponse)
         async def login_page():
             return HTMLResponse(self._login_html)
@@ -473,17 +572,32 @@ class DashboardServer:
             # Auth is handled client-side via sessionStorage bearer token.
             # Server-side header auth can't work here because browser navigations
             # don't send custom headers (location.href doesn't carry Authorization).
-            html = (self._app_html
-                    .replace("__IP__", self._ip)
-                    .replace("__PORT__", str(PORT)))
+            if self._public_url:                       # tunnel active → show public host
+                host = self._public_url.split("://", 1)[-1]
+                html = (self._app_html
+                        .replace("__IP__", host)
+                        .replace(":__PORT__", ""))
+            else:
+                html = (self._app_html
+                        .replace("__IP__", self._ip)
+                        .replace("__PORT__", str(PORT)))
             return HTMLResponse(html)
 
         @app.post("/login")
         async def login(req: Request):
+            # Rate-limit brute force on the 6-char PIN — important once the tunnel
+            # exposes /login publicly. Keyed by client IP; a short lockout window.
+            client_ip = req.client.host if req.client else "?"
+            if not self._login_allowed(client_ip):
+                return JSONResponse(
+                    {"ok": False, "error": "Too many attempts — wait a moment"},
+                    status_code=429,
+                )
             body    = await req.json()
             entered = str(body.get("pin", "")).strip().upper()
             now     = time.time()
             if entered in self._pending_keys and self._pending_keys[entered] > now:
+                self._login_reset(client_ip)
                 del self._pending_keys[entered]          # one-time use
                 tok = secrets.token_urlsafe(32)
                 self._tokens.add(tok)
@@ -496,6 +610,7 @@ class DashboardServer:
                 ))
                 # Bearer token in response body — no cookies needed (works on any browser/HTTP)
                 return JSONResponse({"ok": True, "token": tok})
+            self._login_fail(client_ip)
             return JSONResponse({"ok": False, "error": "Invalid or expired key"},
                                 status_code=401)
 
@@ -603,6 +718,48 @@ class DashboardServer:
             if self._wake_callback:
                 self._wake_callback()
             return JSONResponse({"ok": True})
+
+        # ── Command automation: capabilities + macros ─────────────────────────
+        @app.get("/api/capabilities")
+        async def get_capabilities(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            if not _CAPS_OK:
+                return JSONResponse({"capabilities": []})
+            try:
+                return JSONResponse({"capabilities": list_capabilities(active_lang())})
+            except Exception:
+                return JSONResponse({"capabilities": []})
+
+        @app.get("/api/macros")
+        async def get_macros(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            if not _CAPS_OK:
+                return JSONResponse({"macros": []})
+            try:
+                return JSONResponse({"macros": load_macros()})
+            except Exception:
+                return JSONResponse({"macros": []})
+
+        @app.post("/api/macros")
+        async def post_macros(req: Request):
+            if not _auth(req):
+                return JSONResponse({"error": "Unauthorized"}, status_code=401)
+            if not _CAPS_OK:
+                return JSONResponse({"error": "Unavailable"}, status_code=503)
+            try:
+                body = await req.json()
+            except Exception:
+                return JSONResponse({"error": "Bad request"}, status_code=400)
+            macros = body.get("macros")
+            if not isinstance(macros, list):
+                return JSONResponse({"error": "Bad request"}, status_code=400)
+            try:
+                saved = set_macros(macros)
+                return JSONResponse({"ok": True, "macros": saved})
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
 
         # ── Phone mic real-time audio → Gemini Live ──────────────────────────
 
@@ -728,6 +885,7 @@ class DashboardServer:
                 return
             await websocket.accept()
             self._clients.add(websocket)
+            self._notify_client_count()
             for entry in self._history[-50:]:
                 try:
                     await websocket.send_json(entry)
@@ -747,6 +905,7 @@ class DashboardServer:
                 pass
             finally:
                 self._clients.discard(websocket)
+                self._notify_client_count()
 
         return app
 

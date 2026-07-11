@@ -2,8 +2,16 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>JARVIS Dashboard</title>
+  <meta name="theme-color" content="#07090f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="JARVIS">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon-192.png">
+  <link rel="icon" href="/static/icon-192.png">
   <script src="/static/crypto.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -121,6 +129,76 @@
     #mic-btn.unsupported { opacity: 0.3; cursor: not-allowed; }
     @keyframes mic-pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.65;transform:scale(0.97)} }
 
+    /* ── QUICK COMMANDS ── */
+    #qbar {
+      flex-shrink: 0; display: flex; gap: 7px; align-items: center;
+      overflow-x: auto; overflow-y: hidden; padding: 8px 14px;
+      border-top: 1px solid var(--border); background: rgba(7,9,15,0.95);
+      scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    }
+    #qbar::-webkit-scrollbar { display: none; }
+    .qchip {
+      flex-shrink: 0; padding: 7px 13px; background: var(--surface);
+      border: 1px solid var(--border); border-radius: 99px; color: var(--text);
+      font-size: 12.5px; white-space: nowrap; cursor: pointer; user-select: none;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s, color 0.15s;
+    }
+    .qchip:active { transform: scale(0.95); }
+    .qchip-cmd:hover { border-color: var(--accent); }
+    .qchip-add  { color: var(--accent); border-color: rgba(99,102,241,0.35); font-weight: 700; }
+    .qchip-edit { color: var(--muted); }
+    #qbar.editing .qchip-cmd { color: #f87171; border-color: rgba(239,68,68,0.4); }
+    #qbar.editing .qchip-edit { color: var(--green); border-color: rgba(34,197,94,0.35); }
+
+    /* ── UNLUMEN-INSPIRED ACCENTS (glow badge + glow button + shimmer) ── */
+    .pill.on { box-shadow: 0 0 14px rgba(34,197,94,0.32); }
+    .pill.reconnecting { color: var(--accent); border-color: rgba(99,102,241,0.3); }
+    .pill.reconnecting .dot { background: var(--accent); animation: blink 1s infinite; }
+    .btn-send { box-shadow: 0 3px 14px rgba(99,102,241,0.35); }
+    .btn-send:hover { box-shadow: 0 5px 22px rgba(99,102,241,0.55); }
+
+    /* ── MACRO BUILDER BOTTOM SHEET ── */
+    .sheet-back {
+      position: fixed; inset: 0; z-index: 50; display: flex;
+      align-items: flex-end; justify-content: center;
+      background: rgba(3,5,10,0.62); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+      opacity: 0; transition: opacity 0.22s ease;
+    }
+    .sheet-back.show { opacity: 1; }
+    .sheet {
+      width: 100%; max-width: 520px; background: #0c0f17; border: 1px solid var(--border);
+      border-radius: 20px 20px 0 0; padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
+      transform: translateY(100%); transition: transform 0.26s cubic-bezier(.2,.9,.3,1);
+      max-height: 82vh; display: flex; flex-direction: column;
+    }
+    .sheet-back.show .sheet { transform: translateY(0); }
+    .sheet-title { font-size: 15px; font-weight: 700; letter-spacing: 0.5px; margin-bottom: 12px; color: var(--accent); }
+    .sheet-name {
+      width: 100%; padding: 11px 14px; background: var(--surface); border: 1.5px solid var(--border);
+      border-radius: 12px; color: var(--text); font-size: 14px; outline: none; margin-bottom: 12px;
+    }
+    .sheet-name:focus { border-color: var(--accent); }
+    .sheet-hint { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+    .sheet-caps { display: flex; flex-wrap: wrap; gap: 8px; overflow-y: auto; padding-bottom: 6px; }
+    .cap-chip {
+      padding: 9px 14px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; color: var(--text); font-size: 13px; cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
+    }
+    .cap-chip:active { transform: scale(0.96); }
+    .cap-chip.on {
+      color: #fff; background: var(--adim); border-color: var(--accent);
+      box-shadow: 0 0 0 1px var(--accent), 0 4px 14px rgba(99,102,241,0.28);
+    }
+    .sheet-actions { display: flex; gap: 10px; margin-top: 16px; }
+    .sheet-btn {
+      flex: 1; padding: 13px; border: none; border-radius: 12px; font-size: 12px; font-weight: 700;
+      letter-spacing: 1px; cursor: pointer; transition: opacity 0.15s, transform 0.1s;
+    }
+    .sheet-btn:active { transform: scale(0.97); }
+    .sheet-cancel { background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+    .sheet-save { background: var(--accent); color: #fff; box-shadow: 0 4px 18px rgba(99,102,241,0.4); }
+
     /* ── TOAST ── */
     #toast {
       position:fixed; top:66px; left:50%; transform:translateX(-50%) translateY(-8px);
@@ -143,6 +221,7 @@
     <div class="url">__IP__:__PORT__</div>
   </header>
   <main id="feed"></main>
+  <div id="qbar"></div>
   <footer>
     <input id="inp" placeholder="Send a command to JARVIS…" autocomplete="off">
     <label class="btn-attach" for="file-inp" title="Send file">📎</label>
@@ -153,9 +232,9 @@
   </footer>
 
   <script>
-    // ── Auth — bearer token ───────────────────────────────────────────────────
-    const _authToken  = sessionStorage.getItem('jarvis_token');
-    const _sessionKey = sessionStorage.getItem('jarvis_key');
+    // ── Auth — bearer token (mutable: auto-reconnect can refresh it) ──────────
+    let _authToken  = sessionStorage.getItem('jarvis_token');
+    let _sessionKey = sessionStorage.getItem('jarvis_key');
 
     if (!_authToken) {
       location.replace('/login');
@@ -206,21 +285,100 @@
     const stTxt = document.getElementById('st');
     const wake  = document.getElementById('wake');
 
-    const _wsProto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const _wsUrl   = `${_wsProto}://${location.host}/ws?token=${encodeURIComponent(_authToken)}`;
-    const ws       = new WebSocket(_wsUrl);
+    // Auto-reconnecting socket — survives Mac sleep/wake without kicking the phone
+    // back to the login screen. On sleep the server is unreachable (close 1006);
+    // we keep retrying quietly. If the JARVIS process fully restarted, the token is
+    // rejected (close 4001) and we mint a fresh one from the paired device token.
+    let   ws               = null;
+    let   _reconnectDelay  = 1000;
+    const _RECONNECT_MIN   = 1000;
+    const _RECONNECT_MAX   = 15000;
+    let   _wasConnected    = false;
+    let   _reconnectTimer  = null;
 
-    ws.onopen    = () => { sys('Remote session active.'); toast('Connected to JARVIS'); };
-    ws.onclose   = () => sys('Connection lost — refresh to reconnect.');
-    ws.onerror   = () => sys('Connection error.');
-    ws.onmessage = (e) => {
-      const m = JSON.parse(e.data);
-      if (m.type === 'log')           append(m.speaker, m.text);
-      if (m.type === 'status')        setStatus(m.state);
-      if (m.type === 'wake')          sys('Wake word detected — connecting…');
-      if (m.type === 'sys')           sys(m.text);
-      if (m.type === 'file_received') _onFileReceived(m);
-    };
+    function _buildWsUrl() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      return `${proto}://${location.host}/ws?token=${encodeURIComponent(_authToken)}`;
+    }
+
+    async function _refreshTokenViaDevice() {
+      const devTok = localStorage.getItem('jarvis_device_token');
+      if (!devTok) return false;
+      try {
+        const r = await fetch('/api/device-login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_token: devTok }),
+        });
+        const d = await r.json();
+        if (d.ok && d.token) {
+          _authToken = d.token;
+          sessionStorage.setItem('jarvis_token', d.token);
+          if (d.key) {
+            _sessionKey = d.key;
+            sessionStorage.setItem('jarvis_key', d.key);
+            _initCrypto(d.key);
+          }
+          return true;
+        }
+      } catch (_) {}
+      return false;
+    }
+
+    function connectWS() {
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+      try { ws = new WebSocket(_buildWsUrl()); }
+      catch (_) { _scheduleReconnect(); return; }
+
+      ws.onopen = () => {
+        _reconnectDelay = _RECONNECT_MIN;
+        if (_wasConnected) { setStatus('active'); sys('Reconnected to JARVIS.'); toast('Reconnected'); }
+        else               { sys('Remote session active.'); toast('Connected to JARVIS'); }
+        _wasConnected = true;
+      };
+      ws.onerror = () => { /* onclose fires next — handle there */ };
+      ws.onclose = (ev) => { _onWsClosed(ev); };
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === 'log')           append(m.speaker, m.text);
+        if (m.type === 'status')        setStatus(m.state);
+        if (m.type === 'wake')          sys('Wake word detected — connecting…');
+        if (m.type === 'sys')           sys(m.text);
+        if (m.type === 'file_received') _onFileReceived(m);
+      };
+    }
+
+    async function _onWsClosed(ev) {
+      // 4001 = token rejected (process restarted) → refresh from paired device token
+      if (ev && ev.code === 4001) {
+        const ok = await _refreshTokenViaDevice();
+        if (!ok) { sys('Session expired — returning to login…'); location.replace('/login'); return; }
+      }
+      pill.className = 'pill reconnecting'; stTxt.textContent = 'Reconnecting';
+      if (_wasConnected) sys('Reconnecting… (Mac may be asleep)');
+      _scheduleReconnect();
+    }
+
+    function _scheduleReconnect() {
+      if (_reconnectTimer) return;
+      const delay = _reconnectDelay;
+      _reconnectTimer = setTimeout(async () => {
+        _reconnectTimer = null;
+        // After a few tries, proactively refresh the token in case the server restarted
+        if (delay >= 8000) { await _refreshTokenViaDevice(); }
+        connectWS();
+      }, delay);
+      _reconnectDelay = Math.min(Math.round(_reconnectDelay * 1.6), _RECONNECT_MAX);
+    }
+
+    // Wake from OS sleep / tab foreground → try to reconnect immediately
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && (!ws || ws.readyState > 1)) {
+        _reconnectDelay = _RECONNECT_MIN;
+        connectWS();
+      }
+    });
+
+    connectWS();
 
     function setStatus(s) {
       if (s === 'active') {
@@ -372,19 +530,25 @@
     });
 
     // ── Commands ──────────────────────────────────────────────────────────────
-    function doSend() {
-      const inp = document.getElementById('inp');
-      const txt = inp.value.trim();
-      if (!txt) return;
-      inp.value = '';
-      append('user', txt);
-      const enc  = _encrypt(txt);
-      const body = enc ? { enc } : { text: txt };
+    function _sendText(txt) {
+      const t = (txt || '').trim();
+      if (!t) return;
+      append('user', t);
+      const enc  = _encrypt(t);
+      const body = enc ? { enc } : { text: t };
       _authFetch('/api/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
+    }
+
+    function doSend() {
+      const inp = document.getElementById('inp');
+      const txt = inp.value.trim();
+      if (!txt) return;
+      inp.value = '';
+      _sendText(txt);
     }
 
     function doWake() {
@@ -395,6 +559,128 @@
     document.getElementById('inp').addEventListener('keydown', e => {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
     });
+
+    // ── Quick commands / macros (above keyboard) ──────────────────────────────
+    // Commands are built from JARVIS's own capabilities — one tap runs several
+    // actions, no retyping. Stored on the computer (/api/macros) and shared with
+    // the desktop, so a command added on the phone also works there.
+    const qbar    = document.getElementById('qbar');
+    let   _caps    = [];    // [{id,label,phrase,needs_input,input_label}]
+    let   _macros  = [];    // [{id,name,steps,phrase}]
+    let   _qEditing = false;
+
+    async function _loadCaps() {
+      try {
+        const r = await _authFetch('/api/capabilities');
+        const d = await r.json();
+        if (Array.isArray(d.capabilities)) _caps = d.capabilities;
+      } catch (_) {}
+    }
+    async function _loadMacros() {
+      try {
+        const r = await _authFetch('/api/macros');
+        const d = await r.json();
+        if (Array.isArray(d.macros)) _macros = d.macros;
+      } catch (_) {}
+      _renderQuick();
+    }
+    async function _saveMacros() {
+      try {
+        const r = await _authFetch('/api/macros', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ macros: _macros }),
+        });
+        const d = await r.json();
+        if (d.ok && Array.isArray(d.macros)) _macros = d.macros;
+      } catch (_) {}
+    }
+
+    function _renderQuick() {
+      qbar.className = _qEditing ? 'editing' : '';
+      qbar.innerHTML = '';
+      _macros.forEach((m, i) => {
+        const b = document.createElement('button');
+        b.className   = 'qchip qchip-cmd';
+        b.textContent = _qEditing ? (m.name + '  ✕') : m.name;
+        b.title       = _qEditing ? 'Tap to remove' : (m.phrase || m.name);
+        b.onclick     = async () => {
+          if (_qEditing) { _macros.splice(i, 1); await _saveMacros(); _renderQuick(); }
+          else           { _sendText(m.phrase || m.name); }
+        };
+        qbar.appendChild(b);
+      });
+      const add = document.createElement('button');
+      add.className   = 'qchip qchip-add';
+      add.textContent = '＋';
+      add.title       = 'Add command';
+      add.onclick     = _openBuilder;
+      qbar.appendChild(add);
+      const edit = document.createElement('button');
+      edit.className   = 'qchip qchip-edit';
+      edit.textContent = _qEditing ? '✓' : '✎';
+      edit.title       = _qEditing ? 'Done' : 'Edit commands';
+      edit.onclick     = () => { _qEditing = !_qEditing; _renderQuick(); };
+      qbar.appendChild(edit);
+    }
+
+    // ── Macro builder (capability picker) ─────────────────────────────────────
+    function _openBuilder() {
+      if (!_caps.length) { toast('No capabilities loaded'); return; }
+      const picked = {};   // id -> value
+
+      const back = document.createElement('div');
+      back.className = 'sheet-back';
+      const sheet = document.createElement('div');
+      sheet.className = 'sheet';
+      sheet.innerHTML = `
+        <div class="sheet-title">New command</div>
+        <input class="sheet-name" id="mb-name" placeholder="Command name" autocomplete="off">
+        <div class="sheet-hint">Pick actions JARVIS will run:</div>
+        <div class="sheet-caps" id="mb-caps"></div>
+        <div class="sheet-actions">
+          <button class="sheet-btn sheet-cancel" id="mb-cancel">CANCEL</button>
+          <button class="sheet-btn sheet-save" id="mb-save">SAVE</button>
+        </div>`;
+      back.appendChild(sheet);
+      document.body.appendChild(back);
+      requestAnimationFrame(() => back.classList.add('show'));
+
+      const capBox = sheet.querySelector('#mb-caps');
+      _caps.forEach(cap => {
+        const chip = document.createElement('button');
+        chip.className = 'cap-chip';
+        chip.textContent = cap.label;
+        chip.onclick = () => {
+          if (chip.classList.toggle('on')) {
+            let val = '';
+            if (cap.needs_input) {
+              val = (prompt(cap.input_label || cap.label) || '').trim();
+            }
+            picked[cap.id] = val;
+          } else {
+            delete picked[cap.id];
+          }
+        };
+        capBox.appendChild(chip);
+      });
+
+      const close = () => { back.classList.remove('show'); setTimeout(() => back.remove(), 220); };
+      sheet.querySelector('#mb-cancel').onclick = close;
+      back.onclick = (e) => { if (e.target === back) close(); };
+      sheet.querySelector('#mb-save').onclick = async () => {
+        const name = sheet.querySelector('#mb-name').value.trim();
+        const ids  = Object.keys(picked);
+        if (!name || !ids.length) { toast('Name + at least one action'); return; }
+        const steps = ids.map(id => ({ id, value: picked[id] || '' }));
+        _macros.push({ name, steps });
+        await _saveMacros();
+        _renderQuick();
+        close();
+        toast('Command added');
+      };
+    }
+
+    _loadCaps().then(_loadMacros);
 
     // ── Toast ─────────────────────────────────────────────────────────────────
     let _toastTimer;
@@ -553,6 +839,12 @@
         if (w.readyState < 2) w.close();
       }
       _micIdle();
+    }
+
+    // ── PWA — install to home screen ──────────────────────────────────────────
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () =>
+        navigator.serviceWorker.register('/sw.js').catch(() => {}));
     }
   </script>
 </body>

@@ -180,6 +180,34 @@ class WindowsAdapter(PlatformAdapter):
         except Exception as e:
             return False, str(e)
 
+    def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
+        try:
+            import ctypes
+
+            ES_CONTINUOUS = 0x80000000
+            ES_SYSTEM_REQUIRED = 0x00000001
+            res = ctypes.windll.kernel32.SetThreadExecutionState(
+                ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+            )
+            if res == 0:
+                return None, "SetThreadExecutionState failed on Windows."
+            # Token is a sentinel; release_sleep resets the state on the same thread.
+            return "win-exec-state", "Windows system sleep prevented (SetThreadExecutionState)."
+        except Exception as e:
+            return None, f"Keep-awake failed on Windows: {e}"
+
+    def release_sleep(self, token: object) -> None:
+        if token == "win-exec-state":
+            try:
+                import ctypes
+
+                ES_CONTINUOUS = 0x80000000
+                ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
+            except Exception:
+                pass
+            return
+        super().release_sleep(token)
+
     def _find_windows_app(self, candidates: tuple[str, ...]) -> str:
         for candidate in candidates:
             found = self._which(candidate, Path(candidate).stem)

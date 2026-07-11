@@ -181,3 +181,24 @@ class LinuxAdapter(PlatformAdapter):
             return None, "pyautogui playpause sent; playback was not verified."
         except Exception as e:
             return False, str(e)
+
+    def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
+        exe = self._which("systemd-inhibit")
+        if not exe:
+            return None, "systemd-inhibit not found on Linux."
+        try:
+            proc = subprocess.Popen(
+                [
+                    exe,
+                    "--what=sleep:idle",
+                    f"--why={reason or 'JARVIS remote session'}",
+                    "--mode=block",
+                    "sleep", "infinity",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc, "Linux sleep inhibited (systemd-inhibit)."
+        except Exception as e:
+            return None, f"Failed to start systemd-inhibit: {e}"

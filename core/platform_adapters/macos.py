@@ -189,6 +189,23 @@ class MacOSAdapter(PlatformAdapter):
         detail = (proc.stderr if proc else "") or "osascript media key failed"
         return False, detail.strip()
 
+    def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
+        exe = self._which("caffeinate")
+        if not exe:
+            return None, "caffeinate not found on macOS."
+        try:
+            # -i: prevent idle sleep, -m: prevent disk idle sleep. No -s, so a manual
+            # lid-close on battery still sleeps (client auto-reconnect covers that).
+            proc = subprocess.Popen(
+                [exe, "-i", "-m"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return proc, "macOS idle sleep prevented (caffeinate)."
+        except Exception as e:
+            return None, f"Failed to start caffeinate: {e}"
+
     def _mac_app_exists(self, app_name: str) -> bool:
         candidates = [
             Path("/Applications") / f"{app_name}.app",

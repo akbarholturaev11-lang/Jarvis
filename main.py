@@ -48,7 +48,15 @@ from core.device_profile import (
     resolve_media_route,
     resolve_messaging_route,
 )
-from core.i18n import change_ui_language, detect_ui_language_command
+from core.i18n import active_lang, change_ui_language, detect_ui_language_command, t
+from core.power_manager import KeepAwakeManager
+from core.remote_tunnel import CloudflareTunnel
+from core.app_settings import (
+    get_keep_awake_enabled,
+    get_tunnel_config,
+    set_keep_awake_enabled,
+    set_tunnel_enabled,
+)
 from core.briefing_routing import (
     DEFAULT_PERSONAL_SOURCES,
     apply_briefing_route,
@@ -128,6 +136,9 @@ OUT_QUEUE_MAXSIZE   = 200
 RECONNECT_BACKOFF_INITIAL = 3
 RECONNECT_BACKOFF_MAX     = 12
 RECONNECT_STABLE_RESET_SECONDS = 30
+# Grace period before releasing keep-awake after the last phone disconnects, so a
+# brief sleep/wake reconnect does not thrash caffeinate on and off.
+KEEP_AWAKE_GRACE_SECONDS = 25
 UNVERIFIED_TOOL_RESULT = (
     "Tool completed without a detailed verification result; exact outcome is uncertain."
 )
@@ -149,7 +160,7 @@ def _load_system_prompt() -> str:
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
-def _clean_transcript(text: str) -> str:    
+def _clean_transcript(text: str) -> str:
     text = _CTRL_RE.sub("", text)
     text = re.sub(r"[\x00-\x08\x0b-\x1f]", "", text)
     return text.strip()
@@ -699,8 +710,12 @@ class JarvisLive:
         self.ui.on_text_command   = self._on_text_command
         self.ui.on_remote_clicked = self._make_remote_key
         self.ui.on_interrupt      = self.interrupt
+        self.ui.on_settings_action = self._handle_settings_action
         self._turn_done_event: asyncio.Event | None = None
         self._dashboard     = None
+        self._tunnel        = None
+        self._keep_awake    = KeepAwakeManager()
+        self._keep_awake_release_handle = None   # asyncio TimerHandle for grace release
         self._briefing_sent    = False          # personal briefing fires once per process
         self._sys_monitor      = SystemMonitor()  # persistent cooldown state
         self._proactive        = ProactiveEngine()
@@ -2342,6 +2357,199 @@ class JarvisLive:
         self.ui.write_log("SYS: Phone connected via Remote Dashboard.")
         self.ui.notify_phone_connected()
 
+    # ── keep-awake while a phone is remotely connected ───────────────────────
+
+    def _on_dashboard_clients_changed(self, count: int) -> None:
+        """Keep the machine awake while >=1 phone WebSocket client is connected.
+        Called from the dashboard event loop when the client set changes."""
+        loop = getattr(self, "_loop", None)
+        if count > 0:
+            if self._keep_awake_release_handle is not None:
+                self._keep_awake_release_handle.cancel()
+                self._keep_awake_release_handle = None
+            if not get_keep_awake_enabled():
+                return  # user disabled keep-awake in settings
+            if not self._keep_awake.active:
+                ok, status = self._keep_awake.acquire()
+                if ok:
+                    self.ui.write_log(f"SYS: {t('keepawake.on')}")
+                else:
+                    self.ui.write_log(f"SYS: {t('keepawake.unsupported')} ({status})")
+        else:
+            if (
+                self._keep_awake.active
+                and loop is not None
+                and self._keep_awake_release_handle is None
+            ):
+                self._keep_awake_release_handle = loop.call_later(
+                    KEEP_AWAKE_GRACE_SECONDS, self._release_keep_awake_now
+                )
+
+    def _release_keep_awake_now(self) -> None:
+        self._keep_awake_release_handle = None
+        if self._keep_awake.active:
+            self._keep_awake.release()
+            self.ui.write_log(f"SYS: {t('keepawake.off')}")
+
+    # ── remote tunnel (control from anywhere) ────────────────────────────────
+
+    def _safe_loop_call(self, fn) -> None:
+        """Run fn on the asyncio loop thread (tunnel callbacks fire off-thread)."""
+        loop = getattr(self, "_loop", None)
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(fn)
+                return
+            except Exception:
+                pass
+        try:
+            fn()
+        except Exception:
+            pass
+
+    def _start_remote_tunnel_if_enabled(self) -> None:
+        try:
+            cfg = get_tunnel_config()
+        except Exception:
+            return
+        if cfg.get("enabled"):
+            self._apply_remote_tunnel(True)
+
+    def _apply_remote_tunnel(self, enabled: bool) -> tuple[bool, str]:
+        """Start or stop the Cloudflare tunnel. Returns (ok, status_message)."""
+        if not enabled:
+            if self._tunnel is not None:
+                self._tunnel.stop()
+                self._tunnel = None
+            if self._dashboard:
+                self._dashboard.set_public_url(None)
+            self.ui.write_log(f"SYS: {t('tunnel.stopped')}")
+            return True, t("tunnel.stopped")
+
+        if self._dashboard is None:
+            return False, "dashboard unavailable"
+        if self._tunnel is not None:
+            return True, self._tunnel.status
+
+        from dashboard.server import PORT as DASHBOARD_PORT
+        cfg = get_tunnel_config()
+        self.ui.write_log(f"SYS: {t('tunnel.starting')}")
+        self._tunnel = CloudflareTunnel(
+            port=DASHBOARD_PORT,
+            mode=str(cfg.get("mode") or "quick"),
+            hostname=str(cfg.get("hostname") or ""),
+            on_url=self._on_tunnel_url,
+            on_status=self._on_tunnel_status,
+        )
+        status, detail = self._tunnel.start()
+        if status == CloudflareTunnel.STATUS_NOT_INSTALLED:
+            self.ui.write_log(f"SYS: {t('tunnel.not_installed')} ({detail})")
+            self._tunnel = None
+            return False, t("tunnel.not_installed")
+        return True, t("tunnel.starting")
+
+    def set_remote_tunnel(self, enabled: bool) -> tuple[bool, str]:
+        """Toggle remote access and persist the choice (used by the settings UI)."""
+        try:
+            set_tunnel_enabled(bool(enabled))
+        except Exception:
+            pass
+        return self._apply_remote_tunnel(bool(enabled))
+
+    def _on_tunnel_url(self, url: str) -> None:
+        if self._dashboard:
+            self._dashboard.set_public_url(url)
+        self._safe_loop_call(lambda: self._announce_tunnel_active(url))
+
+    def _announce_tunnel_active(self, url: str) -> None:
+        self.ui.write_log(f"SYS: {t('tunnel.active')} {url}")
+        if self._dashboard:
+            try:
+                asyncio.create_task(self._dashboard.broadcast(
+                    {"type": "sys", "text": f"{t('tunnel.active')} {url}"}
+                ))
+            except Exception:
+                pass
+
+    def _on_tunnel_status(self, status: str, detail: str) -> None:
+        if status == CloudflareTunnel.STATUS_FAILED:
+            self._safe_loop_call(
+                lambda: self.ui.write_log(f"SYS: {t('tunnel.failed')} ({detail})")
+            )
+
+    # ── settings window dispatch (from the Qt gear/settings overlay) ──────────
+
+    def _handle_settings_action(self, action: str, **kwargs):
+        """Single entry point for the desktop settings overlay. Runs on the Qt
+        thread; only touches thread-safe state or schedules onto the loop."""
+        try:
+            if action == "get_state":
+                return self._settings_state()
+            if action == "toggle_remote":
+                return self.set_remote_tunnel(bool(kwargs.get("enabled")))
+            if action == "toggle_keep_awake":
+                return self._set_keep_awake_enabled(bool(kwargs.get("enabled")))
+            if action == "set_language":
+                lang = str(kwargs.get("lang") or "").strip()
+                try:
+                    msg = change_ui_language(lang)
+                except Exception as e:
+                    msg = str(e)
+                self.ui.write_log(f"Jarvis: {msg}")
+                return msg
+            if action == "revoke_devices":
+                if self._dashboard is not None:
+                    n = self._dashboard.revoke_devices()
+                    self.ui.write_log(f"SYS: Revoked {n} paired device(s).")
+                    return n
+                return 0
+            if action == "run_command":
+                text = str(kwargs.get("text") or "").strip()
+                if text:
+                    threading.Thread(
+                        target=self._on_text_command, args=(text,), daemon=True
+                    ).start()
+                return True
+        except Exception as e:
+            print(f"[Settings] action error: {e}")
+        return None
+
+    def _settings_state(self) -> dict:
+        d = self._dashboard
+        try:
+            tunnel_cfg = get_tunnel_config()
+        except Exception:
+            tunnel_cfg = {"enabled": False}
+        return {
+            "tunnel_enabled": bool(tunnel_cfg.get("enabled")),
+            "tunnel_status": self._tunnel.status if self._tunnel else "stopped",
+            "public_url": (d._public_url if d else None),
+            "lan_url": (d.get_lan_url() if d else ""),
+            "keep_awake_enabled": get_keep_awake_enabled(),
+            "keep_awake_active": self._keep_awake.active,
+            "language": active_lang(),
+            "device_count": (d.device_count() if d else 0),
+            "client_count": (d.client_count() if d else 0),
+        }
+
+    def _set_keep_awake_enabled(self, enabled: bool) -> tuple[bool, str]:
+        set_keep_awake_enabled(enabled)
+        if not enabled:
+            # Disable now — release if currently holding.
+            if self._keep_awake_release_handle is not None:
+                self._keep_awake_release_handle.cancel()
+                self._keep_awake_release_handle = None
+            if self._keep_awake.active:
+                self._keep_awake.release()
+                self.ui.write_log(f"SYS: {t('keepawake.off')}")
+        else:
+            # Enable now — acquire if a phone is already connected.
+            if self._dashboard and self._dashboard.client_count() > 0 and not self._keep_awake.active:
+                ok, status = self._keep_awake.acquire()
+                if ok:
+                    self.ui.write_log(f"SYS: {t('keepawake.on')}")
+        return True, "ok"
+
     # ── dashboard command relay ─────────────────────────────────────────────
 
     async def _process_dashboard_commands(self) -> None:
@@ -2406,9 +2614,11 @@ class JarvisLive:
             from dashboard.server import DashboardServer
             self._dashboard = DashboardServer()
             self._dashboard.set_connect_callback(self._on_phone_connected)
+            self._dashboard.set_client_count_callback(self._on_dashboard_clients_changed)
             asyncio.create_task(self._dashboard.serve())
             # Runs for the whole lifetime, not just inside an active session
             asyncio.create_task(self._process_dashboard_commands())
+            self._start_remote_tunnel_if_enabled()
         except Exception as e:
             print(f"[Dashboard] Disabled: {e}")
             self._dashboard = None

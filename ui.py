@@ -19,8 +19,8 @@ else:
     _WIN_HIDE: dict = {}
 
 from PyQt6.QtCore import (
-    QEasingCurve, QMimeData, QObject, QPointF, QRectF, QSize, Qt,
-    QTimer, QUrl, pyqtSignal,
+    QEasingCurve, QMimeData, QObject, QPointF, QPropertyAnimation, QRectF, QSize, Qt,
+    QTimer, QUrl, pyqtProperty, pyqtSignal,
 )
 from PyQt6.QtGui import (
     QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QFontDatabase,
@@ -28,7 +28,7 @@ from PyQt6.QtGui import (
     QRadialGradient, QShortcut,
 )
 from PyQt6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel, QLineEdit,
     QMainWindow, QPushButton, QScrollArea, QSizePolicy, QSplitter,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget, QProgressBar,
 )
@@ -40,6 +40,8 @@ from core.i18n import (
     state_label,
     t,
 )
+from core.capabilities import list_capabilities
+from core.macros import load_macros, add_macro, remove_macro
 
 def _base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -134,9 +136,9 @@ class _SysMetrics:
     def __init__(self):
         self.cpu  = 0.0
         self.mem  = 0.0
-        self.net  = 0.0   
-        self.gpu  = -1.0  
-        self.tmp  = -1.0  
+        self.net  = 0.0
+        self.gpu  = -1.0
+        self.tmp  = -1.0
         self._lock = threading.Lock()
         self._last_net = psutil.net_io_counters()
         self._last_net_t = time.time()
@@ -1283,6 +1285,523 @@ class RemoteKeyOverlay(QWidget):
         self.closed.emit()
 
 
+class ToggleSwitch(QWidget):
+    """Animated on/off pill switch. Unlumen 'Switch' used as visual reference;
+    implemented natively in Qt (web components are web-only per AI_RULES.md)."""
+
+    toggled = pyqtSignal(bool)
+
+    def __init__(self, checked: bool = False, parent=None):
+        super().__init__(parent)
+        self._checked = bool(checked)
+        self._knob = 1.0 if self._checked else 0.0
+        self.setFixedSize(44, 24)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._anim = QPropertyAnimation(self, b"knobPos", self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setChecked(self, value: bool, animate: bool = True) -> None:
+        value = bool(value)
+        if value == self._checked:
+            self._knob = 1.0 if value else 0.0
+            self.update()
+            return
+        self._checked = value
+        self._anim.stop()
+        if animate:
+            self._anim.setStartValue(self._knob)
+            self._anim.setEndValue(1.0 if value else 0.0)
+            self._anim.start()
+        else:
+            self._knob = 1.0 if value else 0.0
+            self.update()
+
+    def _get_knob(self) -> float:
+        return self._knob
+
+    def _set_knob(self, v: float) -> None:
+        self._knob = v
+        self.update()
+
+    knobPos = pyqtProperty(float, _get_knob, _set_knob)
+
+    def mousePressEvent(self, e):
+        self.setChecked(not self._checked)
+        self.toggled.emit(self._checked)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        tv = max(0.0, min(1.0, self._knob))
+        off = QColor(58, 64, 78)
+        on = QColor(C.ACC)
+        col = QColor(
+            int(off.red()   + (on.red()   - off.red())   * tv),
+            int(off.green() + (on.green() - off.green()) * tv),
+            int(off.blue()  + (on.blue()  - off.blue())  * tv),
+        )
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(col)
+        p.drawRoundedRect(QRectF(0, 0, w, h), h / 2, h / 2)
+        r = h - 6
+        x = 3 + tv * (w - r - 6)
+        p.setBrush(QColor("#ffffff"))
+        p.drawEllipse(QRectF(x, 3, r, r))
+        p.end()
+
+
+class MacroBuilderOverlay(QWidget):
+    """Build a one-tap command from JARVIS capabilities — actions are picked from a
+    list, not typed by hand. Saves to config/macros.json via core.macros."""
+
+    saved  = pyqtSignal()
+    closed = pyqtSignal()
+    _OW, _OH = 360, 470
+
+    def __init__(self, lang: str = "en", parent=None):
+        super().__init__(parent)
+        self._lang = "ru" if str(lang).lower().startswith("ru") else "en"
+        self._selected: dict[str, str] = {}   # cap_id -> value
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            MacroBuilderOverlay {{
+                background: rgba(0, 4, 12, 0.97);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 14px;
+            }}
+        """)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(8)
+
+        title = QLabel(f"◈  {t('settings.automation')}")
+        title.setFont(QFont("Courier New", 11, QFont.Weight.Bold))
+        title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
+        lay.addWidget(title)
+
+        self._name = QLineEdit()
+        self._name.setPlaceholderText(t("settings.macro_name"))
+        self._name.setFixedHeight(32)
+        self._name.setStyleSheet(f"""
+            QLineEdit {{
+                background: {C.PANEL2}; color: {C.TEXT};
+                border: 1px solid {C.BORDER_B}; border-radius: 6px; padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        lay.addWidget(self._name)
+
+        hint = QLabel(t("settings.pick_actions"))
+        hint.setFont(QFont("Courier New", 8))
+        hint.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent;")
+        lay.addWidget(hint)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        inner = QWidget()
+        inner.setStyleSheet("background: transparent;")
+        col = QVBoxLayout(inner)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(6)
+        for cap in list_capabilities(self._lang):
+            col.addWidget(self._make_cap_chip(cap))
+        col.addStretch()
+        scroll.setWidget(inner)
+        lay.addWidget(scroll, 1)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        cancel = QPushButton(t("settings.cancel"))
+        cancel.setFixedHeight(32)
+        cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+        cancel.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                          border: 1px solid {C.BORDER}; border-radius: 5px; }}
+            QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
+        """)
+        cancel.clicked.connect(self._do_close)
+        row.addWidget(cancel)
+
+        save = QPushButton(t("settings.save"))
+        save.setFixedHeight(32)
+        save.setCursor(Qt.CursorShape.PointingHandCursor)
+        save.setStyleSheet(f"""
+            QPushButton {{ background: {C.PANEL}; color: {C.PRI};
+                          border: 1px solid {C.PRI_DIM}; border-radius: 5px; font-weight: bold; }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
+        """)
+        save.clicked.connect(self._do_save)
+        row.addWidget(save)
+        lay.addLayout(row)
+
+    def _make_cap_chip(self, cap: dict) -> QPushButton:
+        b = QPushButton(cap["label"])
+        b.setCheckable(True)
+        b.setFixedHeight(34)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setStyleSheet(f"""
+            QPushButton {{ text-align: left; padding: 4px 12px;
+                background: {C.PANEL2}; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 6px; }}
+            QPushButton:checked {{ color: {C.PRI};
+                background: {C.PRI_GHO}; border: 1px solid {C.PRI}; }}
+        """)
+        b.clicked.connect(lambda checked, c=cap: self._toggle_cap(c, checked))
+        return b
+
+    def _toggle_cap(self, cap: dict, checked: bool) -> None:
+        cid = cap["id"]
+        if not checked:
+            self._selected.pop(cid, None)
+            return
+        value = ""
+        if cap.get("needs_input"):
+            value, ok = QInputDialog.getText(
+                self, cap["label"], cap.get("input_label") or cap["label"]
+            )
+            if not ok:
+                value = ""
+        self._selected[cid] = value
+
+    def _do_save(self) -> None:
+        name = self._name.text().strip()
+        if not name or not self._selected:
+            self._name.setStyleSheet(self._name.styleSheet() + "border:1px solid #f87171;")
+            return
+        steps = [{"id": cid, "value": val} for cid, val in self._selected.items()]
+        try:
+            add_macro(name, steps)
+        except Exception:
+            pass
+        self.saved.emit()
+        self._do_close()
+
+    def _do_close(self) -> None:
+        self.hide()
+        self.closed.emit()
+
+
+class SettingsOverlay(QWidget):
+    """Floating settings panel: remote on/off, QR pairing, keep-awake, language,
+    paired devices, connection status, and command automation (macros)."""
+
+    closed = pyqtSignal()
+    _OW, _OH = 400, 560
+
+    def __init__(self, dispatch, open_qr, parent=None):
+        super().__init__(parent)
+        self._dispatch = dispatch          # (action, **kwargs) -> result
+        self._open_qr  = open_qr           # () -> None
+        self._macro_builder = None
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            SettingsOverlay {{
+                background: rgba(0, 4, 12, 0.96);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 14px;
+            }}
+        """)
+        self._state = self._get_state()
+        self._lang = str(self._state.get("language", "en"))
+        self._build()
+
+    # ── helpers ────────────────────────────────────────────────────────────
+    def _get_state(self) -> dict:
+        try:
+            st = self._dispatch("get_state")
+            return st if isinstance(st, dict) else {}
+        except Exception:
+            return {}
+
+    def _lbl(self, txt, fs=9, bold=False, color=None, align=Qt.AlignmentFlag.AlignLeft):
+        w = QLabel(txt)
+        w.setAlignment(align)
+        w.setFont(QFont("Courier New", fs, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+        w.setStyleSheet(f"color: {color or C.TEXT}; background: transparent;")
+        w.setWordWrap(True)
+        return w
+
+    def _sep(self):
+        s = QFrame(); s.setFrameShape(QFrame.Shape.HLine)
+        s.setStyleSheet(f"color: {C.BORDER}; margin: 2px 0;")
+        return s
+
+    def _mini_btn(self, text, on_click, danger=False):
+        b = QPushButton(text)
+        b.setFixedHeight(28)
+        b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        accent = "#f87171" if danger else C.PRI
+        b.setStyleSheet(f"""
+            QPushButton {{ background: {C.PANEL}; color: {accent};
+                          border: 1px solid {accent}; border-radius: 5px; padding: 0 10px; }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; }}
+        """)
+        b.clicked.connect(on_click)
+        return b
+
+    def _row(self, label_text, widget):
+        row = QHBoxLayout(); row.setSpacing(8)
+        row.addWidget(self._lbl(label_text, 9, color=C.TEXT))
+        row.addStretch()
+        row.addWidget(widget)
+        wrap = QWidget(); wrap.setStyleSheet("background: transparent;")
+        wrap.setLayout(row)
+        return wrap
+
+    # ── build ──────────────────────────────────────────────────────────────
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 16, 22, 16)
+        lay.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.addWidget(self._lbl(f"⚙  {t('settings.title')}", 12, bold=True, color=C.PRI))
+        header.addStretch()
+        close = QPushButton("✕")
+        close.setFixedSize(26, 26)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                          border: 1px solid {C.BORDER}; border-radius: 5px; }}
+            QPushButton:hover {{ color: #f87171; border: 1px solid #f87171; }}
+        """)
+        close.clicked.connect(self._do_close)
+        header.addWidget(close)
+        lay.addLayout(header)
+        lay.addWidget(self._sep())
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        body = QWidget(); body.setStyleSheet("background: transparent;")
+        b = QVBoxLayout(body); b.setContentsMargins(0, 0, 0, 0); b.setSpacing(9)
+
+        # Remote access toggle
+        self._remote_sw = ToggleSwitch(bool(self._state.get("tunnel_enabled")))
+        self._remote_sw.toggled.connect(self._on_toggle_remote)
+        b.addWidget(self._row(t("settings.remote_access"), self._remote_sw))
+        self._remote_status = self._lbl(self._remote_status_text(), 8, color=C.TEXT_DIM)
+        b.addWidget(self._remote_status)
+
+        # QR / PIN pairing
+        b.addWidget(self._mini_btn(t("settings.qr_pair"), self._show_qr))
+
+        b.addWidget(self._sep())
+
+        # Keep-awake toggle
+        self._awake_sw = ToggleSwitch(bool(self._state.get("keep_awake_enabled", True)))
+        self._awake_sw.toggled.connect(self._on_toggle_awake)
+        b.addWidget(self._row(t("settings.keep_awake"), self._awake_sw))
+
+        b.addWidget(self._sep())
+
+        # Language
+        lang_row = QHBoxLayout(); lang_row.setSpacing(8)
+        lang_row.addWidget(self._lbl(t("settings.language"), 9, color=C.TEXT))
+        lang_row.addStretch()
+        self._ru_btn = self._lang_btn("RU", "ru")
+        self._en_btn = self._lang_btn("EN", "en")
+        lang_row.addWidget(self._ru_btn)
+        lang_row.addWidget(self._en_btn)
+        lw = QWidget(); lw.setStyleSheet("background: transparent;"); lw.setLayout(lang_row)
+        b.addWidget(lw)
+
+        b.addWidget(self._sep())
+
+        # Connection status
+        b.addWidget(self._lbl(t("settings.status"), 9, bold=True, color=C.PRI))
+        self._conn_lbl = self._lbl(self._conn_text(), 8, color=C.TEXT_DIM)
+        b.addWidget(self._conn_lbl)
+
+        # Paired devices
+        dev_row = QHBoxLayout(); dev_row.setSpacing(8)
+        self._dev_lbl = self._lbl(self._devices_text(), 9, color=C.TEXT)
+        dev_row.addWidget(self._dev_lbl)
+        dev_row.addStretch()
+        dev_row.addWidget(self._mini_btn(t("settings.revoke"), self._revoke_devices, danger=True))
+        dw = QWidget(); dw.setStyleSheet("background: transparent;"); dw.setLayout(dev_row)
+        b.addWidget(dw)
+
+        b.addWidget(self._sep())
+
+        # Command automation (macros)
+        b.addWidget(self._lbl(t("settings.automation"), 9, bold=True, color=C.PRI))
+        self._macro_box = QVBoxLayout(); self._macro_box.setSpacing(5)
+        mb_wrap = QWidget(); mb_wrap.setStyleSheet("background: transparent;")
+        mb_wrap.setLayout(self._macro_box)
+        b.addWidget(mb_wrap)
+        self._render_macros()
+        b.addWidget(self._mini_btn(t("settings.add_automation"), self._add_macro))
+
+        b.addStretch()
+        scroll.setWidget(body)
+        lay.addWidget(scroll, 1)
+
+    # ── sub-widgets & text ─────────────────────────────────────────────────
+    def _lang_btn(self, text, code):
+        active = str(self._state.get("language", "en")) == code
+        b = QPushButton(text)
+        b.setFixedHeight(26); b.setFixedWidth(46)
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        border = C.PRI if active else C.BORDER
+        color  = C.PRI if active else C.TEXT_MED
+        b.setStyleSheet(f"""
+            QPushButton {{ background: {C.PRI_GHO if active else 'transparent'};
+                          color: {color}; border: 1px solid {border}; border-radius: 5px; }}
+            QPushButton:hover {{ border: 1px solid {C.PRI}; color: {C.PRI}; }}
+        """)
+        b.clicked.connect(lambda: self._set_language(code))
+        return b
+
+    def _remote_status_text(self) -> str:
+        st = self._state
+        if st.get("public_url"):
+            return f"✓ {st.get('public_url')}"
+        status = st.get("tunnel_status", "stopped")
+        if status == "starting":
+            return t("tunnel.starting")
+        if status == "not_installed":
+            return t("tunnel.not_installed")
+        return t("tunnel.lan_only")
+
+    def _conn_text(self) -> str:
+        st = self._state
+        lan = st.get("lan_url", "")
+        pub = st.get("public_url") or "—"
+        n = int(st.get("client_count", 0) or 0)
+        return (f"LAN: {lan}\nPublic: {pub}\n"
+                f"{t('settings.phones_connected', n=n)}")
+
+    def _devices_text(self) -> str:
+        n = int(self._state.get("device_count", 0) or 0)
+        if n <= 0:
+            return t("settings.no_devices")
+        return f"{t('settings.devices')}: {n}"
+
+    def _render_macros(self):
+        while self._macro_box.count():
+            item = self._macro_box.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        try:
+            macros = load_macros()
+        except Exception:
+            macros = []
+        if not macros:
+            self._macro_box.addWidget(self._lbl(t("settings.no_macros"), 8, color=C.TEXT_DIM))
+            return
+        for m in macros:
+            row = QHBoxLayout(); row.setSpacing(6)
+            run = QPushButton(f"▷  {m.get('name', '')}")
+            run.setFixedHeight(28)
+            run.setCursor(Qt.CursorShape.PointingHandCursor)
+            run.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            run.setStyleSheet(f"""
+                QPushButton {{ text-align: left; padding: 0 10px; background: {C.PANEL2};
+                    color: {C.TEXT}; border: 1px solid {C.BORDER}; border-radius: 5px; }}
+                QPushButton:hover {{ color: {C.PRI}; border: 1px solid {C.PRI}; }}
+            """)
+            run.clicked.connect(lambda checked, mm=m: self._run_macro(mm))
+            row.addWidget(run, 1)
+            rm = QPushButton("✕")
+            rm.setFixedSize(26, 28)
+            rm.setCursor(Qt.CursorShape.PointingHandCursor)
+            rm.setStyleSheet(f"""
+                QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                    border: 1px solid {C.BORDER}; border-radius: 5px; }}
+                QPushButton:hover {{ color: #f87171; border: 1px solid #f87171; }}
+            """)
+            rm.clicked.connect(lambda checked, mid=m.get("id"): self._remove_macro(mid))
+            row.addWidget(rm)
+            wrap = QWidget(); wrap.setStyleSheet("background: transparent;"); wrap.setLayout(row)
+            self._macro_box.addWidget(wrap)
+
+    # ── actions ─────────────────────────────────────────────────────────────
+    def _refresh_state(self):
+        self._state = self._get_state()
+        self._remote_status.setText(self._remote_status_text())
+        self._conn_lbl.setText(self._conn_text())
+        self._dev_lbl.setText(self._devices_text())
+
+    def _on_toggle_remote(self, enabled: bool):
+        try:
+            self._dispatch("toggle_remote", enabled=enabled)
+        except Exception:
+            pass
+        QTimer.singleShot(400, self._refresh_state)
+
+    def _on_toggle_awake(self, enabled: bool):
+        try:
+            self._dispatch("toggle_keep_awake", enabled=enabled)
+        except Exception:
+            pass
+
+    def _set_language(self, code: str):
+        try:
+            self._dispatch("set_language", lang=code)
+        except Exception:
+            pass
+        self._ru_btn.setParent(None); self._en_btn.setParent(None)
+        # Reflect selection immediately; labels fully apply after restart.
+        self._state["language"] = code
+        self._conn_lbl.setText(self._conn_text() + "\n" + t("settings.restart_note"))
+
+    def _show_qr(self):
+        try:
+            self._open_qr()
+        except Exception:
+            pass
+
+    def _revoke_devices(self):
+        try:
+            self._dispatch("revoke_devices")
+        except Exception:
+            pass
+        self._refresh_state()
+
+    def _run_macro(self, macro: dict):
+        text = str(macro.get("phrase") or "").strip()
+        if text:
+            try:
+                self._dispatch("run_command", text=text)
+            except Exception:
+                pass
+
+    def _add_macro(self):
+        if self._macro_builder is not None:
+            return
+        cw = self.parent() or self
+        mb = MacroBuilderOverlay(self._state.get("language", "en"), parent=cw)
+        ow, oh = MacroBuilderOverlay._OW, MacroBuilderOverlay._OH
+        mb.setGeometry((cw.width() - ow) // 2, (cw.height() - oh) // 2, ow, oh)
+        mb.saved.connect(self._render_macros)
+        mb.closed.connect(lambda: setattr(self, "_macro_builder", None))
+        mb.show()
+        self._macro_builder = mb
+
+    def _remove_macro(self, macro_id):
+        try:
+            remove_macro(macro_id)
+        except Exception:
+            pass
+        self._render_macros()
+
+    def _do_close(self):
+        if self._macro_builder is not None:
+            self._macro_builder._do_close()
+        self.hide()
+        self.closed.emit()
+
+
 class MainWindow(QMainWindow):
     _log_sig     = pyqtSignal(str)
     _state_sig   = pyqtSignal(str)
@@ -1308,13 +1827,29 @@ class MainWindow(QMainWindow):
         self.on_text_command   = None
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
         self.on_interrupt      = None   # callable: () -> None — stop JARVIS mid-speech
+        self.on_settings_action = None  # callable: (action, **kwargs) -> result
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
+        self._settings_overlay: "SettingsOverlay | None" = None
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
         self.setCentralWidget(central)
+
+        # Small settings gear pinned to the top-right corner of the window.
+        self._gear_btn = QPushButton("⚙", self)
+        self._gear_btn.setToolTip(t("settings.gear"))
+        self._gear_btn.setFixedSize(30, 30)
+        self._gear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._gear_btn.setFont(QFont("Arial", 14))
+        self._gear_btn.setStyleSheet(f"""
+            QPushButton {{ background: rgba(8,12,22,0.85); color: {C.TEXT_MED};
+                          border: 1px solid {C.BORDER_B}; border-radius: 15px; }}
+            QPushButton:hover {{ color: {C.PRI}; border: 1px solid {C.PRI}; }}
+        """)
+        self._gear_btn.clicked.connect(self._open_settings)
+        self._gear_btn.raise_()
 
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1778,6 +2313,10 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         cw = self.centralWidget()
+        # Gear pinned to the top-right corner.
+        if hasattr(self, "_gear_btn"):
+            self._gear_btn.move(self.width() - self._gear_btn.width() - 14, 12)
+            self._gear_btn.raise_()
         if self._overlay and self._overlay.isVisible():
             ow, oh = 460, 390
             self._overlay.setGeometry(
@@ -1788,6 +2327,13 @@ class MainWindow(QMainWindow):
         if self._remote_overlay and self._remote_overlay.isVisible():
             ow, oh = RemoteKeyOverlay._OW, RemoteKeyOverlay._OH
             self._remote_overlay.setGeometry(
+                (cw.width()  - ow) // 2,
+                (cw.height() - oh) // 2,
+                ow, oh,
+            )
+        if self._settings_overlay and self._settings_overlay.isVisible():
+            ow, oh = SettingsOverlay._OW, SettingsOverlay._OH
+            self._settings_overlay.setGeometry(
                 (cw.width()  - ow) // 2,
                 (cw.height() - oh) // 2,
                 ow, oh,
@@ -2292,6 +2838,23 @@ class MainWindow(QMainWindow):
         self._remote_overlay = ov
         self._log.append_log(t("log.remote_key_generated", url=manual or url))
 
+    def _open_settings(self):
+        if self._settings_overlay and self._settings_overlay.isVisible():
+            self._settings_overlay._do_close()
+            return
+        cw = self.centralWidget()
+        dispatch = self.on_settings_action or (lambda *a, **k: None)
+        ov = SettingsOverlay(dispatch, self._open_remote, parent=cw)
+        ow, oh = SettingsOverlay._OW, SettingsOverlay._OH
+        ov.setGeometry(
+            (cw.width()  - ow) // 2,
+            (cw.height() - oh) // 2,
+            ow, oh,
+        )
+        ov.closed.connect(lambda: setattr(self, "_settings_overlay", None))
+        ov.show()
+        self._settings_overlay = ov
+
     def _do_interrupt(self):
         if self.on_interrupt:
             self.on_interrupt()
@@ -2425,6 +2988,14 @@ class JarvisUI:
     @on_interrupt.setter
     def on_interrupt(self, cb):
         self._win.on_interrupt = cb
+
+    @property
+    def on_settings_action(self):
+        return self._win.on_settings_action
+
+    @on_settings_action.setter
+    def on_settings_action(self, cb):
+        self._win.on_settings_action = cb
 
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()

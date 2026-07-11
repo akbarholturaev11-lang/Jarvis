@@ -8,6 +8,7 @@ config/api_keys.json
 config/device_profile.json
 config/briefing_sources.json
 config/local_env.zsh
+config/macros.json
 config/.briefing_sources.json.*
 config/.local_env.zsh.*
 memory/long_term.json

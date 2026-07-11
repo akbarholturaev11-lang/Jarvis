@@ -26,8 +26,12 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Narrow Personal Briefing / explicit world-news intent policy in `core/briefing_routing.py`
    - Device intelligence and environment discovery in `core/device_profile.py` and `core/environment_discovery.py`
    - Atomic scheduled-reminder event bridge in `core/reminder_events.py`
-   - Platform adapters in `core/platform_adapters/`
+   - Platform adapters in `core/platform_adapters/` (now also `prevent_sleep`/`release_sleep`)
    - Narrow runtime warning policy in `core/runtime_warnings.py`
+   - Cross-platform keep-awake facade in `core/power_manager.py`
+   - Cloudflare remote-access tunnel in `core/remote_tunnel.py`
+   - Safe settings read/modify/write in `core/app_settings.py`
+   - Command-automation capability registry + macro store in `core/capabilities.py` and `core/macros.py`
 
 4. Tool/action layer
    - `actions/*.py`
@@ -214,6 +218,9 @@ main.py
 - `core/briefing_routing.py` is intentionally narrow. Do not grow it into a parallel command system; normal intent detection remains Gemini tool calling plus central dispatch.
 - `core/runtime_warnings.py` must remain limited to the exact sounddevice NumPy 2.5 shape deprecation; unrelated warnings must stay visible.
 - `requirements.txt` is HIGH risk. Do not change dependency versions casually.
+- `config/macros.json` is LOCAL user data (gitignored) — user command macros; do not commit. `config/settings.json` is committed but non-secret; write it only through `core/app_settings.py` / `core/i18n.py` so unrelated keys are preserved.
+- `core/remote_tunnel.py` must never store cloudflared credentials in the repo (they live in `~/.cloudflared`) and must report honest `not_installed`/`failed` rather than a fake public URL.
+- `core/power_manager.py` + adapter `prevent_sleep`/`release_sleep` must return honest `unsupported` on OSes/tools that can't keep awake; never fake success.
 
 ## Current Safe Foundation
 

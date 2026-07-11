@@ -304,6 +304,37 @@ class PlatformAdapter:
     def media_pause(self, target_app: str = "") -> tuple[bool | None, str]:
         return None, f"Media control is unsupported on {self.os_key}."
 
+    # ── keep-awake (prevent OS idle sleep during a remote session) ────────────
+    # Contract: prevent_sleep() returns (token, status). A non-None token means
+    # success and must be passed back to release_sleep() to undo. None means the
+    # capability is unavailable on this OS — an honest unsupported, never a fake
+    # success. Per-OS adapters override this; the base is the honest fallback.
+    def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
+        return None, f"Keep-awake is unsupported on {self.os_key}."
+
+    def release_sleep(self, token: object) -> None:
+        self._terminate_proc(token)
+
+    def _terminate_proc(self, token: object) -> None:
+        """Best-effort terminate for adapters whose token is a subprocess handle."""
+        if token is None:
+            return
+        terminate = getattr(token, "terminate", None)
+        if not callable(terminate):
+            return
+        try:
+            terminate()
+            wait = getattr(token, "wait", None)
+            if callable(wait):
+                try:
+                    wait(timeout=2)
+                except Exception:
+                    kill = getattr(token, "kill", None)
+                    if callable(kill):
+                        kill()
+        except Exception:
+            pass
+
     def _display_server(self) -> str:
         if os.environ.get("WAYLAND_DISPLAY"):
             return "wayland"

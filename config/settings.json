@@ -1,3 +1,9 @@
 {
-  "ui_language": "ru"
+  "ui_language": "ru",
+  "remote_tunnel": {
+    "enabled": false,
+    "provider": "cloudflare",
+    "mode": "quick",
+    "hostname": ""
+  }
 }
