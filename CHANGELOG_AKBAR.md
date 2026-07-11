@@ -1,5 +1,25 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - OpenCV Headless / PyQt6 Cocoa Conflict Fix
+
+### Changed
+
+- Replaced `opencv-python` with `opencv-python-headless==5.0.0.93` in `requirements.txt` and in the local `.venv`. The GUI (`opencv-python`) build bundled its own Qt runtime under `cv2/qt/` and forced Qt's platform-plugin path, which masked PyQt6's bundled Cocoa plugin and crashed `QApplication` with `Could not find the Qt platform plugin "cocoa"`.
+
+### Why This Is Safe
+
+- Audited all OpenCV usage: only `VideoCapture`, `imencode`, `cvtColor`, and capture-backend constants (`CAP_AVFOUNDATION` / `CAP_DSHOW` / `CAP_ANY`) are used in `ui.py` and `actions/screen_processor.py`.
+- No OpenCV GUI APIs are used anywhere (`imshow`, `waitKey`, `namedWindow`, `destroyAllWindows`, `createTrackbar`, `setMouseCallback`, `selectROI` — none present). Camera/screen frames are already displayed through the PyQt6 UI, so the headless build loses no functionality.
+- No `QT_PLUGIN_PATH` / `QT_QPA_PLATFORM_PLUGIN_PATH` workarounds were added; PyQt6 was not downgraded. The launcher stays free of Qt path overrides.
+
+### Verified
+
+- `opencv-python-headless` no longer ships a `cv2/qt/` directory; `import cv2` does not mutate `QCoreApplication.libraryPaths()` and never sets `QT_QPA_PLATFORM_PLUGIN_PATH` (was the source of the conflict).
+- Headless capture/encode APIs intact: `imencode`, `cvtColor`, `VideoCapture`, and macOS `CAP_AVFOUNDATION` all resolve.
+- `py_compile` passes for `main.py`, `ui.py`, `actions/screen_processor.py`; `actions.screen_processor` imports cleanly.
+- Full test suite green: 114 tests, `OK`.
+- Note: the live Cocoa window cannot be opened inside this headless agent subprocess (a bare `QApplication` with no cv2 fails identically here because it is not a GUI login session); the Cocoa GUI must be re-confirmed by Akbar in a normal desktop session via `python main.py` and the launcher.
+
 ## 2026-07-11 - Spoken Reminder Delivery
 
 ### Added

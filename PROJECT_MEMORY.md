@@ -22,6 +22,7 @@ Current known status as of 2026-07-11:
 - Project cloned.
 - Python 3.12 virtual environment exists.
 - Requirements are installed.
+- OpenCV is `opencv-python-headless==5.0.0.93` (not `opencv-python`). The GUI OpenCV build bundled its own Qt runtime and hijacked Qt's platform-plugin path, masking PyQt6's Cocoa plugin and crashing `QApplication`. The project uses no OpenCV GUI APIs (only `VideoCapture`/`imencode`/`cvtColor` and capture backends), so headless is the correct build. Do not reinstall plain `opencv-python`.
 - PyQt6 6.11.0 / Qt 6.11.1 is installed and verified for the macOS Cocoa GUI path after latest-compatible retesting.
 - `setup.py` completed.
 - `python main.py` runs on Mac.

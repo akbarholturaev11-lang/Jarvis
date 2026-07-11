@@ -12,7 +12,7 @@ playwright
 pyautogui
 pyperclip
 pygetwindow
-opencv-python
+opencv-python-headless==5.0.0.93
 numpy
 mss
 psutil
