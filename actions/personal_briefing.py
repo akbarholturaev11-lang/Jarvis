@@ -28,6 +28,20 @@ _EXTERNAL_SOURCES = {"telegram", "instagram", "messenger", "zerno"}
 _MAX_DOCUMENT_CHARS = 120_000
 _MAX_HIGHLIGHTS_PER_DOCUMENT = 4
 
+# Named external statistics that fall back to the connected Zerno hub when their
+# own standalone adapter is ``not_configured``. Each maps only to the Zerno metric
+# groups that legitimately belong to that platform, so unrelated Zerno data (for
+# example a generic ``posts`` group) never becomes fabricated Instagram/Telegram
+# statistics.
+_ZERNO_FALLBACK_GROUPS: dict[str, tuple[str, ...]] = {
+    "instagram": ("instagram",),
+    "telegram": ("telegram_channel", "telegram_bot"),
+    "messenger": ("messenger",),
+    "channels": ("telegram_channel",),
+    "bots": ("telegram_bot", "bot_usage"),
+    "posts": ("posts", "content"),
+}
+
 _SENSITIVE_TEXT_PATTERNS = (
     re.compile(
         r"\b(?:api[_ -]?key|access[_ -]?token|bot[_ -]?token|password|secret|"
@@ -309,6 +323,136 @@ def _collect_source(
     return report
 
 
+def _has_metric_content(value: Any, depth: int = 0) -> bool:
+    """Return True only if a metric group carries a real scalar value."""
+
+    if depth > 6:
+        return False
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, Mapping):
+        return any(_has_metric_content(child, depth + 1) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_has_metric_content(child, depth + 1) for child in value)
+    return False
+
+
+def _zerno_backed_source(source: str, zerno_report: Mapping[str, Any]) -> dict[str, Any]:
+    """Back a named external statistics request with the connected Zerno hub.
+
+    Only the Zerno metric groups that genuinely belong to ``source`` are surfaced,
+    so unrelated Zerno data never becomes fabricated platform statistics.
+    """
+
+    groups = _ZERNO_FALLBACK_GROUPS.get(source, ())
+    display = source.replace("_", " ").capitalize()
+    report = zerno_report if isinstance(zerno_report, Mapping) else {}
+    status = str(report.get("status") or "not_configured")
+
+    if status == "connected":
+        metrics = report.get("metrics") or {}
+        present: dict[str, Any] = {}
+        if isinstance(metrics, Mapping):
+            for group in groups:
+                value = metrics.get(group)
+                if group in metrics and _has_metric_content(value):
+                    present[group] = value
+        if present:
+            summaries = [
+                f"{_ZERNO_GROUP_LABELS.get(group, group.replace('_', ' ').title())}: "
+                f"{_numeric_metric_summary(value)}"
+                for group, value in present.items()
+            ]
+            summary_text = "; ".join(summaries)
+            return {
+                "source": source,
+                "status": "connected",
+                "backing_source": "zerno",
+                "configured": False,
+                "statistics": present,
+                "metric_groups": list(present),
+                "foyda": [f"Zerno hub orqali {display} ko'rsatkichlari: {summary_text}."],
+                "zarar": [],
+                "next_action": "",
+                "reason": (
+                    f"{display} standalone adapteri not_configured; Zerno hub ulangan va "
+                    f"{display} metrikalari topildi ({summary_text})."
+                ),
+            }
+        return {
+            "source": source,
+            "status": "not_available",
+            "backing_source": "zerno",
+            "configured": False,
+            "statistics": None,
+            "reason": (
+                f"Zerno hub ulangan, lekin {display} uchun maxsus metrikalar mavjud emas. "
+                f"Soxta {display} statistikasi ko'rsatilmadi."
+            ),
+        }
+
+    if status == "not_configured":
+        return {
+            "source": source,
+            "status": "not_configured",
+            "configured": False,
+            "statistics": None,
+            "network_attempted": bool(report.get("network_attempted", False)),
+            "reason": (
+                f"{display} standalone adapteri va Zerno hub ham sozlanmagan: haqiqiy "
+                "API/token/config yo'q; statistika olinmadi va ixtiro qilinmadi."
+            ),
+        }
+
+    # Zerno is configured but failed or uncertain: report it honestly, never invent.
+    zerno_reason = _clean_text(report.get("reason"), 240)
+    return {
+        "source": source,
+        "status": status,
+        "backing_source": "zerno",
+        "configured": False,
+        "statistics": None,
+        "network_attempted": bool(report.get("network_attempted", False)),
+        "reason": (
+            f"{display} standalone adapteri not_configured; Zerno hub holati: {status}."
+            + (f" {zerno_reason}" if zerno_reason else "")
+        ),
+    }
+
+
+def _apply_zerno_fallback(
+    source_reports: dict[str, dict[str, Any]],
+    source_registry: Mapping[str, Any],
+    params: Mapping[str, Any],
+) -> None:
+    """Route named external stats to the Zerno hub when their adapter is offline.
+
+    A standalone adapter that is actually configured (``available``/``connected``/
+    ``failed``) wins; only a ``not_configured`` result triggers the Zerno fallback.
+    """
+
+    pending = [
+        source
+        for source in source_reports
+        if source in _ZERNO_FALLBACK_GROUPS
+        and source_reports[source].get("status") == "not_configured"
+    ]
+    if not pending:
+        return
+
+    # Collect Zerno at most once, reusing an already-requested Zerno report.
+    zerno_report = source_reports.get("zerno")
+    if not isinstance(zerno_report, Mapping):
+        zerno_report = _collect_source("zerno", source_registry.get("zerno"), params)
+
+    for source in pending:
+        source_reports[source] = _zerno_backed_source(source, zerno_report)
+
+
 def collect_personal_briefing(
     parameters: Mapping[str, Any] | None = None,
     project_root: str | Path | None = None,
@@ -323,6 +467,8 @@ def collect_personal_briefing(
     source_reports: dict[str, dict[str, Any]] = {}
     for source in _requested_sources(params):
         source_reports[source] = _collect_source(source, source_registry.get(source), params)
+
+    _apply_zerno_fallback(source_reports, source_registry, params)
 
     foyda: list[str] = []
     zarar: list[str] = []

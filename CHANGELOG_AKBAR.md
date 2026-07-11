@@ -1,5 +1,50 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - Personal Briefing Zerno-Backed Source Fallback
+
+### Problem
+
+A named statistics request such as `Instagram statistikasi` reaches
+`personal_briefing` with `sources=["instagram"]`. The standalone Instagram adapter
+is `not_configured`, so the request returned only `not_configured` even though the
+connected Zerno hub already holds the available statistics. The same gap applied to
+`telegram`, `messenger`, `channels`, `bots`, and `posts`.
+
+### Fix
+
+- `actions/personal_briefing.py`: added `_apply_zerno_fallback()` plus
+  `_zerno_backed_source()`. When a named external source is `not_configured`, the
+  briefing reuses the connected Zerno hub (collected at most once, reusing an
+  already-requested Zerno report). Each source maps only to the Zerno metric groups
+  that legitimately belong to it (`_ZERNO_FALLBACK_GROUPS`), so unrelated Zerno data
+  (for example a generic `posts` group) never becomes fake Instagram statistics.
+  - Zerno connected + platform metrics present → `connected` with `backing_source=zerno`
+    and only the real, API-returned numbers.
+  - Zerno connected + no platform-specific metrics → `not_available` with a clear
+    "Zerno connected but no Instagram-specific metrics" message; no numbers invented.
+  - Zerno `not_configured` → source stays `not_configured` (honest combined message).
+  - A standalone adapter that is actually configured wins; only `not_configured`
+    triggers the fallback.
+- `core/briefing_routing.py`: extended `_SOURCE_ALIASES` with `channels`, `bots`, and
+  `posts` so those named statistics phrases route to `personal_briefing` with the
+  named source plus the Zerno hub.
+- `tests/test_zerno_fallback.py`: instagram→connected-Zerno fallback, direct adapter
+  wins when configured, no-Zerno stays `not_configured`, Zerno posts without platform
+  metadata do not become fake Instagram stats, wrong-platform groups are not borrowed,
+  every named source falls back, routing of named requests, and gitignore protection.
+
+### Constraints kept
+
+- No followers/reach/likes/revenue/engagement invented; only API-returned numbers show.
+- API URL/token stay in the gitignored `config/briefing_sources.json` /
+  `config/local_env.zsh`; nothing secret committed.
+- `local_projects` and world-news routing unchanged.
+
+### Verified
+
+- `.venv/bin/python -m py_compile` on changed files and `main.py`: OK.
+- Full suite: 122 tests, `OK`. `git diff --check`: clean.
+
 ## 2026-07-11 - PyQt6 Platform-Plugin Recovery (second, separate fix)
 
 ### Problem

@@ -41,6 +41,9 @@ _SOURCE_ALIASES = {
     "telegram": ("telegram",),
     "instagram": ("instagram", "insta"),
     "messenger": ("messenger", "facebook messenger"),
+    "channels": ("channel", "channels", "kanal", "kanallar", "канал", "каналы"),
+    "bots": ("bot", "bots", "botlar", "бот", "боты"),
+    "posts": ("post", "posts", "postlar", "пост", "посты"),
     "zerno": ("zerno",),
 }
 
