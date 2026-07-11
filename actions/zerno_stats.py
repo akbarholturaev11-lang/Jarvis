@@ -469,6 +469,108 @@ def _scalar_count(value: Any) -> int:
     return sum(1 for _, leaf in _flatten_scalars(value) if leaf is not None)
 
 
+_ADDITIVE_ANALYTICS = (
+    "impressions",
+    "reach",
+    "likes",
+    "comments",
+    "shares",
+    "saves",
+    "views",
+    "clicks",
+    "follows",
+)
+
+
+def _norm_get(record: Any, *candidates: str) -> Any:
+    """Return the first value whose normalized key matches a candidate."""
+
+    if not isinstance(record, Mapping):
+        return None
+    wanted = set(candidates)
+    for key, value in record.items():
+        if _normalize_key(key) in wanted:
+            return value
+    return None
+
+
+def _extract_platform_breakdown(payload: Any) -> dict[str, dict[str, Any]]:
+    """Group platform-tagged records (accounts/posts) by their ``platform`` field.
+
+    Real Zerno responses do not use top-level ``instagram``/``telegram`` keys; they
+    return ``accounts`` and ``posts`` lists where each record carries a ``platform``
+    field. This folds those records into a per-platform breakdown so a named request
+    (for example Instagram) can be answered with the real, API-returned numbers only.
+    """
+
+    breakdown: dict[str, dict[str, Any]] = {}
+
+    def entry(platform: str) -> dict[str, Any]:
+        return breakdown.setdefault(
+            platform,
+            {"accounts": [], "post_count": 0, "analytics_totals": {}},
+        )
+
+    def add_analytics(totals: dict[str, Any], analytics: Any) -> None:
+        if not isinstance(analytics, Mapping):
+            return
+        for key, value in analytics.items():
+            normalized = _normalize_key(key)
+            if (
+                normalized in _ADDITIVE_ANALYTICS
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                totals[normalized] = totals.get(normalized, 0) + value
+
+    def classify(record: Mapping[str, Any], platform: str) -> None:
+        current = entry(platform)
+        analytics = _norm_get(record, "analytics")
+        is_post = (
+            analytics is not None
+            or _norm_get(record, "content") is not None
+            or _norm_get(record, "published_at") is not None
+        )
+        if is_post:
+            current["post_count"] += 1
+            add_analytics(current["analytics_totals"], analytics)
+            return
+        followers = _norm_get(record, "followers_count")
+        follower_count = (
+            int(followers)
+            if isinstance(followers, (int, float)) and not isinstance(followers, bool)
+            else None
+        )
+        name = _clean_text(
+            _norm_get(record, "username") or _norm_get(record, "display_name"), 80
+        )
+        if len(current["accounts"]) < 20:
+            current["accounts"].append({"name": name or platform, "followers": follower_count})
+
+    def walk(node: Any, depth: int = 0) -> None:
+        if depth > _MAX_DEPTH:
+            return
+        if isinstance(node, Mapping):
+            for value in node.values():
+                walk(value, depth + 1)
+        elif isinstance(node, list):
+            for item in node[:_MAX_LIST_ITEMS]:
+                platform = _norm_get(item, "platform") if isinstance(item, Mapping) else None
+                if isinstance(platform, str) and platform.strip():
+                    # Classify the tagged record; do not recurse into it so nested
+                    # platform arrays cannot inflate account/post counts.
+                    classify(item, platform.strip().casefold())
+                else:
+                    walk(item, depth + 1)
+
+    walk(payload)
+    return {
+        platform: data
+        for platform, data in breakdown.items()
+        if data["accounts"] or data["post_count"]
+    }
+
+
 def normalize_zerno_payload(
     payload: Any,
     *,
@@ -567,6 +669,9 @@ def normalize_zerno_payload(
             "confidence": confidence,
         }
     )
+    breakdown = _extract_platform_breakdown(safe_payload)
+    if breakdown:
+        report["platform_breakdown"] = breakdown
     if include_debug:
         report["debug_payload"] = safe_payload
     return report

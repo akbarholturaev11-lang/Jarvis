@@ -1075,7 +1075,7 @@ class JarvisLive:
     def speak_error(self, tool_name: str, error: str):
         short = str(error)[:120]
         self.ui.write_log(f"ERR: {tool_name} — {short}")
-        self.speak(f"Sir, {tool_name} encountered an error. {short}")
+        self.speak(f"Ser, {tool_name} encountered an error. {short}")
 
     def _build_config(self) -> types.LiveConnectConfig:
         from datetime import datetime
@@ -1471,9 +1471,9 @@ class JarvisLive:
                     self._pending_vision = (img_b, mime_t, vision_question, angle)
                     result = (
                         f"[VISION_ACTIVE] {_stall.capitalize()} captured. "
-                        f"Immediately say ONE natural sentence in the user's language "
-                        f"(e.g. 'Looking at your {_stall} now, sir' / "
-                        f"'{'Kameraya' if _stall == 'camera' else 'Ekrana'} bakıyorum efendim'). "
+                        f"Immediately say ONE natural sentence in the user's language, addressing the user as 'ser' "
+                        f"(e.g. 'Looking at your {_stall} now, ser' / "
+                        f"'{'Kameraga' if _stall == 'camera' else 'Ekranga'} qarayapman, ser'). "
                         f"Do NOT describe or guess content — the actual image arrives in the NEXT message."
                     )
 
@@ -1545,7 +1545,7 @@ class JarvisLive:
 
             elif name == "shutdown_jarvis":
                 self.ui.write_log("SYS: Shutdown requested.")
-                self.speak("Goodbye, sir.")
+                self.speak("Goodbye, ser.")
                 result = "Shutdown requested."
                 def _shutdown():
                     import time, os
@@ -1939,7 +1939,7 @@ class JarvisLive:
         if session_generation != self._session_generation or not session:
             return
 
-        parameters = {"sources": list(DEFAULT_PERSONAL_SOURCES), "scope": "operations"}
+        parameters = {"sources": ["local_projects"], "scope": "operations"}  # startup: local ops only; external stats on explicit request
         result = await asyncio.to_thread(
             lambda: personal_briefing_action(
                 parameters=parameters,

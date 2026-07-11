@@ -55,7 +55,9 @@ class ZernoFallbackTests(unittest.TestCase):
         self.assertEqual(instagram["status"], "connected")
         self.assertEqual(instagram["backing_source"], "zerno")
         self.assertFalse(instagram["configured"])
-        self.assertEqual(instagram["statistics"]["instagram"]["followers"], 144)
+        self.assertEqual(
+            instagram["statistics"]["metric_groups"]["instagram"]["followers"], 144
+        )
         # The Zerno hub is queried once even though it was not explicitly requested.
         self.assertEqual(set(report["sources"]), {"instagram"})
         rendered = format_personal_briefing(report)
@@ -153,6 +155,62 @@ class ZernoFallbackTests(unittest.TestCase):
                 self.assertEqual(source_report["status"], "connected")
                 self.assertEqual(source_report["backing_source"], "zerno")
                 self.assertIn(needle, json.dumps(source_report, ensure_ascii=False))
+
+    def test_platform_tagged_accounts_and_posts_are_summarized(self):
+        # Mirrors the real Zerno contract: accounts/posts carry a `platform` field.
+        real_shape = {
+            "overview": {"totalPosts": 2},
+            "accounts": [
+                {"platform": "telegram", "username": "aibotsakbar", "followersCount": None},
+                {"platform": "instagram", "username": "hskai_bot", "followersCount": 23},
+            ],
+            "posts": [
+                {"platform": "instagram", "content": "a", "analytics": {"impressions": 34, "reach": 31, "likes": 5, "comments": 4}},
+                {"platform": "instagram", "content": "b", "analytics": {"impressions": 10, "reach": 8, "likes": 2, "comments": 1}},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = self._registry(root, zerno=_connected_zerno(real_shape))
+            report = collect_personal_briefing(
+                {"sources": ["instagram"], "scope": "statistics"},
+                project_root=root,
+                registry=registry,
+            )
+
+        instagram = report["sources"]["instagram"]
+        self.assertEqual(instagram["status"], "connected")
+        self.assertEqual(instagram["backing_source"], "zerno")
+        entry = instagram["statistics"]["platform_breakdown"]["instagram"]
+        self.assertEqual(entry["post_count"], 2)
+        self.assertEqual(entry["analytics_totals"]["impressions"], 44)
+        self.assertEqual(entry["analytics_totals"]["likes"], 7)
+        self.assertEqual(entry["accounts"][0]["followers"], 23)
+        rendered = format_personal_briefing(report)
+        self.assertIn("hskai_bot: 23 follower", rendered)
+        # The Telegram account must not leak into an Instagram request.
+        self.assertNotIn("aibotsakbar", rendered)
+
+    def test_telegram_account_without_follower_count_stays_honest(self):
+        real_shape = {
+            "accounts": [
+                {"platform": "telegram", "username": "aibotsakbar", "followersCount": None},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = self._registry(root, zerno=_connected_zerno(real_shape))
+            report = collect_personal_briefing(
+                {"sources": ["telegram"], "scope": "statistics"},
+                project_root=root,
+                registry=registry,
+            )
+
+        telegram = report["sources"]["telegram"]
+        self.assertEqual(telegram["status"], "connected")
+        rendered = format_personal_briefing(report)
+        self.assertIn("aibotsakbar", rendered)
+        self.assertIn("ko'rsatilmagan", rendered)
 
     def test_wrong_platform_group_is_not_borrowed_across_sources(self):
         # A Telegram-only Zerno payload must not answer an Instagram request.

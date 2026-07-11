@@ -42,6 +42,18 @@ _ZERNO_FALLBACK_GROUPS: dict[str, tuple[str, ...]] = {
     "posts": ("posts", "content"),
 }
 
+# Real Zerno responses tag each account/post record with a ``platform`` value.
+# Map each named request to the platform value(s) that legitimately belong to it,
+# so only the matching records are summarized (no cross-platform borrowing).
+_SOURCE_PLATFORMS: dict[str, tuple[str, ...]] = {
+    "instagram": ("instagram",),
+    "telegram": ("telegram",),
+    "messenger": ("messenger", "facebook"),
+    "channels": ("telegram",),
+    "bots": ("telegram",),
+    "posts": ("instagram", "telegram", "messenger", "facebook"),
+}
+
 _SENSITIVE_TEXT_PATTERNS = (
     re.compile(
         r"\b(?:api[_ -]?key|access[_ -]?token|bot[_ -]?token|password|secret|"
@@ -341,6 +353,56 @@ def _has_metric_content(value: Any, depth: int = 0) -> bool:
     return False
 
 
+def _platform_entry_has_data(entry: Mapping[str, Any]) -> bool:
+    """Return True if a platform breakdown entry carries any real record."""
+
+    return bool(
+        (entry.get("accounts") or [])
+        or int(entry.get("post_count") or 0) > 0
+        or (entry.get("analytics_totals") or {})
+    )
+
+
+def _summarize_platform_entry(platform: str, entry: Mapping[str, Any]) -> str:
+    """Summarize one platform's real Zerno records without inventing numbers."""
+
+    label = platform.replace("_", " ").capitalize()
+    parts: list[str] = []
+
+    accounts = entry.get("accounts") or []
+    if accounts:
+        account_bits: list[str] = []
+        for account in accounts[:10]:
+            name = _clean_text(account.get("name"), 80) or "akkaunt"
+            followers = account.get("followers")
+            if isinstance(followers, (int, float)) and not isinstance(followers, bool):
+                account_bits.append(f"{name}: {int(followers)} follower")
+            else:
+                account_bits.append(f"{name}: follower soni ko'rsatilmagan")
+        parts.append(f"{len(accounts)} akkaunt (" + ", ".join(account_bits) + ")")
+
+    post_count = int(entry.get("post_count") or 0)
+    if post_count:
+        parts.append(f"{post_count} post")
+
+    totals = entry.get("analytics_totals") or {}
+    if isinstance(totals, Mapping) and totals:
+        total_bits = ", ".join(
+            f"{key}={_number_text(value)}" for key, value in totals.items()
+        )
+        parts.append(total_bits)
+
+    return f"{label}: " + "; ".join(parts) if parts else ""
+
+
+def _number_text(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 def _zerno_backed_source(source: str, zerno_report: Mapping[str, Any]) -> dict[str, Any]:
     """Back a named external statistics request with the connected Zerno hub.
 
@@ -349,38 +411,58 @@ def _zerno_backed_source(source: str, zerno_report: Mapping[str, Any]) -> dict[s
     """
 
     groups = _ZERNO_FALLBACK_GROUPS.get(source, ())
+    platforms = _SOURCE_PLATFORMS.get(source, ())
     display = source.replace("_", " ").capitalize()
     report = zerno_report if isinstance(zerno_report, Mapping) else {}
     status = str(report.get("status") or "not_configured")
 
     if status == "connected":
-        metrics = report.get("metrics") or {}
-        present: dict[str, Any] = {}
-        if isinstance(metrics, Mapping):
-            for group in groups:
-                value = metrics.get(group)
-                if group in metrics and _has_metric_content(value):
-                    present[group] = value
-        if present:
-            summaries = [
-                f"{_ZERNO_GROUP_LABELS.get(group, group.replace('_', ' ').title())}: "
-                f"{_numeric_metric_summary(value)}"
-                for group, value in present.items()
-            ]
-            summary_text = "; ".join(summaries)
+        statistics: dict[str, Any] = {}
+        summaries: list[str] = []
+
+        # 1) Platform-tagged accounts/posts (the real Zerno account/post contract).
+        breakdown = report.get("platform_breakdown") or {}
+        if isinstance(breakdown, Mapping):
+            matched: dict[str, Any] = {}
+            for platform in platforms:
+                entry = breakdown.get(platform)
+                if isinstance(entry, Mapping) and _platform_entry_has_data(entry):
+                    matched[platform] = entry
+                    summary = _summarize_platform_entry(platform, entry)
+                    if summary:
+                        summaries.append(summary)
+            if matched:
+                statistics["platform_breakdown"] = matched
+
+        # 2) Top-level metric groups — only when platform-tagged records were absent,
+        #    so real account/post data is not duplicated by the raw group blob.
+        if "platform_breakdown" not in statistics:
+            metrics = report.get("metrics") or {}
+            if isinstance(metrics, Mapping):
+                present: dict[str, Any] = {}
+                for group in groups:
+                    value = metrics.get(group)
+                    if group in metrics and _has_metric_content(value):
+                        present[group] = value
+                        label = _ZERNO_GROUP_LABELS.get(group, group.replace("_", " ").title())
+                        summaries.append(f"{label}: {_numeric_metric_summary(value)}")
+                if present:
+                    statistics["metric_groups"] = present
+
+        if statistics:
+            summary_text = "; ".join(summary for summary in summaries if summary)
             return {
                 "source": source,
                 "status": "connected",
                 "backing_source": "zerno",
                 "configured": False,
-                "statistics": present,
-                "metric_groups": list(present),
+                "statistics": statistics,
                 "foyda": [f"Zerno hub orqali {display} ko'rsatkichlari: {summary_text}."],
                 "zarar": [],
                 "next_action": "",
                 "reason": (
                     f"{display} standalone adapteri not_configured; Zerno hub ulangan va "
-                    f"{display} metrikalari topildi ({summary_text})."
+                    f"{display} ma'lumotlari topildi ({summary_text})."
                 ),
             }
         return {
