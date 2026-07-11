@@ -1,5 +1,47 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - Canonical Workflow Skill + Rule De-duplication
+
+### Added
+
+- New project-local skill as the **single source of truth** for the dev workflow:
+  - `.claude/skills/mark-xlviii-workflow/SKILL.md` — the operational Before /
+    During / After checklist (startup read order + `git status` + Uzbek state
+    summary; cross-platform parity via `core/platform_adapters`; bilingual EN+RU UI
+    in `core/i18n.py` `_MESSAGES`; truthful status vocabulary `Bajarildi.` /
+    `Bajara olmadim.` / `Aniq tasdiqlay olmadim.` / `Tasdiqlaysizmi?`;
+    protected-file list; Personal Briefing / Zerno route; `py_compile` /
+    `pytest tests/` verification; Uzbek after-work report).
+  - `.claude/skills/mark-xlviii-workflow/references/detailed-rules.md` — the
+    exhaustive rules absorbed from `AI_RULES.md` / `AGENTS.md` (full cross-platform
+    contract, Personal Briefing / Zerno semantics, git/memory discipline,
+    high-risk-file list) so nothing is lost.
+
+### Changed (universal + mandatory + de-duplicated)
+
+- The skill triggers on this repo and appears in the skills list, so any Claude
+  Code session auto-applies it. It is framed as MANDATORY for every AI agent
+  (Claude, Codex, or any code bot).
+- `AI_RULES.md`, `CLAUDE.md`, `AGENTS.md`: removed the duplicated rule bodies and
+  slimmed each to a **mandatory pointer** to the skill, plus a short safety floor.
+  Non-Claude agents are told to read the skill files by path in full (they don't
+  auto-load Claude skills), which keeps the rules universal.
+- `PROJECT_MEMORY.md`, `PROJECT_MAP.md`: content kept (they are architecture/state
+  and the map, not duplicated rules); added a one-line pointer header to the skill.
+
+### Why
+
+- The same rules were restated across five root docs and could drift out of sync.
+  Consolidating them into one triggered, mandatory skill gives every agent one
+  operational checklist and one place to update.
+
+### Verification
+
+- `SKILL.md` YAML frontmatter parses (PyYAML); `name` matches the directory;
+  body < 500 lines. `mark-xlviii-workflow` now appears in the available-skills
+  list.
+- No runtime code touched; no secrets added; nothing committed.
+
 ## 2026-07-11 - Personal Briefing Zerno-Backed Source Fallback
 
 ### Problem

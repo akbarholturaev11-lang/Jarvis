@@ -2,122 +2,49 @@
 
 Mandatory startup instructions for AI coding agents working on this repository.
 
-## Required Read Order
+> **⛔ The complete rules live in ONE canonical place — the `mark-xlviii-workflow`
+> skill. This is MANDATORY for every agent before, during, and after any change.**
 
-Before changing anything, read these files from the project root:
+## Load the rules first
 
-1. `AI_RULES.md`
-2. `PROJECT_MEMORY.md`
-3. `PROJECT_MAP.md`
-4. `NEXT_STEPS.md`
+Because most non-Claude agents do not auto-load Claude Code skills, you **must read
+the skill files directly, by path, in full**, before changing anything:
 
-If any of these files are missing, stop and ask Akbar before making code changes.
+1. `.claude/skills/mark-xlviii-workflow/SKILL.md` — the operational Before / During
+   / After checklist.
+2. `.claude/skills/mark-xlviii-workflow/references/detailed-rules.md` — the full
+   detailed rules: repository safety, required read order, bilingual EN+RU UI,
+   session context & truthful-action vocabulary, DeviceProfile, the mandatory
+   cross-platform feature contract, Personal Operations Briefing / Zerno semantics,
+   verification, memory discipline, git/commit rules, and the high-risk-file list.
 
-## Safety Rules
+(Claude Code users: the `mark-xlviii-workflow` skill auto-loads — just apply it.)
 
-- This is Akbar's personal customized version of `FatihMakes/Mark-XLVIII`.
-- Keep changes small, testable, and Mac-compatible.
-- Do not edit `config/api_keys.json` unless Akbar explicitly asks.
-- Do not touch `.venv/`.
-- Do not expose secrets, API keys, private local memory, or payment credentials.
-- Always run `git status` before code changes.
-- Do not install packages randomly. Explain why first, then use `python -m pip`.
-- Preserve original app functionality unless Akbar explicitly asks to change it.
-- From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
-- Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.
-- Jarvis must use recent action context before handling vague follow-up commands.
-- Vague follow-up commands must go through SessionContext/resolver logic before generic close/settings/send routing.
-- For recent YouTube/media/audio/browser playback, stop/pause/o'chir follow-ups must prefer media pause/stop, not browser close or settings close.
-- On macOS, pause media first and never close/kill apps for media control without Akbar's confirmation.
-- Jarvis must never claim an action succeeded unless success was verified.
-- Warning filters must stay narrow and source-specific; do not hide unrelated warnings or change dependency versions for log cleanup.
-- Always detect platform through DeviceProfile before platform-specific app/browser/media/message/screen/camera/microphone/UI automation commands.
-- Never assume macOS, Windows, Linux, Chrome, Safari, Telegram, permissions, or media controls exist without DeviceProfile evidence.
-- DeviceProfile = what this device can do. SessionContext = what happened recently. Tool verification = what actually succeeded.
-- Prefer reusable platform adapters over one-off OS fixes. Unknown capability must remain unknown, not fake success.
-- Startup and `men uydaman`-style commands must use the existing Personal Operations Briefing tool path, never implicit world news.
-- World news must require an explicit news request. Personal/local operations commands must not be redirected to `web_search(mode="news")`.
-- External Telegram/Instagram/Messenger/Zerno statistics require a real configured adapter. Return `not_configured` when absent and never fabricate metrics.
-- Personal Briefing may read only its allowlisted project docs and read-only Git metadata; it must not read secret config or private long-term memory.
+Then read the **state/context** docs (not rules, but needed): `PROJECT_MEMORY.md`,
+`PROJECT_MAP.md`, `NEXT_STEPS.md`. If the skill directory or any of these is
+missing, stop and ask Akbar before making code changes.
 
-## Git Commit And Push Rules
+## Every session
 
-- After every reliable change that passes verification/tests, create a clear git commit and push it to GitHub.
-- Do not push broken, untested, secret-containing, or uncertain changes.
-- Always run `git status` before commit.
-- Always verify `.gitignore` protects API keys, local memory, `.venv/`, cache files, and logs before push.
-- Use small commits.
-- Commit messages must be clear.
-- Final reports must include the commit hash and push result.
-- If tests fail, do not commit or push unless Akbar explicitly orders it.
-- If the change is documentation-only, `py_compile` is enough unless runtime files changed.
-- If runtime code changes, run at minimum `.venv/bin/python -m py_compile main.py` and relevant manual/runtime checks.
+1. Load the rules (above).
+2. Run `git status`.
+3. Summarize the current project state to Akbar **in Uzbek**.
+4. Ask for confirmation before any risky edit.
 
-## Memory Updates
+## Non-negotiable safety floor (full detail in the skill)
 
-Update `PROJECT_MEMORY.md` only when a change adds durable context that will help a future assistant understand, debug, or safely continue the project.
-
-Do not write small UI edits, typo fixes, temporary experiments, console cleanup, or minor CSS/text changes into `PROJECT_MEMORY.md`.
-
-Implementation changes should be logged in `CHANGELOG_AKBAR.md`.
-
-## Runtime Action Truthfulness
-
-- Keep short-term action context runtime-only unless Akbar explicitly asks for persistence.
-- Recent action records should summarize user text and tool parameters; never store API keys, secrets, or long private text fully.
-- For vague follow-ups like `o'chir`, `to'xtat`, `yubor`, `yana qil`, `bekor qil`, `shuni yop`, `qayerga yubording?`, and `nima qilding?`, use the last 2-5 meaningful action records before selecting a tool.
-- If the last relevant action is media playback, resolve stop/pause/o'chir to media control first.
-- If media/browser/message context is low-confidence, ask clarification instead of guessing.
-- For platform-sensitive commands, consult DeviceProfile after SessionContext and before tool execution.
-- Verified success may be reported as `Bajarildi.` Failed actions: `Bajara olmadim.` Uncertain actions: `Aniq tasdiqlay olmadim.` Confirmation needed: `Tasdiqlaysizmi?`
-- For message sending, do not report `sent` unless the contact/chat and message placement or delivery were verified.
-
-## Reporting
-
-Final reports to Akbar must be in Uzbek.
-
-## Universal Cross-Platform Feature Rule — Mandatory
-
-Every new Jarvis capability must be designed and implemented for all supported desktop platforms in parallel:
-
-- macOS
-- Windows
-- Linux / general desktop PC environments
-
-A feature must never be added as a silent macOS-only implementation when the same user-facing capability is expected on other supported platforms.
-
-Required implementation order:
-
-1. Define one platform-neutral capability contract.
-2. Add or extend platform adapters for macOS, Windows, and Linux.
-3. Route execution through DeviceProfile / EnvironmentDiscovery.
-4. Use the native implementation for the current platform.
-5. If a platform cannot support the feature, return an explicit:
-   - `unsupported`
-   - `not_available`
-   - `needs_permission`
-   - `not_configured`
-   status with a clear user-facing explanation.
-6. Never claim success when the action was not verified.
-7. Never silently fall back to macOS-specific commands on Windows or Linux.
-8. Do not duplicate the whole feature per OS; keep shared logic platform-neutral and isolate OS-specific code inside adapters.
-9. Add tests for:
-   - platform routing
-   - macOS behavior
-   - Windows behavior
-   - Linux behavior
-   - unsupported/fallback behavior
-10. Update DeviceProfile capability detection whenever a new system-level feature is added.
-11. Visible UI additions must remain bilingual:
-   - English
-   - Russian
-
-Example:
-
-If “send a message to ChatGPT” is added on macOS, the same capability must also receive:
-
-- a Windows implementation or adapter,
-- a Linux implementation or adapter,
-- or an explicit honest unsupported result when technically impossible.
-
-A task is not considered complete merely because it works on the developer’s current Mac. Completion requires cross-platform architecture, platform routing, safe fallbacks, tests, documentation, commit, and push.
+- This is Akbar's **personal** fork of `FatihMakes/Mark-XLVIII` — not a commercial
+  product.
+- Never expose or commit secrets. Never edit `config/api_keys.json`,
+  `memory/long_term.json`, or the gitignored device/Zerno configs unless Akbar
+  explicitly asks. Never touch `.venv/`.
+- Never claim an action succeeded unless the tool result verified it.
+- Every new visible UI string is bilingual **English + Russian**.
+- Every new capability is **cross-platform** (macOS/Windows/Linux) or returns an
+  explicit honest `unsupported`/`not_available`/`needs_permission`/`not_configured`
+  — never a silent macOS-only implementation.
+- Keep changes small and testable; use Python 3.12; don't change dependency
+  versions unless required. Verify with `.venv/bin/python -m py_compile main.py`
+  (plus `pytest tests/` when a covered module changed).
+- Log implementation changes in `CHANGELOG_AKBAR.md`; update `PROJECT_MEMORY.md`
+  only for durable context. The final report to Akbar is **in Uzbek**.

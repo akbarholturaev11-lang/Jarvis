@@ -1,5 +1,10 @@
 # PROJECT_MEMORY.md
 
+> **Rules live in the `mark-xlviii-workflow` skill**
+> (`.claude/skills/mark-xlviii-workflow/`) — the single source of truth for the
+> development workflow. This file holds durable **architecture/state/context**, not
+> the rules. Read the skill before any change.
+
 ## Project Identity
 
 MARK XLVIII - AkbarCustom is Akbar's personal Mac AI assistant experiment and customized version of `FatihMakes/Mark-XLVIII`.

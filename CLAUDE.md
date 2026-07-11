@@ -1,66 +1,49 @@
 # CLAUDE.md
 
-Instructions for Claude, Codex, and other AI coding agents working on MARK XLVIII - AkbarCustom.
+Instructions for Claude, Codex, and other AI coding agents working on
+MARK XLVIII - AkbarCustom.
 
-## Before Any Work
+> **⛔ The full workflow and rules live in ONE canonical place: the
+> `mark-xlviii-workflow` skill. Apply it before, during, and after any change.**
 
-1. Read `AI_RULES.md`.
-2. Read `PROJECT_MEMORY.md`.
-3. Read `PROJECT_MAP.md`.
-4. Read `NEXT_STEPS.md`.
-5. Run `git status`.
-6. Summarize the current project state to the user in Uzbek.
-7. Ask for confirmation before risky edits.
+## How to load the rules
 
-## During Work
+- **Claude Code**: the **`mark-xlviii-workflow`** skill auto-loads for this repo —
+  invoke/apply it. It is the single source of truth (`SKILL.md` = the
+  Before/During/After checklist; `.claude/skills/mark-xlviii-workflow/references/detailed-rules.md`
+  = the exhaustive rules).
+- **Any other agent**: read `.claude/skills/mark-xlviii-workflow/SKILL.md` and
+  `.claude/skills/mark-xlviii-workflow/references/detailed-rules.md` in full, by
+  path, before changing anything.
 
-- Keep changes minimal.
-- Do not edit API keys.
-- Do not touch `.venv/`.
-- Do not change dependency versions unless required.
-- Do not overwrite the user's local memory.
-- Prefer small patches.
-- Add tests if possible.
-- Keep Mac compatibility.
-- Preserve original functionality unless Akbar explicitly asks for a behavior change.
-- Use Python 3.12.
-- Prefer `python -m pip` over `pip` if package installation is explicitly needed.
-- From now on, every new visible UI text must be added in both English and Russian. Do not add English-only UI labels. Do not add Russian-only UI labels unless user explicitly asks. Keep UI localization simple and maintainable.
-- Do not create narrow one-off fixes when a general context layer is needed. Prefer reusable session context, verified action results, and truthful reporting.
-- Jarvis must use recent action context before handling vague follow-up commands.
-- Vague follow-up commands must be resolved through SessionContext before generic tool routing.
-- If recent context is YouTube/media/audio/browser playback, route stop/pause/o'chir follow-ups to media control before any close/settings action.
-- For macOS media control, pause/play-pause first; do not close, quit, or kill apps unless Akbar confirms.
-- Jarvis must never claim an action succeeded unless success was verified.
-- For message sending, never say a message was sent unless the correct target/contact/chat and message placement or delivery were verified.
-- Keep warning filters narrow and source-specific. Do not change dependency versions or patch third-party packages just to clean logs.
-- Always consult DeviceProfile before app/browser/media/message/screen/camera/microphone/clipboard/UI automation actions.
-- Never assume this device is macOS, Windows, Linux, Chrome/Safari-capable, Telegram-capable, media-control-capable, or permission-ready without DeviceProfile evidence.
-- DeviceProfile = what this device can do. SessionContext = what happened recently. Tool verification = what actually succeeded.
-- Prefer reusable platform adapters in `core/platform_adapters/` over one-off OS fixes. Unknown capability must stay unknown.
-- Preserve the existing Personal Operations Briefing route for startup, `men uydaman`, `uydaman`, `ishga qaytdim`, project checks, and statistics requests.
-- Keep generic world news separate and explicit; never reintroduce automatic startup world news.
-- Treat missing Telegram/Instagram/Messenger/Zerno API/token/config as `not_configured`. Never add placeholder or guessed statistics.
-- Keep local briefing reads allowlisted and read-only. Do not use `config/api_keys.json` or `memory/long_term.json` as briefing data sources.
+The skill covers everything: the required startup read order, cross-platform
+(macOS/Windows/Linux) feature parity through `core/platform_adapters`, bilingual
+EN+RU UI text in `core/i18n.py`, truthful verified action reporting, the Personal
+Operations Briefing / Zerno route, secret-file protection,
+`py_compile`/`pytest` verification, memory/changelog updates, and the Uzbek
+after-work report.
 
-## After Work
+Also read the **state/context** docs (not rules, but needed): `PROJECT_MEMORY.md`,
+`PROJECT_MAP.md`, `NEXT_STEPS.md`. Then run `git status`, summarize the state to
+Akbar **in Uzbek**, and ask for confirmation before any risky edit.
 
-1. Run relevant checks.
-2. Update `PROJECT_MEMORY.md` if the change adds durable context.
-3. Update `CHANGELOG_AKBAR.md`.
-4. Update `NEXT_STEPS.md` if next actions changed.
-5. Give an Uzbek report with:
-   - what changed
-   - files changed
-   - tests/checks
-   - risks
-   - next steps
+## Strict safety floor (net if the skill fails to load)
 
-## Strict Safety Notes
-
-- `config/api_keys.json` is secret local config. Do not print it, commit it, or edit it unless Akbar explicitly asks.
-- `memory/long_term.json` is private local assistant memory. Do not print it, commit it, overwrite it, or reset it unless Akbar explicitly asks.
+- `config/api_keys.json` is secret local config. Do not print, commit, or edit it
+  unless Akbar explicitly asks.
+- `memory/long_term.json` is private local assistant memory. Do not print, commit,
+  overwrite, or reset it unless Akbar explicitly asks.
+- The local device/Zerno configs (`config/device_profile.json`,
+  `config/briefing_sources.json`, `config/local_env.zsh`) are gitignored — commit
+  only their `*.example.*` templates.
 - `.venv/` is local runtime state. Do not modify it.
-- `main.py` is high risk because it owns Gemini Live, audio, reconnects, tool declarations, and dispatch.
-- `actions/*.py` may depend on matching tool declarations in `main.py`.
-- `ui.py` is medium risk because it controls the visible Mac app experience.
+- `main.py` is high risk: it owns Gemini Live, audio, reconnects, tool
+  declarations, and dispatch. `actions/*.py` may depend on matching tool
+  declarations in `main.py`. `ui.py` is medium risk.
+- Never claim an action succeeded unless it was verified. Every new visible UI
+  string is bilingual (EN + RU). Every new capability is cross-platform or returns
+  an explicit honest unsupported status. Keep changes minimal; use Python 3.12; do
+  not change dependency versions unless required.
+
+If `.claude/skills/mark-xlviii-workflow/` is missing, stop and ask Akbar before
+making code changes.

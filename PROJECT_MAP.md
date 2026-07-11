@@ -1,5 +1,10 @@
 # PROJECT_MAP.md
 
+> **Rules live in the `mark-xlviii-workflow` skill**
+> (`.claude/skills/mark-xlviii-workflow/`) — the single source of truth for the
+> development workflow. This file is the **map** (layers, dependency graph, do-not-
+> edit-blindly list), not the rules. Read the skill before any change.
+
 This is the project map and local markdown knowledge graph for MARK XLVIII - AkbarCustom.
 
 No external Graphiti/Gravity dependency is installed for this foundation step. The markdown graph below is the initial safe knowledge map.
