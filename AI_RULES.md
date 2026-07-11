@@ -23,7 +23,9 @@ place** so they can't drift out of sync across documents:
 
 Then read the **state/context** docs (these are not rules, but you still need them):
 `PROJECT_MEMORY.md`, `PROJECT_MAP.md`, `NEXT_STEPS.md`. Run `git status`, summarize
-the state to Akbar **in Uzbek**, and confirm before any risky edit.
+the state to Akbar **in Uzbek**. During repository work, the coding AI agent must
+also use Uzbek for every work-process message to Akbar, and confirm before any
+risky edit.
 
 ## Non-negotiable safety floor (full detail in the skill)
 
@@ -33,6 +35,12 @@ Even before you open the skill, never do these:
   `memory/long_term.json`, or the local device/Zerno configs unless Akbar
   explicitly asks. Never touch `.venv/`.
 - Never claim an action succeeded unless the tool result verified it.
+- Every AI coding agent working on this repository must communicate with Akbar in
+  Uzbek throughout the coding session, including plans, progress updates,
+  explanations, questions, warnings, and the final report. This rule applies to
+  coding-agent communication and does **not** change Jarvis runtime responses. Code,
+  commands, paths, technical identifiers, and exact logs/errors may remain in their
+  original form, with the surrounding explanation in Uzbek.
 - Every new visible UI string is bilingual **English + Russian**.
 - Every new capability is **cross-platform** (macOS/Windows/Linux) or returns an
   explicit honest `unsupported`/`not_available`/`needs_permission`/`not_configured`.

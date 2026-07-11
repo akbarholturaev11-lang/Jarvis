@@ -25,7 +25,8 @@ after-work report.
 
 Also read the **state/context** docs (not rules, but needed): `PROJECT_MEMORY.md`,
 `PROJECT_MAP.md`, `NEXT_STEPS.md`. Then run `git status`, summarize the state to
-Akbar **in Uzbek**, and ask for confirmation before any risky edit.
+Akbar **in Uzbek**. During repository work, the coding AI agent must use Uzbek for
+every work-process message to Akbar and ask for confirmation before any risky edit.
 
 ## Strict safety floor (net if the skill fails to load)
 
@@ -44,6 +45,12 @@ Akbar **in Uzbek**, and ask for confirmation before any risky edit.
   string is bilingual (EN + RU). Every new capability is cross-platform or returns
   an explicit honest unsupported status. Keep changes minimal; use Python 3.12; do
   not change dependency versions unless required.
+- Every AI coding agent working on this repository must communicate with Akbar in
+  Uzbek throughout the coding session, including plans, progress updates,
+  explanations, questions, warnings, and the final report. This rule applies to
+  coding-agent communication and does **not** change Jarvis runtime responses. Keep
+  only code, commands, paths, technical identifiers, and exact logs/errors in their
+  original form, with the surrounding explanation in Uzbek.
 
 If `.claude/skills/mark-xlviii-workflow/` is missing, stop and ask Akbar before
 making code changes.
