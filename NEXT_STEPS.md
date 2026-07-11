@@ -2,6 +2,10 @@
 
 Current next steps for MARK XLVIII - AkbarCustom.
 
+## Known Bugs
+
+- Jarvisda Zerno orqali statistika eshitganda ovoz chiqmayapti.
+
 ## Immediate Next Steps
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.
