@@ -42,3 +42,42 @@ Even before you open the skill, never do these:
 
 If `.claude/skills/mark-xlviii-workflow/` is missing, stop and ask Akbar before
 making code changes.
+
+## Unlumen UI Usage Rule — Web Only
+
+Unlumen UI is an approved optional design library for Jarvis web products only.
+
+Allowed use cases:
+- Jarvis landing page
+- pricing and license purchase pages
+- account and subscription dashboard
+- onboarding web flow
+- device and update management dashboard
+- web-based Personal Briefing interface
+
+Technical scope:
+- React / Next.js
+- Tailwind CSS
+- browser-based web UI or PWA
+
+Restrictions:
+1. Do not use Unlumen UI as the primary UI framework for:
+   - PyQt6 desktop application
+   - native macOS application
+   - native Windows application
+   - native Linux application
+   - SwiftUI, Kotlin, Flutter, or React Native mobile applications
+2. For native/mobile UI, Unlumen UI may only be used as visual and animation reference.
+3. Do not force desktop hover, cursor, or magnetic effects into mobile touch interfaces.
+4. Prefer accessible, responsive, touch-friendly components.
+5. Do not add the dependency until a real React/Next.js web module exists.
+6. Free and Pro component license terms must be verified before commercial release.
+7. Pro components must not be used without a valid license.
+8. Do not resell Unlumen UI components as a standalone UI kit or template product.
+9. Keep Jarvis core, licensing backend, updater, and platform adapters independent from this UI library.
+10. A web design task must not modify the desktop assistant runtime unless explicitly required.
+
+Current commercial plan:
+- Standard license: user keeps the purchased version; no automatic future updates.
+- Lifetime Updates license: user receives supported future updates automatically.
+- Unlumen UI may be used for the web purchase and license-management interface for these plans.
