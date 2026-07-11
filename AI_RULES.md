@@ -131,3 +131,49 @@ UI language must be controlled through `config/settings.json` with `ui_language`
 - Prefer reusable platform adapters in `core/platform_adapters/` over one-off OS fixes.
 - Unknown, blocked, unsupported, or permission-dependent capability must be reported as unknown/blocked/unsupported/permission-dependent, not as success.
 - `config/device_profile.json` is local operational metadata and must stay gitignored. Commit only `config/device_profile.example.json`.
+
+## Universal Cross-Platform Feature Rule — Mandatory
+
+Every new Jarvis capability must be designed and implemented for all supported desktop platforms in parallel:
+
+- macOS
+- Windows
+- Linux / general desktop PC environments
+
+A feature must never be added as a silent macOS-only implementation when the same user-facing capability is expected on other supported platforms.
+
+Required implementation order:
+
+1. Define one platform-neutral capability contract.
+2. Add or extend platform adapters for macOS, Windows, and Linux.
+3. Route execution through DeviceProfile / EnvironmentDiscovery.
+4. Use the native implementation for the current platform.
+5. If a platform cannot support the feature, return an explicit:
+   - `unsupported`
+   - `not_available`
+   - `needs_permission`
+   - `not_configured`
+   status with a clear user-facing explanation.
+6. Never claim success when the action was not verified.
+7. Never silently fall back to macOS-specific commands on Windows or Linux.
+8. Do not duplicate the whole feature per OS; keep shared logic platform-neutral and isolate OS-specific code inside adapters.
+9. Add tests for:
+   - platform routing
+   - macOS behavior
+   - Windows behavior
+   - Linux behavior
+   - unsupported/fallback behavior
+10. Update DeviceProfile capability detection whenever a new system-level feature is added.
+11. Visible UI additions must remain bilingual:
+   - English
+   - Russian
+
+Example:
+
+If “send a message to ChatGPT” is added on macOS, the same capability must also receive:
+
+- a Windows implementation or adapter,
+- a Linux implementation or adapter,
+- or an explicit honest unsupported result when technically impossible.
+
+A task is not considered complete merely because it works on the developer’s current Mac. Completion requires cross-platform architecture, platform routing, safe fallbacks, tests, documentation, commit, and push.
