@@ -1,5 +1,42 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - PyQt6 Platform-Plugin Recovery (second, separate fix)
+
+### Problem
+
+After the OpenCV headless swap, the window still did not open. A second, independent
+fault was found: PyQt6's Qt platform-plugin discovery was broken. `QApplication` failed
+for **every** platform — `cocoa`, `offscreen`, and `minimal` — with
+`Could not find the Qt platform plugin "..." in ""`, even though the plugin `.dylib`
+files were present, arm64, ad-hoc signed, un-quarantined, and loadable directly
+(`QPluginLoader.load()` returned `True`). Qt's factory loader scanned the correct
+directory but registered zero plugins. This was reproducible with no cv2 imported and
+with the sandbox disabled, so it was not the OpenCV conflict and not a GUI-session issue.
+
+### Fix
+
+- Force-reinstalled the Qt binary wheel **at the same version** in the `.venv`:
+  `python -m pip install --force-reinstall --no-deps PyQt6-Qt6==6.11.1`. The previously
+  installed plugin files were in a bad state (residue from earlier PyQt6 version churn).
+  Reinstalling restored the plugin metadata so the factory loader registers `cocoa` /
+  `offscreen` / `minimal` again. No version change, no downgrade, no `QT_PLUGIN_PATH`
+  workaround — exactly the "reinstall the application" remedy Qt's own error suggests.
+
+### Verified
+
+- `import cv2` then `QApplication` now succeeds on **cocoa**, offscreen, and minimal.
+- Real UI path builds and renders: `ui.MainWindow('face.png')` constructs, `.show()`,
+  one `processEvents()` cycle, and `.close()` all succeed with cv2 imported (offscreen).
+- Full test suite still green: 114 tests, `OK`.
+- `requirements.txt` already pins `PyQt6-Qt6==6.11.1`, so a fresh install reproduces the
+  healthy state; only the local `.venv` needed the in-place repair.
+
+### If it recurs
+
+If Qt again reports "Could not find the Qt platform plugin ... in ..." while the paths
+are correct, re-run the same force-reinstall of `PyQt6-Qt6`. Do not add `QT_PLUGIN_PATH`
+/ `QT_QPA_PLATFORM_PLUGIN_PATH` overrides and do not downgrade PyQt6.
+
 ## 2026-07-11 - OpenCV Headless / PyQt6 Cocoa Conflict Fix
 
 ### Changed

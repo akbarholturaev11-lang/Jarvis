@@ -24,6 +24,7 @@ Current known status as of 2026-07-11:
 - Requirements are installed.
 - OpenCV is `opencv-python-headless==5.0.0.93` (not `opencv-python`). The GUI OpenCV build bundled its own Qt runtime and hijacked Qt's platform-plugin path, masking PyQt6's Cocoa plugin and crashing `QApplication`. The project uses no OpenCV GUI APIs (only `VideoCapture`/`imencode`/`cvtColor` and capture backends), so headless is the correct build. Do not reinstall plain `opencv-python`.
 - PyQt6 6.11.0 / Qt 6.11.1 is installed and verified for the macOS Cocoa GUI path after latest-compatible retesting.
+- Qt platform-plugin discovery was once broken (every platform — cocoa/offscreen/minimal — failed with `Could not find the Qt platform plugin "..." in ""` even though the plugin files were present and directly loadable). Fixed by force-reinstalling the same-version Qt wheel: `python -m pip install --force-reinstall --no-deps PyQt6-Qt6==6.11.1`. If this recurs, re-run that reinstall. Never add `QT_PLUGIN_PATH` / `QT_QPA_PLATFORM_PLUGIN_PATH` overrides and never downgrade PyQt6.
 - `setup.py` completed.
 - `python main.py` runs on Mac.
 - Gemini API is connected.
