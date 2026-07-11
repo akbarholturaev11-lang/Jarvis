@@ -22,7 +22,7 @@ Current known status as of 2026-07-11:
 - Project cloned.
 - Python 3.12 virtual environment exists.
 - Requirements are installed.
-- PyQt6 6.8.1 / Qt 6.8.2 is installed and verified for the macOS Cocoa GUI path.
+- PyQt6 6.11.0 / Qt 6.11.1 is installed and verified for the macOS Cocoa GUI path after latest-compatible retesting.
 - `setup.py` completed.
 - `python main.py` runs on Mac.
 - Gemini API is connected.
@@ -35,7 +35,7 @@ Current known status as of 2026-07-11:
 - Project cloned.
 - Python 3.12 venv created.
 - Requirements installed.
-- PyQt6 6.8.1 / Qt 6.8.2 installed.
+- PyQt6 6.11.0 / Qt 6.11.1 installed.
 - `setup.py` completed.
 - `python main.py` runs.
 - Gemini Live connects.
@@ -63,7 +63,7 @@ Current known status as of 2026-07-11:
 - `config/device_profile.json` is local operational metadata and must never be committed. It may contain private local paths or installed app facts. Commit only `config/device_profile.example.json`.
 - `memory/long_term.json` is local personal memory and must never be committed.
 - Final Gemini speech truthfulness is still guided by tool metadata rather than mechanically intercepted; action source output must remain explicit and non-fabricated.
-- PyQt6 6.11.0 / Qt 6.11.1 failed on this Mac with recurring Cocoa platform startup crashes. Keep `requirements.txt` pinned to PyQt6 6.8.1 and PyQt6-Qt6 6.8.2 unless a newer pair is explicitly re-tested with a minimal `QApplication` launch.
+- PyQt6 6.11.0 / Qt 6.11.1 was retested on this Mac after removing launcher Qt env overrides and now passes minimal `QApplication`, unit tests, terminal launch, and `Jarvis.command` launcher startup. Keep the launcher free of manual `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` overrides unless a future debug run proves they are required.
 
 ## Current Purpose
 

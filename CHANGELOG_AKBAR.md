@@ -1,5 +1,13 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - PyQt6 Latest Compatible Upgrade
+
+### Changed
+
+- Upgraded the tested GUI runtime pin to PyQt6 6.11.0, PyQt6-Qt6 6.11.1, and PyQt6-sip 13.11.1 on the `test/pyqt-latest-compatible` investigation branch.
+- Verified the latest PyQt6/Qt pair with a minimal macOS `QApplication`, `main.py` compile, the unit test suite, terminal startup, and `Jarvis.command` launcher startup.
+- Updated project memory to clarify that the launcher must not reintroduce manual Qt platform path overrides unless a future `QT_DEBUG_PLUGINS=1` run proves they are required.
+
 ## 2026-07-11 - PyQt6 Cocoa Startup Fix
 
 ### Changed
