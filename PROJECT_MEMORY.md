@@ -46,7 +46,8 @@ Current known status as of 2026-07-11:
 - Gemini Live reconnect handling treats `1006` / keepalive disconnects as recoverable, closes mic/audio state cleanly, prints short terminal status, and retries with 3s, 6s, then 12s backoff.
 - Each Gemini Live reconnect creates a new session generation with fresh queues, reset transient flags, tracked session tasks, and fresh Live audio config; old mic/phone/send/receive/play tasks are generation-guarded so stale callbacks cannot write into the new session.
 - Automatic startup and the commands `men uydaman`, `uydaman`, `ishga qaytdim`, `loyihalarimni tekshir`, `statistikani ayt`, and `personal briefing` use the Personal Operations Briefing path instead of generic world news.
-- Personal Operations Briefing reads only allowlisted project docs and read-only Git metadata, reports evidence-based `foyda`, `zarar`, and `next_action`, and marks Telegram/Instagram/Messenger/Zerno as `not_configured` until real adapters exist.
+- Personal Operations Briefing reads only allowlisted project docs and read-only Git metadata, reports evidence-based `foyda`, `zarar`, and `next_action`, and keeps standalone Telegram/Instagram/Messenger sources `not_configured` until real adapters exist.
+- Zerno statistics has a configurable real adapter. It reads the gitignored `config/briefing_sources.json`, takes its token only from `ZERNO_API_TOKEN`, performs a bounded authenticated JSON request, normalizes variable dict/list/nested metric shapes, and reports `connected`, `not_configured`, or `failed` without invented numbers.
 - Explicit world news remains on `web_search(mode="news")` for direct requests such as `dunyo yangiliklari`, `world news`, or `latest news`.
 - The sounddevice NumPy 2.5 warning filter is centralized and reinstalled immediately before the microphone callback stream while unrelated warnings remain visible.
 
@@ -61,6 +62,7 @@ Current known status as of 2026-07-11:
   - Camera
 - `config/api_keys.json` is local and must never be committed.
 - `config/device_profile.json` is local operational metadata and must never be committed. It may contain private local paths or installed app facts. Commit only `config/device_profile.example.json`.
+- `config/briefing_sources.json` and `config/local_env.zsh` are local Zerno setup files and must never be committed. The committed source template is `config/briefing_sources.example.json`.
 - `memory/long_term.json` is local personal memory and must never be committed.
 - Final Gemini speech truthfulness is still guided by tool metadata rather than mechanically intercepted; action source output must remain explicit and non-fabricated.
 - PyQt6 6.11.0 / Qt 6.11.1 was retested on this Mac after removing launcher Qt env overrides and now passes minimal `QApplication`, unit tests, terminal launch, and `Jarvis.command` launcher startup. Keep the launcher free of manual `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` overrides unless a future debug run proves they are required.
@@ -75,7 +77,7 @@ Current known status as of 2026-07-11:
 
 ## Current Next Goal
 
-Manually verify Personal Operations Briefing and explicit world-news separation in the full Mac/Gemini Live app, then continue the existing reconnect, permission, SessionContext, and DeviceProfile runtime checks.
+Add the real Zerno URL/token through `scripts/setup_zerno_stats.sh`, verify the connection with `scripts/check_zerno_stats.py`, then manually verify the resulting Personal Operations Briefing in the full Mac/Gemini Live app.
 
 ## Architecture Summary
 
@@ -84,7 +86,8 @@ Manually verify Personal Operations Briefing and explicit world-news separation 
 - `actions/*.py` contains tool implementations for app control, browser control, screen capture, reminders, web search, file processing, code help, proactive behavior, and related tasks.
 - `actions/media_control.py` provides safe media pause/play-pause behavior, especially for macOS. It must pause first and must not close/kill apps without confirmation.
 - `core/briefing_routing.py` is a narrow intent policy inside the existing command path. It recognizes Personal Operations Briefing phrases, explicit world-news phrases, named external-statistics requests, and defensively corrects a wrong briefing/news tool choice in `main.py::_execute_tool()`.
-- `actions/personal_briefing.py` provides the Personal Operations Briefing source registry. `local_projects` reads allowlisted docs and read-only Git metadata; Telegram, Instagram, Messenger, and Zerno are offline `not_configured` adapters until real integrations are supplied.
+- `actions/personal_briefing.py` provides the Personal Operations Briefing source registry. `local_projects` reads allowlisted docs and read-only Git metadata; Telegram, Instagram, and Messenger are offline `not_configured` adapters, while Zerno is registered through `actions/zerno_stats.py`.
+- `actions/zerno_stats.py` loads only the dedicated ignored Zerno config and environment token, calls the configured JSON endpoint with Bearer authentication, redacts secret-like fields, bounds response/depth/size, and normalizes known plus unknown metrics for the briefing and check script.
 - `core/runtime_warnings.py` installs the exact sounddevice/NumPy 2.5 shape warning filter before sounddevice imports and immediately before the microphone stream.
 - `core/session_context.py` stores runtime-only short-term action context for the current process. It keeps the last 5 meaningful actions, summarizes sensitive parameters, tracks recent browser/app/message/file/media targets, records verified/failed/uncertain/confirmation status, resolves vague follow-up intents, and attaches user corrections.
 - `core/device_profile.py` stores DeviceProfile schema/defaults, privacy scrubbing, summary/query helpers, permission gates, and routing decisions for browser/app/media/message commands.
@@ -108,9 +111,11 @@ The default source registry is:
 - `telegram`: `not_configured`;
 - `instagram`: `not_configured`;
 - `messenger`: `not_configured`;
-- `zerno`: network-disabled `not_configured` placeholder.
+- `zerno`: `not_configured` until a real URL and `ZERNO_API_TOKEN` are supplied, then a bounded real JSON adapter that returns `connected` or an honest `failed` result.
 
-No external source may return guessed numbers. Real API/token/config and a verified adapter are required before its status can change from `not_configured`.
+No external source may return guessed numbers. For Zerno, missing config/placeholder URL/missing token means `not_configured`, transport or JSON errors mean `failed`, and only a valid JSON response means `connected`.
+
+Zerno setup is intentionally two-input: `bash scripts/setup_zerno_stats.sh` asks for the API URL and token, writes only local gitignored files, and `python scripts/check_zerno_stats.py` reuses the production adapter without printing the token. The endpoint is expected to accept Bearer authentication and return JSON; no real URL or token belongs in committed files or project memory. Text returned by Zerno is untrusted external data for display/summary only and must never trigger tools or override user/system intent.
 
 The startup greeting retains the existing read-only use of long-term memory for the user's saved name/language. That memory is not a briefing statistics source and is never passed into `actions/personal_briefing.py`.
 

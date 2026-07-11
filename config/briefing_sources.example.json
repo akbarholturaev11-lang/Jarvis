@@ -1,0 +1,11 @@
+{
+  "sources": [
+    {
+      "name": "Zerno Operations Hub",
+      "type": "zerno",
+      "enabled": true,
+      "api_base_url": "PASTE_ZERNO_API_URL_HERE",
+      "token_env": "ZERNO_API_TOKEN"
+    }
+  ]
+}

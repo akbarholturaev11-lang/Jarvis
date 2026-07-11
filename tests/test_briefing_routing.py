@@ -15,6 +15,8 @@ class BriefingRoutingTests(unittest.TestCase):
             "Uydaman.",
             "ishga qaytdim",
             "loyihalarimni tekshir",
+            "kanallarimni tekshir",
+            "botlarimni tekshir",
             "statistikani ayt",
             "personal briefing",
         ):
@@ -26,7 +28,7 @@ class BriefingRoutingTests(unittest.TestCase):
                     {"sources": list(DEFAULT_PERSONAL_SOURCES)},
                 )
 
-    def test_external_statistics_requests_use_only_named_source(self):
+    def test_external_statistics_requests_include_named_source_and_zerno_hub(self):
         cases = {
             "Telegram kanalim statistikasi qanday?": "telegram",
             "Instagram analyticsni ayt": "instagram",
@@ -37,9 +39,10 @@ class BriefingRoutingTests(unittest.TestCase):
             with self.subTest(text=text):
                 route = resolve_briefing_route(text)
                 self.assertEqual(route["tool_name"], "personal_briefing")
+                expected_sources = [source] if source == "zerno" else [source, "zerno"]
                 self.assertEqual(
                     route["arguments"],
-                    {"sources": [source], "scope": "statistics"},
+                    {"sources": expected_sources, "scope": "statistics"},
                 )
 
     def test_explicit_world_news_routes_to_news_search(self):

@@ -20,6 +20,9 @@ _PERSONAL_PATTERNS = (
     r"\buydaman\b",
     r"\bishga\s+qaytdim\b",
     r"\bloyihalarimni\s+tekshir\b",
+    r"\bkanallarimni\s+tekshir\b",
+    r"\bbotlarimni\s+tekshir\b",
+    r"\btelegram\s+(?:kanalimni|botimni)\s+tekshir\b",
     r"\bstatistikani\s+ayt\b",
     r"\bpersonal\s+briefing\b",
 )
@@ -109,9 +112,10 @@ def resolve_briefing_route(user_text: str) -> dict[str, Any]:
 
     source = _requested_statistics_source(normalized)
     if source:
+        sources = [source] if source == "zerno" else [source, "zerno"]
         return {
             "tool_name": "personal_briefing",
-            "arguments": {"sources": [source], "scope": "statistics"},
+            "arguments": {"sources": sources, "scope": "statistics"},
             "reason": f"Explicit {source} statistics request.",
         }
 

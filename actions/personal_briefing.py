@@ -1,7 +1,8 @@
 """Evidence-based Personal Operations Briefing sources and formatting.
 
-The default external adapters are deliberately offline placeholders. They do
-not inspect secret configuration, make network requests, or invent statistics.
+Local project evidence stays allowlisted. Standalone social adapters remain
+offline placeholders, while the Zerno adapter uses only its dedicated ignored
+config and environment token and never substitutes guessed statistics.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from core.briefing_routing import DEFAULT_PERSONAL_SOURCES
+from actions.zerno_stats import ZERNO_METRIC_GROUPS, collect_zerno_source
 
 
 _ALLOWED_LOCAL_DOCUMENTS = (
@@ -43,7 +45,7 @@ def _project_root(project_root: str | Path | None = None) -> Path:
 
 
 def _clean_text(value: Any, limit: int = 240) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = re.sub(r"\s+", " ", str("" if value is None else value)).strip()
     if len(text) > limit:
         return text[: limit - 3].rstrip() + "..."
     return text
@@ -229,7 +231,7 @@ def _not_configured_external(source: str) -> dict[str, Any]:
 def build_source_registry(
     project_root: str | Path | None = None,
 ) -> dict[str, Callable[[Mapping[str, Any] | None], dict[str, Any]]]:
-    """Build default local/offline source adapters without reading secret config."""
+    """Build the local, placeholder, and configured Zerno source adapters."""
 
     root = _project_root(project_root)
     return {
@@ -237,7 +239,7 @@ def build_source_registry(
         "telegram": lambda parameters=None: _not_configured_external("telegram"),
         "instagram": lambda parameters=None: _not_configured_external("instagram"),
         "messenger": lambda parameters=None: _not_configured_external("messenger"),
-        "zerno": lambda parameters=None: _not_configured_external("zerno"),
+        "zerno": lambda parameters=None: collect_zerno_source(root),
     }
 
 
@@ -324,10 +326,13 @@ def collect_personal_briefing(
 
     foyda: list[str] = []
     zarar: list[str] = []
+    top_priorities: list[str] = []
     next_action = ""
+    successful_source = False
 
     local = source_reports.get("local_projects")
     if local and local.get("status") == "available":
+        successful_source = True
         documents = list(local.get("documents_read") or [])
         if documents:
             foyda.append(
@@ -351,13 +356,43 @@ def collect_personal_briefing(
         if source == "local_projects":
             continue
         status = source_report.get("status", "uncertain")
-        if status == "not_configured":
+        if status in {"available", "connected"}:
+            successful_source = True
+            for item in source_report.get("foyda") or []:
+                evidence = _clean_text(item)
+                if evidence:
+                    foyda.append(f"{source}: {evidence}")
+            for item in source_report.get("zarar") or []:
+                evidence = _clean_text(item)
+                if evidence:
+                    zarar.append(f"{source}: {evidence}")
+            source_next_action = _clean_text(source_report.get("next_action"))
+            if source_next_action and (not next_action or params.get("scope") == "statistics"):
+                next_action = source_next_action
+            for item in source_report.get("top_priorities") or []:
+                priority = _clean_text(item)
+                if priority and priority not in top_priorities:
+                    top_priorities.append(priority)
+        elif status == "not_configured":
+            reason = _clean_text(source_report.get("reason"), 320)
+            if reason:
+                zarar.append(reason)
+            else:
+                zarar.append(
+                    f"{source}: not_configured — real API/token/config yo'q; "
+                    "statistika olinmadi va ixtiro qilinmadi."
+                )
+            source_next_action = _clean_text(source_report.get("next_action"))
+            if source_next_action and not next_action:
+                next_action = source_next_action
+        else:
+            reason = _clean_text(source_report.get("reason"), 320)
             zarar.append(
-                f"{source}: not_configured — real API/token/config yo'q; "
-                "statistika olinmadi va ixtiro qilinmadi."
+                reason or f"{source}: {status} — tasdiqlangan statistika mavjud emas."
             )
-        elif status != "available":
-            zarar.append(f"{source}: {status} — tasdiqlangan statistika mavjud emas.")
+            source_next_action = _clean_text(source_report.get("next_action"))
+            if source_next_action and not next_action:
+                next_action = source_next_action
 
     if not foyda:
         foyda.append("Tasdiqlangan operatsion foyda aniqlanmadi; dalillar yetarli emas.")
@@ -380,16 +415,126 @@ def collect_personal_briefing(
         else:
             next_action = "NEXT_STEPS.md ga bitta aniq va tekshiriladigan keyingi vazifa qo'shing."
 
+    if next_action and next_action not in top_priorities:
+        top_priorities.append(next_action)
+
     return {
         "briefing_type": "personal_operations",
-        "status": "available" if local and local.get("status") == "available" else "partial",
+        "status": "available" if successful_source else "partial",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "scope": _clean_text(params.get("scope") or "operations", 60),
         "sources": source_reports,
         "foyda": foyda,
         "zarar": zarar,
         "next_action": next_action,
+        "top_priorities": top_priorities[:3],
     }
+
+
+_ZERNO_GROUP_LABELS = {
+    "telegram_channel": "Telegram channel",
+    "telegram_bot": "Telegram bot",
+    "instagram": "Instagram",
+    "messenger": "Messenger",
+    "leads": "Leads",
+    "payments": "Payments",
+    "subscriptions": "Subscriptions",
+    "revenue": "Revenue",
+    "users": "Users",
+    "active_users": "Active users",
+    "errors": "Errors",
+    "engagement": "Engagement",
+    "growth": "Growth",
+    "posts": "Posts",
+    "content": "Content",
+    "bot_usage": "Bot usage",
+}
+
+
+def _numeric_metric_summary(value: Any, limit: int = 8) -> str:
+    if value is None:
+        return "ma’lumot bo‘sh"
+    if isinstance(value, (Mapping, list)) and not value:
+        return "ko‘rsatkich yo‘q"
+    leaves: list[str] = []
+
+    def walk(item: Any, path: str = "", depth: int = 0) -> None:
+        if depth > 5 or len(leaves) >= limit:
+            return
+        if isinstance(item, Mapping):
+            for key, child in item.items():
+                clean_key = _clean_text(key, 60)
+                child_path = f"{path}.{clean_key}" if path else clean_key
+                walk(child, child_path, depth + 1)
+        elif isinstance(item, list):
+            for index, child in enumerate(item[:20]):
+                child_path = f"{path}[{index}]" if path else f"[{index}]"
+                walk(child, child_path, depth + 1)
+        elif isinstance(item, bool):
+            leaves.append(f"{path or 'value'}={str(item).lower()}")
+        elif isinstance(item, (int, float)):
+            leaves.append(f"{path or 'value'}={item}")
+
+    walk(value)
+    return ", ".join(leaves) or "mavjud; raqamli ko‘rsatkich topilmadi"
+
+
+def _format_zerno_source(source_report: Mapping[str, Any]) -> list[str]:
+    status = _clean_text(source_report.get("status") or "uncertain", 60)
+    reason = _clean_text(source_report.get("reason") or "", 320)
+    suffix = f" — {reason}" if reason else ""
+    lines = [f"- zerno: {status}{suffix}"]
+    if status != "connected":
+        return lines
+
+    overall_status = _clean_text(
+        source_report.get("overall_status") or "connected",
+        100,
+    )
+    lines.append(f"  Overall status: {overall_status}")
+
+    latest_updates = list(source_report.get("latest_updates") or [])
+    if latest_updates:
+        lines.append("  Latest updates:")
+        lines.extend(f"    - {_clean_text(item)}" for item in latest_updates[:5])
+
+    metrics = source_report.get("metrics") or {}
+    if isinstance(metrics, Mapping):
+        for group in ZERNO_METRIC_GROUPS:
+            if group not in metrics:
+                continue
+            label = _ZERNO_GROUP_LABELS.get(group, group.replace("_", " ").title())
+            lines.append(f"  {label}: {_numeric_metric_summary(metrics[group])}")
+        additional = metrics.get("additional_fields")
+        if additional:
+            lines.append(f"  Other metrics: {_numeric_metric_summary(additional)}")
+
+    benefits = list(source_report.get("foyda") or [])
+    risks = list(source_report.get("zarar") or [])
+    if benefits:
+        lines.append("  Foyda:")
+        lines.extend(f"    - {_clean_text(item)}" for item in benefits[:5])
+    if risks:
+        lines.append("  Zarar/xavf:")
+        lines.extend(f"    - {_clean_text(item)}" for item in risks[:5])
+
+    next_action = _clean_text(source_report.get("next_action"))
+    if next_action:
+        lines.append(f"  Next action: {next_action}")
+    priorities = list(source_report.get("top_priorities") or [])
+    if priorities:
+        lines.append("  Top 3 priorities:")
+        lines.extend(
+            f"    {index}. {_clean_text(item)}"
+            for index, item in enumerate(priorities[:3], start=1)
+        )
+
+    confidence = _clean_text(source_report.get("confidence") or "api_response", 80)
+    last_checked_at = _clean_text(source_report.get("last_checked_at"), 80)
+    lines.append(f"  Confidence: {confidence}")
+    if last_checked_at:
+        lines.append(f"  Last checked: {last_checked_at}")
+    return lines
 
 
 def format_personal_briefing(report: Mapping[str, Any]) -> str:
@@ -411,9 +556,20 @@ def format_personal_briefing(report: Mapping[str, Any]) -> str:
     lines.extend(f"- {_clean_text(item)}" for item in foyda)
     lines.extend(("", "Zarar:"))
     lines.extend(f"- {_clean_text(item)}" for item in zarar)
-    lines.extend(("", f"Next action: {next_action}", "", "Manbalar:"))
+    lines.extend(("", f"Next action: {next_action}"))
+    priorities = list(report.get("top_priorities") or [])
+    if priorities:
+        lines.extend(("", "Top 3 priorities:"))
+        lines.extend(
+            f"{index}. {_clean_text(item)}"
+            for index, item in enumerate(priorities[:3], start=1)
+        )
+    lines.extend(("", "Manbalar:"))
 
     for source, source_report in sources.items():
+        if source == "zerno":
+            lines.extend(_format_zerno_source(source_report))
+            continue
         status = _clean_text(source_report.get("status") or "uncertain", 60)
         reason = _clean_text(source_report.get("reason") or "", 280)
         suffix = f" — {reason}" if reason else ""

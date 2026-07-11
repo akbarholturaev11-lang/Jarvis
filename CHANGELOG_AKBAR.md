@@ -1,5 +1,30 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - Zerno Statistics Integration
+
+### Added
+
+- Added a configurable Zerno source adapter inside Personal Operations Briefing with bounded stdlib HTTP, Bearer authentication, flexible dict/list/nested JSON normalization, secret-field redaction, and explicit `connected` / `not_configured` / `failed` states.
+- Added `config/briefing_sources.example.json`, interactive `scripts/setup_zerno_stats.sh`, safe `scripts/check_zerno_stats.py`, and `docs/ZERNO_SETUP.md`.
+- Added normalized Zerno metric groups, latest updates, evidence-based `foyda` / `zarar`, next action, confidence, last-check time, and up to three priorities without inventing absent fields.
+
+### Changed
+
+- Personal Briefing now treats a valid Zerno JSON response as connected evidence and renders only metric groups actually returned by the API.
+- Telegram/Instagram/Messenger statistics requests also inspect Zerno as the configured operations hub, while standalone source adapters remain honestly `not_configured`.
+- Added deterministic Personal Briefing routing for `kanallarimni tekshir` and `botlarimni tekshir`; explicit world news remains on the existing news route.
+
+### Security
+
+- Added Git ignore protection for `config/briefing_sources.json` and `config/local_env.zsh`; real tokens remain environment-only and are never committed, logged, or stored in project memory.
+- Setup writes local files atomically with restricted permissions, and the check CLI redacts the full token even in debug mode.
+
+### Verified
+
+- Passed the isolated staged-tree full test suite: 84 tests.
+- Passed `py_compile` for `main.py`, Zerno/briefing runtime modules, and the check CLI; also passed setup-script syntax and `git diff --check`.
+- Exercised setup with a dummy token in a temporary Git repository only; no real Zerno request was made because no local URL/token is configured.
+
 ## 2026-07-11 - PyQt6 Latest Compatible Upgrade
 
 ### Changed

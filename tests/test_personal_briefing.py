@@ -43,7 +43,11 @@ class PersonalBriefingTests(unittest.TestCase):
                 self.assertIsNone(source_report["statistics"])
                 self.assertFalse(source_report["configured"])
                 self.assertFalse(source_report["network_attempted"])
-                self.assertRegex(source_report["reason"].lower(), r"api/token/config")
+                if source == "zerno":
+                    self.assertIn("API URL", source_report["reason"])
+                    self.assertIn("ZERNO_API_TOKEN", source_report["reason"])
+                else:
+                    self.assertRegex(source_report["reason"].lower(), r"api/token/config")
 
             output = format_personal_briefing(report)
             self.assertTrue(output.startswith("[PERSONAL_OPERATIONS_BRIEFING]"))

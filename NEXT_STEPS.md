@@ -36,11 +36,18 @@ Current next steps for MARK XLVIII - AkbarCustom.
    - Start the app and confirm startup gives Personal Operations Briefing, not generic world news.
    - Say `men uydaman` and confirm the `personal_briefing` route is used.
    - Say `dunyo yangiliklarini ayt` and confirm the existing world-news route is used.
-   - Ask `Telegram kanalim statistikasi qanday?` and confirm `not_configured` with no numbers.
+   - Before Zerno setup, ask `Telegram kanalim statistikasi qanday?` and confirm `not_configured` with no numbers.
+   - After Zerno setup, repeat it and confirm only API-returned groups/numbers appear.
    - Confirm local project output contains evidence-based `foyda`, `zarar`, and `next_action`.
 10. Confirm a fresh runtime terminal is not flooded by the sounddevice NumPy 2.5 shape warning; unrelated warnings must remain visible.
-11. Supply an official Zerno API contract/config only before implementing a real network adapter. Telegram/Instagram/Messenger also remain `not_configured` until real supported APIs are provided.
-12. Later add custom features.
+11. Complete the local two-input Zerno setup and full-app check:
+   - Run `bash scripts/setup_zerno_stats.sh`.
+   - Run `source config/local_env.zsh`.
+   - Run `python scripts/check_zerno_stats.py` and confirm `status: connected`.
+   - Run `python main.py`, say `men uydaman`, and compare the shown metrics with the Zerno source.
+   - If Zerno uses a different auth contract than Bearer GET + JSON, document the official contract before changing the adapter.
+12. Keep standalone Telegram/Instagram/Messenger adapters `not_configured` until real supported APIs are provided; Zerno may surface those groups only when its real JSON contains them.
+13. Later add custom features.
 
 ## Context System Follow-Up
 

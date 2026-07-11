@@ -143,7 +143,7 @@ class MainBriefingDispatchTests(unittest.IsolatedAsyncioTestCase):
             )
 
         called_parameters = personal_action.call_args.kwargs["parameters"]
-        self.assertEqual(called_parameters["sources"], ["telegram"])
+        self.assertEqual(called_parameters["sources"], ["telegram", "zerno"])
         self.assertEqual(called_parameters["scope"], "statistics")
         self.assertEqual(response.response["actual_tool_executed"], "personal_briefing")
 
