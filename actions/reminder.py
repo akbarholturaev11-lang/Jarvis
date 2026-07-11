@@ -1,6 +1,9 @@
+import base64
 import json
 import os
 import platform
+import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,20 +15,25 @@ _CNW: dict = (
     if platform.system() == "Windows" else {}
 )
 
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+_PLATFORM_ALIASES = {
+    "darwin": "macos",
+    "mac": "macos",
+    "macos": "macos",
+    "windows": "windows",
+    "linux": "linux",
+}
 
 
-def _get_os() -> str:
-    try:
-        cfg = json.loads(
-            (_base_dir() / "config" / "api_keys.json").read_text(encoding="utf-8")
-        )
-        return cfg.get("os_system", "windows").lower()
-    except Exception:
-        return "windows"
+def resolve_reminder_os(device_profile: dict | None = None) -> str:
+    """Resolve the scheduler platform from DeviceProfile, or detect it directly."""
+    if device_profile is not None:
+        raw = str(device_profile.get("platform", {}).get("os", "unknown")).lower()
+        return _PLATFORM_ALIASES.get(raw, "unknown")
+    return _PLATFORM_ALIASES.get(platform.system().lower(), "unknown")
+
+
+def _get_os(device_profile: dict | None = None) -> str:
+    return resolve_reminder_os(device_profile)
 
 
 def _scripts_dir() -> Path:
@@ -44,9 +52,61 @@ def _sanitise(text: str, max_len: int = 200) -> str:
             .strip()
     )[:max_len]
 
+def speak_reminder_fallback(message: str, os_name: str) -> tuple[bool, str]:
+    """Speak through the local OS when an active Gemini Live session is unavailable."""
+    spoken_message = f"Akbar. {_sanitise(message)}"
+    command: list[str]
+
+    if os_name == "macos":
+        say_path = Path("/usr/bin/say")
+        if not say_path.exists():
+            return False, "macOS say command is unavailable."
+        command = [str(say_path), spoken_message]
+    elif os_name == "windows":
+        powershell = shutil.which("powershell") or shutil.which("pwsh")
+        if not powershell:
+            return False, "Windows speech command is unavailable."
+        encoded = base64.b64encode(spoken_message.encode("utf-16le")).decode("ascii")
+        speech_script = (
+            "$t=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('"
+            + encoded
+            + "')); Add-Type -AssemblyName System.Speech; "
+              "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak($t)"
+        )
+        command = [powershell, "-NoProfile", "-NonInteractive", "-Command", speech_script]
+    elif os_name == "linux":
+        speaker = shutil.which("spd-say") or shutil.which("espeak")
+        if not speaker:
+            return False, "Linux speech command is unavailable."
+        command = [speaker, spoken_message]
+    else:
+        return False, "Reminder speech platform is unknown."
+
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=45,
+            **_CNW,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"System speech command failed: {type(exc).__name__}."
+    if result.returncode != 0:
+        return False, "System speech command returned an error."
+    return True, "System speech command completed."
+
+
 def _write_notify_script(task_name: str, message: str, os_name: str) -> Path:
     script_path = _scripts_dir() / f"{task_name}.py"
-    msg_literal = json.dumps(message)  
+    msg_literal = json.dumps(message, ensure_ascii=False)
+    event_payload_literal = repr(
+        {
+            "source": "jarvis_reminder",
+            "event_id": task_name,
+            "message": message,
+        }
+    )
 
     if os_name == "windows":
         notify_block = f"""
@@ -84,7 +144,7 @@ except Exception:
     pass
 """
 
-    elif os_name == "mac":
+    elif os_name == "macos":
         notify_block = f"""
 message = {msg_literal}
 notified = False
@@ -102,7 +162,7 @@ if not notified:
         script = 'display notification "{{}}" with title "J.A.R.V.I.S Reminder"'.format(
             message.replace('"', '')
         )
-        subprocess.run(["osascript", "-e", script], check=False)
+        subprocess.run(["/usr/bin/osascript", "-e", script], check=False)
     except Exception:
         pass
 """
@@ -131,14 +191,113 @@ if not notified:
         pass
 """
 
+    if os_name == "macos":
+        speech_block = """
+try:
+    subprocess.run(["/usr/bin/say", spoken_message], check=False, timeout=45)
+except Exception:
+    pass
+"""
+    elif os_name == "windows":
+        speech_block = """
+try:
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if powershell:
+        encoded = base64.b64encode(spoken_message.encode("utf-16le")).decode("ascii")
+        speech_script = (
+            "$t=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('"
+            + encoded
+            + "')); Add-Type -AssemblyName System.Speech; "
+              "$s=New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Speak($t)"
+        )
+        subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-Command", speech_script],
+            check=False,
+            timeout=45,
+        )
+except Exception:
+    pass
+"""
+    else:
+        speech_block = """
+try:
+    speaker = shutil.which("spd-say") or shutil.which("espeak")
+    if speaker:
+        subprocess.run([speaker, spoken_message], check=False, timeout=45)
+except Exception:
+    pass
+"""
+
+    if os_name == "macos":
+        launch_label_literal = json.dumps(f"com.jarvis.reminder.{task_name}")
+        cleanup_block = f"""
+launch_label = {launch_label_literal}
+launch_agent_path = (
+    pathlib.Path.home() / "Library" / "LaunchAgents" / (launch_label + ".plist")
+)
+try:
+    launch_agent_path.unlink(missing_ok=True)
+except Exception:
+    pass
+try:
+    subprocess.run(["/bin/launchctl", "remove", launch_label], check=False, timeout=5)
+except Exception:
+    pass
+"""
+    else:
+        cleanup_block = ""
+
     script_body = f"""# Auto-generated by J.A.R.V.I.S reminder — do not edit
-import sys, os, pathlib
+import base64, json, os, pathlib, shutil, subprocess, time
 {notify_block}
+event_payload = {event_payload_literal}
+event_dir = pathlib.Path.home() / ".jarvis" / "reminder_events"
+event_path = event_dir / (event_payload["event_id"] + ".json")
+fallback_path = event_path.with_suffix(".fallback")
+event_written = False
+
+try:
+    event_dir.mkdir(parents=True, exist_ok=True)
+    event_dir.chmod(0o700)
+    temp_path = event_path.with_suffix(".tmp")
+    temp_path.write_text(json.dumps(event_payload, ensure_ascii=False), encoding="utf-8")
+    temp_path.chmod(0o600)
+    os.replace(temp_path, event_path)
+    event_written = True
+except Exception:
+    pass
+
+claimed_by_app = False
+owns_fallback = False
+if event_written:
+    deadline = time.monotonic() + 2.5
+    while time.monotonic() < deadline:
+        if not event_path.exists():
+            claimed_by_app = True
+            break
+        time.sleep(0.1)
+
+    if not claimed_by_app:
+        try:
+            os.replace(event_path, fallback_path)
+            owns_fallback = True
+        except OSError:
+            pass
+
+if not event_written or owns_fallback:
+    spoken_message = "Akbar. " + message
+{speech_block}
+
+try:
+    fallback_path.unlink(missing_ok=True)
+except Exception:
+    pass
 # Self-delete after firing
 try:
     pathlib.Path(__file__).unlink(missing_ok=True)
 except Exception:
     pass
+{cleanup_block}
 """
     script_path.write_text(script_body, encoding="utf-8")
     script_path.chmod(0o600)   # owner read/write only
@@ -272,7 +431,7 @@ def _schedule_linux(target_dt: datetime, task_name: str,
 
     if shutil.which("at"):
         at_time = target_dt.strftime("%H:%M %Y-%m-%d")
-        cmd_str = f"{sys.executable} {script_path}\n"
+        cmd_str = f"{shlex.quote(sys.executable)} {shlex.quote(str(script_path))}\n"
         result  = subprocess.run(
             ["at", at_time],
             input=cmd_str, capture_output=True, text=True,
@@ -290,6 +449,7 @@ def reminder(
     response=None,
     player=None,
     session_memory=None,
+    device_profile: dict | None = None,
 ) -> str:
 
     date_str = parameters.get("date", "").strip()
@@ -307,9 +467,14 @@ def reminder(
     if target_dt <= datetime.now():
         return "That time has already passed — I can't set a reminder in the past."
 
-    os_name    = _get_os()
+    os_name    = _get_os(device_profile)
+    if os_name == "unknown":
+        return "I couldn't determine this device's reminder scheduler safely."
     safe_msg   = _sanitise(message)
-    task_name  = f"JARVISReminder_{target_dt.strftime('%Y%m%d_%H%M%S')}"
+    task_name  = (
+        f"JARVISReminder_{target_dt.strftime('%Y%m%d_%H%M%S')}_"
+        f"{secrets.token_hex(3)}"
+    )
 
     try:
         script_path = _write_notify_script(task_name, safe_msg, os_name)
@@ -319,7 +484,7 @@ def reminder(
     try:
         if os_name == "windows":
             job_id = _schedule_windows(target_dt, task_name, script_path, safe_msg)
-        elif os_name == "mac":
+        elif os_name == "macos":
             job_id = _schedule_mac(target_dt, task_name, script_path)
         else:
             job_id = _schedule_linux(target_dt, task_name, script_path)

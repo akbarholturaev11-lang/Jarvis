@@ -41,6 +41,7 @@ Current known status as of 2026-07-11:
 - Gemini Live connects.
 - Microphone starts.
 - Audio playback starts.
+- Timed reminders keep their OS notification and also speak aloud. A connected app atomically claims the event immediately with a renewable owner lease, waits a bounded time for an idle turn, blocks reminder-originated tool execution, and accepts Gemini Live/Charon delivery only after audio reaches and drains the local playback queue. Unclaimed, timed-out, or incomplete Live delivery falls back to local OS speech, and failed speech delivery is retried a bounded number of times.
 - `save_memory` / memory persistence works.
 - Mic and phone audio input use a bounded outgoing queue; if it fills, stale queued audio is discarded and the newest chunk is kept so `QueueFull` does not crash or spam logs.
 - Gemini Live reconnect handling treats `1006` / keepalive disconnects as recoverable, closes mic/audio state cleanly, prints short terminal status, and retries with 3s, 6s, then 12s backoff.
@@ -65,6 +66,7 @@ Current known status as of 2026-07-11:
 - `config/briefing_sources.json` and `config/local_env.zsh` are local Zerno setup files and must never be committed. The committed source template is `config/briefing_sources.example.json`.
 - `memory/long_term.json` is local personal memory and must never be committed.
 - Final Gemini speech truthfulness is still guided by tool metadata rather than mechanically intercepted; action source output must remain explicit and non-fabricated.
+- A completed local speech command does not prove the reminder was audible if the output device is muted, unavailable, or the computer cannot play sound at that moment; the notification remains the durable fallback.
 - PyQt6 6.11.0 / Qt 6.11.1 was retested on this Mac after removing launcher Qt env overrides and now passes minimal `QApplication`, unit tests, terminal launch, and `Jarvis.command` launcher startup. Keep the launcher free of manual `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` overrides unless a future debug run proves they are required.
 
 ## Current Purpose
@@ -84,6 +86,8 @@ Add the real Zerno URL/token through `scripts/setup_zerno_stats.sh`, verify the 
 - `main.py` is the high-risk app runtime entry point. It manages Gemini Live, audio input/output, tool declarations, reconnect flow, and action dispatch.
 - `ui.py` is the PyQt6 HUD/UI layer.
 - `actions/*.py` contains tool implementations for app control, browser control, screen capture, reminders, web search, file processing, code help, proactive behavior, and related tasks.
+- `actions/reminder.py` schedules notifications, publishes private one-shot reminder events, uses DeviceProfile for platform selection, provides argv-only macOS/Windows/Linux speech fallback without shell execution, and cleans one-shot macOS LaunchAgents after firing.
+- `core/reminder_events.py` validates, atomically claims, retries, and completes the private reminder event files consumed by the process-lifetime Gemini Live bridge in `main.py`.
 - `actions/media_control.py` provides safe media pause/play-pause behavior, especially for macOS. It must pause first and must not close/kill apps without confirmation.
 - `core/briefing_routing.py` is a narrow intent policy inside the existing command path. It recognizes Personal Operations Briefing phrases, explicit world-news phrases, named external-statistics requests, and defensively corrects a wrong briefing/news tool choice in `main.py::_execute_tool()`.
 - `actions/personal_briefing.py` provides the Personal Operations Briefing source registry. `local_projects` reads allowlisted docs and read-only Git metadata; Telegram, Instagram, and Messenger are offline `not_configured` adapters, while Zerno is registered through `actions/zerno_stats.py`.

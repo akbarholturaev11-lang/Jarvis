@@ -1,5 +1,24 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - Spoken Reminder Delivery
+
+### Added
+
+- Added a private file-based reminder event bridge that lets an active, idle Gemini Live session speak scheduled reminders with the configured Charon voice.
+- Added atomic event claiming so Gemini speech and the scheduler fallback do not both speak the same reminder.
+- Added local speech fallback through macOS `say`, Windows System.Speech, or Linux `spd-say`/`espeak`, while retaining the existing OS notification.
+- Added mechanical tool blocking for reminder-originated Gemini turns, local playback completion checks, renewable per-process claim leases, atomic stale-claim recovery, bounded idle waits, and bounded retries when both Live and system speech fail.
+
+### Changed
+
+- Reminder platform selection now uses DeviceProfile instead of reading OS data from the secret API configuration.
+- Reminder scripts use unique IDs, private event files, bounded reminder text, absolute macOS command paths, argv-only subprocess calls without shell execution, quoted Linux `at` paths, and one-shot macOS LaunchAgent cleanup.
+- Client-content turns are serialized around reminder delivery; pending microphone chunks are drained/gated before the reminder prompt, and fallback starts only after incomplete Live audio is stopped.
+
+### Verified
+
+- Added focused tests for event validation/claiming/retry, prompt-data isolation, runtime tool blocking, DeviceProfile scheduler routing, safe generated scripts, notification-plus-speech behavior, queued Live dispatch, playback failure, and system fallback.
+
 ## 2026-07-11 - Zerno Statistics Integration
 
 ### Added

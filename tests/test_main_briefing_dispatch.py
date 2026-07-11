@@ -202,6 +202,32 @@ class MainBriefingDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.jarvis._active_user_text, "")
 
+    async def test_reminder_dispatch_uses_device_profile(self):
+        self.jarvis.device_profile = {"platform": {"os": "macos"}}
+        reminder_action = Mock(return_value="Reminder set for July 12 at 12:00 PM.")
+
+        with (
+            patch.object(main, "reminder", reminder_action),
+            patch.object(main, "detect_active_app", return_value=""),
+        ):
+            response = await self.jarvis._execute_tool(
+                self._function_call(
+                    "reminder",
+                    {
+                        "date": "2026-07-12",
+                        "time": "12:00",
+                        "message": "Dori ich",
+                    },
+                ),
+                user_text="Ertaga dori ichishni eslat",
+            )
+
+        self.assertTrue(response.response["verified"])
+        self.assertIs(
+            reminder_action.call_args.kwargs["device_profile"],
+            self.jarvis.device_profile,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

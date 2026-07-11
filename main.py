@@ -17,6 +17,7 @@ if _platform.system() == "Windows":
 
 import asyncio
 import re
+import secrets
 import threading
 import time
 import json
@@ -59,6 +60,16 @@ from core.session_context import (
     infer_result_status,
     truthful_claim,
 )
+from core.reminder_events import (
+    ReminderEvent,
+    build_spoken_reminder_prompt,
+    claim_reminder_event,
+    complete_reminder_event,
+    defer_claimed_reminder_event,
+    pending_reminder_events,
+    renew_reminder_claim,
+    stale_claimed_reminder_events,
+)
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
 )
@@ -68,7 +79,7 @@ from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
 from actions.weather_report    import weather_action
 from actions.send_message      import send_message
-from actions.reminder          import reminder
+from actions.reminder          import reminder, resolve_reminder_os, speak_reminder_fallback
 from actions.computer_settings import computer_settings
 from actions.media_control     import media_control
 from actions.screen_processor  import _capture_camera, _capture_screen
@@ -93,6 +104,10 @@ _EMPTY_SEARCH_PREFIXES = (
     "Новости не найдены",
     "Поиск не выполнен",
 )
+
+REMINDER_IDLE_WAIT_SECONDS = 60.0
+REMINDER_CLAIM_HEARTBEAT_SECONDS = 10.0
+REMINDER_CLAIM_RETRY_SECONDS = 0.1
 
 
 def get_base_dir():
@@ -694,6 +709,21 @@ class JarvisLive:
         self._session_connected_at = None
         self._session_generation = 0
         self._session_tasks      = set()
+        self._reminder_event_task = None
+        self._reminder_delivery_task = None
+        self._reminder_delivery_queue = None
+        self._reminder_claim_in_progress = False
+        self._reminder_instance_id = secrets.token_hex(12)
+        self._client_content_lock = None
+        self._client_turn_pending = False
+        self._reminder_turn_active = False
+        self._reminder_audio_received = False
+        self._reminder_playback_failed = False
+        self._reminder_turn_complete = False
+        self._reminder_interrupted = False
+        self._reminder_tool_blocked_until_turn_complete = False
+        self._reminder_playback_event = None
+        self._reminder_cleared_event = None
         self.session_context     = SessionContext()
         self._active_user_text   = ""
         self.device_profile      = ensure_device_profile(BASE_DIR)
@@ -760,9 +790,9 @@ class JarvisLive:
             self.session_context.build_user_turn_context(text),
         )
         asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
+            self._send_client_content(
                 turns={"parts": [{"text": payload_text}]},
-                turn_complete=True
+                turn_complete=True,
             ),
             self._loop
         )
@@ -774,6 +804,79 @@ class JarvisLive:
             self.ui.set_state("SPEAKING")
         elif not self.ui.muted:
             self.ui.set_state("LISTENING")
+
+    def _ensure_client_turn_controls(self) -> None:
+        if not hasattr(self, "_client_turn_pending"):
+            self._client_turn_pending = False
+        if not hasattr(self, "_reminder_turn_active"):
+            self._reminder_turn_active = False
+        if not hasattr(self, "_reminder_audio_received"):
+            self._reminder_audio_received = False
+        if not hasattr(self, "_reminder_playback_failed"):
+            self._reminder_playback_failed = False
+        if not hasattr(self, "_reminder_turn_complete"):
+            self._reminder_turn_complete = False
+        if not hasattr(self, "_reminder_interrupted"):
+            self._reminder_interrupted = False
+        if not hasattr(self, "_reminder_tool_blocked_until_turn_complete"):
+            self._reminder_tool_blocked_until_turn_complete = False
+        if not hasattr(self, "_reminder_playback_event"):
+            self._reminder_playback_event = None
+        if getattr(self, "_reminder_delivery_queue", None) is None:
+            self._reminder_delivery_queue = asyncio.Queue()
+        if not hasattr(self, "_reminder_claim_in_progress"):
+            self._reminder_claim_in_progress = False
+        if not hasattr(self, "_reminder_instance_id"):
+            self._reminder_instance_id = secrets.token_hex(12)
+        if getattr(self, "_client_content_lock", None) is None:
+            self._client_content_lock = asyncio.Lock()
+        if getattr(self, "_reminder_cleared_event", None) is None:
+            self._reminder_cleared_event = asyncio.Event()
+            if not getattr(self, "_reminder_turn_active", False):
+                self._reminder_cleared_event.set()
+
+    async def _send_client_content(
+        self,
+        *,
+        turns,
+        turn_complete: bool = True,
+        session=None,
+    ) -> None:
+        """Serialize client turns and defer them while a reminder owns the voice turn."""
+        self._ensure_client_turn_controls()
+        pending_deadline = time.monotonic() + 45.0
+        while True:
+            if getattr(self, "_reminder_turn_active", False):
+                await self._reminder_cleared_event.wait()
+            if self._client_turn_pending:
+                if time.monotonic() >= pending_deadline:
+                    self._interrupted = True
+                    self._drain_queue(self.audio_in_queue)
+                    self._drain_queue(self.out_queue)
+                    self._client_turn_pending = False
+                    print("[JARVIS] Previous client turn timed out; releasing turn gate.")
+                    continue
+                await asyncio.sleep(0.05)
+                continue
+            async with self._client_content_lock:
+                if (
+                    getattr(self, "_reminder_turn_active", False)
+                    or self._client_turn_pending
+                ):
+                    continue
+                target_session = session or self.session
+                if target_session is None:
+                    raise RuntimeError("Gemini Live session is unavailable")
+                self._client_turn_pending = True
+                try:
+                    await target_session.send_client_content(
+                        turns=turns,
+                        turn_complete=turn_complete,
+                    )
+                except Exception:
+                    self._client_turn_pending = False
+                    raise
+                return
 
     def _enqueue_outgoing_audio(self, msg: dict, session_generation: int | None = None) -> None:
         """Keep the newest mic/phone audio and discard stale chunks on overload."""
@@ -816,6 +919,12 @@ class JarvisLive:
         return drained
 
     def _reset_session_flags(self) -> None:
+        reminder_playback_event = getattr(self, "_reminder_playback_event", None)
+        if reminder_playback_event is not None:
+            reminder_playback_event.set()
+        reminder_cleared_event = getattr(self, "_reminder_cleared_event", None)
+        if reminder_cleared_event is not None:
+            reminder_cleared_event.set()
         self._pending_vision       = None
         self._vision_cam_active    = False
         self._vision_close_pending = False
@@ -824,6 +933,14 @@ class JarvisLive:
         self._phone_active         = False
         self._interrupted          = False
         self._active_user_text     = ""
+        self._client_turn_pending  = False
+        self._reminder_turn_active = False
+        self._reminder_audio_received = False
+        self._reminder_playback_failed = False
+        self._reminder_turn_complete = False
+        self._reminder_interrupted = False
+        self._reminder_tool_blocked_until_turn_complete = False
+        self._reminder_playback_event = None
 
     def _cleanup_live_session_state(self) -> None:
         self._session_generation += 1
@@ -925,6 +1042,14 @@ class JarvisLive:
 
     def interrupt(self) -> None:
         """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
+        if (
+            getattr(self, "_reminder_turn_active", False)
+            or getattr(self, "_reminder_tool_blocked_until_turn_complete", False)
+        ):
+            self._reminder_interrupted = True
+            reminder_event = getattr(self, "_reminder_playback_event", None)
+            if reminder_event is not None:
+                reminder_event.set()
         self._interrupted = True
         q = self.audio_in_queue
         if q:
@@ -940,9 +1065,9 @@ class JarvisLive:
         if not self._loop or not self.session:
             return
         asyncio.run_coroutine_threadsafe(
-            self.session.send_client_content(
+            self._send_client_content(
                 turns={"parts": [{"text": text}]},
-                turn_complete=True
+                turn_complete=True,
             ),
             self._loop
         )
@@ -1129,6 +1254,20 @@ class JarvisLive:
         return args, "; ".join(notes), result
 
     async def _execute_tool(self, fc, user_text: str = "") -> types.FunctionResponse:
+        if (
+            getattr(self, "_reminder_turn_active", False)
+            or getattr(self, "_reminder_tool_blocked_until_turn_complete", False)
+        ):
+            return types.FunctionResponse(
+                id=fc.id,
+                name=fc.name,
+                response={
+                    "result": "Scheduled reminder data is not allowed to execute tools.",
+                    "result_status": "failed",
+                    "verified": False,
+                    "truthful_user_claim": "Bajara olmadim.",
+                },
+            )
         response_name = fc.name
         original_args = dict(fc.args or {})
         user_text = user_text or self._active_user_text
@@ -1278,7 +1417,15 @@ class JarvisLive:
                 result = r or "Message tool returned no verification result; exact status is uncertain."
 
             elif name == "reminder":
-                r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: reminder(
+                        parameters=args,
+                        response=None,
+                        player=self.ui,
+                        device_profile=self.device_profile,
+                    ),
+                )
                 result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "youtube_video":
@@ -1462,6 +1609,11 @@ class JarvisLive:
             msg = await q.get()
             if session_generation != self._session_generation:
                 return
+            if self._reminder_turn_active:
+                continue
+            await asyncio.sleep(0)
+            if self._reminder_turn_active:
+                continue
             await session.send_realtime_input(media=msg)
 
     async def _listen_audio(self, session_generation: int):
@@ -1475,6 +1627,7 @@ class JarvisLive:
                 jarvis_speaking = self._is_speaking
             if (
                 not jarvis_speaking
+                and not self._reminder_turn_active
                 and not self.ui.muted
                 and not self._phone_active
                 and self.out_queue is not None
@@ -1521,6 +1674,8 @@ class JarvisLive:
                     turn_completed = False
 
                     if response.data:
+                        if getattr(self, "_reminder_turn_active", False):
+                            self._reminder_audio_received = True
                         if self._interrupted:
                             pass  # discard: interrupted
                         else:
@@ -1551,6 +1706,13 @@ class JarvisLive:
 
                         if sc.turn_complete:
                             turn_completed = True
+                            self._client_turn_pending = False
+                            if getattr(self, "_reminder_turn_active", False):
+                                self._reminder_turn_complete = True
+                                if not self._reminder_audio_received:
+                                    reminder_event = self._reminder_playback_event
+                                    if reminder_event is not None:
+                                        reminder_event.set()
                             if self._turn_done_event:
                                 self._turn_done_event.set()
 
@@ -1561,6 +1723,7 @@ class JarvisLive:
                                 self._active_user_text = ""
                                 in_buf  = []
                                 out_buf = []
+                                self._reminder_tool_blocked_until_turn_complete = False
                                 continue
 
                             full_in = " ".join(in_buf).strip()
@@ -1595,12 +1758,13 @@ class JarvisLive:
                                 self._pending_vision = None
                                 b64 = _b64.b64encode(img_b).decode("ascii")
                                 print(f"[Vision] 📤 {len(img_b):,} bytes (angle={angle}) → main session")
-                                await session.send_client_content(
+                                await self._send_client_content(
                                     turns={"parts": [
                                         {"inline_data": {"mime_type": mime_t, "data": b64}},
                                         {"text": question},
                                     ]},
                                     turn_complete=True,
+                                    session=session,
                                 )
                                 # Mark next turn_complete behaviour depending on angle
                                 if self._vision_cam_active:
@@ -1634,6 +1798,7 @@ class JarvisLive:
                         # the current turn. Never let a previous command reroute
                         # the next voice tool call before fresh STT arrives.
                         self._active_user_text = ""
+                        self._reminder_tool_blocked_until_turn_complete = False
         except Exception as e:
             if not self._is_reconnectable_error(e):
                 print(f"[JARVIS] Recv error: {self._short_error(e)}")
@@ -1669,17 +1834,34 @@ class JarvisLive:
                         and q.empty()
                     ):
                         self.set_speaking(False)
+                        if (
+                            getattr(self, "_reminder_turn_active", False)
+                            and self._reminder_turn_complete
+                            and self._reminder_playback_event is not None
+                        ):
+                            self._reminder_playback_event.set()
                         self._turn_done_event.clear()
                     continue
                 self.set_speaking(True)
                 try:
                     await asyncio.to_thread(stream.write, chunk)
-                except (RuntimeError, asyncio.CancelledError):
+                except RuntimeError:
+                    if getattr(self, "_reminder_turn_active", False):
+                        self._reminder_playback_failed = True
+                    break
+                except asyncio.CancelledError:
                     break   # executor shutting down — exit cleanly
         except Exception as e:
+            if getattr(self, "_reminder_turn_active", False):
+                self._reminder_playback_failed = True
             print(f"[JARVIS] Play error: {self._short_error(e)}")
             raise
         finally:
+            if (
+                getattr(self, "_reminder_turn_active", False)
+                and self._reminder_playback_event is not None
+            ):
+                self._reminder_playback_event.set()
             self.set_speaking(False)
             self._drain_queue(self.audio_in_queue)
             if stream is not None:
@@ -1728,9 +1910,10 @@ class JarvisLive:
             f"One short sentence only. Do not call any tools.{lang_clause}{name_clause}"
         )
 
-        await session.send_client_content(
+        await self._send_client_content(
             turns={"parts": [{"text": p1}]},
             turn_complete=True,
+            session=session,
         )
         self.ui.write_log("SYS: Briefing phase 1 (greeting) sent.")
 
@@ -1790,11 +1973,295 @@ class JarvisLive:
             f"{lang_str}\n\n{result}"
         )
 
-        await session.send_client_content(
+        await self._send_client_content(
             turns={"parts": [{"text": p2}]},
             turn_complete=True,
+            session=session,
         )
         self.ui.write_log("SYS: Personal briefing phase sent.")
+
+    # ── Spoken reminder bridge ──────────────────────────────────────────────────
+
+    async def _renew_reminder_claim_heartbeat(
+        self,
+        event: ReminderEvent,
+        lease_lost: asyncio.Event,
+    ) -> None:
+        while True:
+            await asyncio.sleep(REMINDER_CLAIM_HEARTBEAT_SECONDS)
+            renewed = await asyncio.to_thread(
+                renew_reminder_claim,
+                event,
+                self._reminder_instance_id,
+            )
+            if renewed:
+                continue
+            # Avoid declaring lease loss during a very short atomic recovery rename.
+            await asyncio.sleep(REMINDER_CLAIM_RETRY_SECONDS)
+            renewed = await asyncio.to_thread(
+                renew_reminder_claim,
+                event,
+                self._reminder_instance_id,
+            )
+            if not renewed:
+                lease_lost.set()
+                return
+
+    async def _dispatch_reminder_event(
+        self,
+        event: ReminderEvent,
+        *,
+        already_claimed: bool = False,
+    ) -> None:
+        self._ensure_client_turn_controls()
+        claimed = event if already_claimed else await asyncio.to_thread(
+            claim_reminder_event,
+            event,
+            self._reminder_instance_id,
+        )
+        if claimed is None:
+            return
+
+        owns_claim = await asyncio.to_thread(
+            renew_reminder_claim,
+            claimed,
+            self._reminder_instance_id,
+        )
+        if not owns_claim:
+            print(f"[Reminder] Claim ownership lost before delivery: {claimed.event_id}")
+            return
+
+        session = self.session
+        session_generation = self._session_generation
+        send_error = None if session is not None else RuntimeError(
+            "Live session unavailable before reminder delivery"
+        )
+        request_submitted = False
+        reminder_turn_started = False
+        delivery_finished = False
+        claim_lost = False
+        playback_event = asyncio.Event()
+        lease_lost = asyncio.Event()
+        heartbeat_task = asyncio.create_task(
+            self._renew_reminder_claim_heartbeat(claimed, lease_lost),
+            name=f"reminder-lease-{claimed.event_id}",
+        )
+        idle_deadline = time.monotonic() + REMINDER_IDLE_WAIT_SECONDS
+        try:
+            while session is not None:
+                if lease_lost.is_set():
+                    claim_lost = True
+                    send_error = RuntimeError("Reminder claim lease was lost")
+                    break
+                if (
+                    session_generation != self._session_generation
+                    or session is not self.session
+                ):
+                    send_error = RuntimeError("Live session changed before reminder delivery")
+                    break
+
+                if time.monotonic() >= idle_deadline:
+                    send_error = TimeoutError("Timed out waiting for an idle Live turn")
+                    break
+
+                with self._speaking_lock:
+                    speaking = self._is_speaking
+                if (
+                    speaking
+                    or self._client_turn_pending
+                    or self._reminder_turn_active
+                    or self._active_user_text.strip()
+                ):
+                    await asyncio.sleep(0.05)
+                    continue
+
+                async with self._client_content_lock:
+                    if (
+                        session_generation != self._session_generation
+                        or session is not self.session
+                        or self._client_turn_pending
+                        or self._reminder_turn_active
+                    ):
+                        continue
+
+                    self._reminder_turn_active = True
+                    reminder_turn_started = True
+                    self._reminder_audio_received = False
+                    self._reminder_playback_failed = False
+                    self._reminder_turn_complete = False
+                    self._reminder_interrupted = False
+                    self._reminder_tool_blocked_until_turn_complete = True
+                    self._reminder_playback_event = playback_event
+                    self._reminder_cleared_event.clear()
+                    self._client_turn_pending = True
+                    self._drain_queue(self.out_queue)
+
+                    try:
+                        await session.send_client_content(
+                            turns={
+                                "parts": [
+                                    {"text": build_spoken_reminder_prompt(claimed.message)}
+                                ]
+                            },
+                            turn_complete=True,
+                        )
+                        request_submitted = True
+                    except Exception as exc:
+                        self._client_turn_pending = False
+                        send_error = exc
+                break
+
+            if request_submitted:
+                try:
+                    await asyncio.wait_for(playback_event.wait(), timeout=30.0)
+                except asyncio.TimeoutError as exc:
+                    send_error = exc
+
+            live_playback_completed = (
+                request_submitted
+                and send_error is None
+                and session_generation == self._session_generation
+                and session is self.session
+                and not lease_lost.is_set()
+                and self._reminder_audio_received
+                and not self._reminder_playback_failed
+                and self._reminder_turn_complete
+                and playback_event.is_set()
+            )
+
+            if lease_lost.is_set():
+                claim_lost = True
+                print(f"[Reminder] Claim ownership lost during delivery: {claimed.event_id}")
+            elif self._reminder_interrupted:
+                print(f"[Reminder] Live speech interrupted by user: {claimed.event_id}")
+                delivery_finished = True
+            elif live_playback_completed:
+                print(f"[Reminder] Live speech playback completed: {claimed.event_id}")
+                delivery_finished = True
+            else:
+                if request_submitted:
+                    if not self._reminder_turn_complete:
+                        self._interrupted = True
+                    self._drain_queue(self.audio_in_queue)
+                    await asyncio.sleep(0.1)
+                os_name = resolve_reminder_os(self.device_profile)
+                fallback_ok, fallback_detail = await asyncio.to_thread(
+                    speak_reminder_fallback,
+                    claimed.message,
+                    os_name,
+                )
+                error_name = type(send_error).__name__ if send_error else "NoLiveAudio"
+                print(
+                    "[Reminder] Live playback incomplete; "
+                    f"system_fallback_completed={fallback_ok}; "
+                    f"detail={fallback_detail}; error={error_name}"
+                )
+                delivery_finished = fallback_ok
+        finally:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            if claimed is not None and not claim_lost:
+                if delivery_finished:
+                    await asyncio.to_thread(complete_reminder_event, claimed)
+                else:
+                    retained = await asyncio.to_thread(
+                        defer_claimed_reminder_event,
+                        claimed,
+                    )
+                    print(f"[Reminder] Deferred failed speech retry: retained={retained}")
+            if reminder_turn_started:
+                if claim_lost and request_submitted:
+                    self._interrupted = True
+                    self._drain_queue(self.audio_in_queue)
+                self._client_turn_pending = False
+                self._reminder_turn_active = False
+                self._reminder_audio_received = False
+                self._reminder_playback_failed = False
+                self._reminder_turn_complete = False
+                self._reminder_interrupted = False
+                if not request_submitted:
+                    self._reminder_tool_blocked_until_turn_complete = False
+                if self._reminder_playback_event is playback_event:
+                    self._reminder_playback_event = None
+                self._reminder_cleared_event.set()
+
+    async def _recover_stale_reminder_claims(self) -> None:
+        stale_events = await asyncio.to_thread(stale_claimed_reminder_events)
+        for event in stale_events:
+            os_name = resolve_reminder_os(self.device_profile)
+            fallback_ok, fallback_detail = await asyncio.to_thread(
+                speak_reminder_fallback,
+                event.message,
+                os_name,
+            )
+            print(
+                "[Reminder] Recovered stale app claim; "
+                f"system_fallback_completed={fallback_ok}; detail={fallback_detail}"
+            )
+            if fallback_ok:
+                await asyncio.to_thread(complete_reminder_event, event)
+            else:
+                retained = await asyncio.to_thread(defer_claimed_reminder_event, event)
+                print(f"[Reminder] Deferred stale speech retry: retained={retained}")
+
+    async def _deliver_queued_reminder_events(self) -> None:
+        self._ensure_client_turn_controls()
+        while True:
+            claimed = await self._reminder_delivery_queue.get()
+            self._reminder_claim_in_progress = True
+            try:
+                await self._dispatch_reminder_event(
+                    claimed,
+                    already_claimed=True,
+                )
+            finally:
+                self._reminder_claim_in_progress = False
+                self._reminder_delivery_queue.task_done()
+
+    async def _process_reminder_events(self) -> None:
+        """Claim scheduled events promptly and queue them for serialized delivery."""
+        last_recovery_check = 0.0
+        while True:
+            try:
+                self._ensure_client_turn_controls()
+                session = self.session
+                with self._speaking_lock:
+                    speaking = self._is_speaking
+
+                now = time.monotonic()
+                if (
+                    not speaking
+                    and not self._client_turn_pending
+                    and not self._reminder_turn_active
+                    and not self._reminder_claim_in_progress
+                    and self._reminder_delivery_queue.empty()
+                    and now - last_recovery_check >= 10.0
+                ):
+                    last_recovery_check = now
+                    await self._recover_stale_reminder_claims()
+
+                if session:
+                    events = await asyncio.to_thread(pending_reminder_events)
+                    if events:
+                        for event in events:
+                            claimed = await asyncio.to_thread(
+                                claim_reminder_event,
+                                event,
+                                self._reminder_instance_id,
+                            )
+                            if claimed is not None:
+                                self._reminder_delivery_queue.put_nowait(claimed)
+                        await asyncio.sleep(0.05)
+                        continue
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"[Reminder] Event bridge error: {type(exc).__name__}")
+                await asyncio.sleep(0.5)
 
     # ── System monitor ──────────────────────────────────────────────────────────
 
@@ -1806,9 +2273,10 @@ class JarvisLive:
             session = self.session
             if alert and session_generation == self._session_generation and session:
                 try:
-                    await session.send_client_content(
+                    await self._send_client_content(
                         turns={"parts": [{"text": alert}]},
                         turn_complete=True,
+                        session=session,
                     )
                 except Exception as e:
                     print(f"[Monitor] ⚠️ Could not send alert: {e}")
@@ -1843,9 +2311,10 @@ class JarvisLive:
                 prompt = self._proactive.build_prompt(memory)
                 if session_generation != self._session_generation:
                     return
-                await session.send_client_content(
+                await self._send_client_content(
                     turns={"parts": [{"text": prompt}]},
                     turn_complete=True,
+                    session=session,
                 )
                 self.ui.write_log("SYS: Proactive check-in.")
             except Exception as e:
@@ -1866,7 +2335,7 @@ class JarvisLive:
             self._phone_active = True   # phone is streaming — silence PC mic
             with self._speaking_lock:
                 speaking = self._is_speaking
-            if not speaking and not self.ui.muted:
+            if not speaking and not self._reminder_turn_active and not self.ui.muted:
                 self._enqueue_outgoing_audio(chunk, session_generation)
 
     def _on_phone_connected(self) -> None:
@@ -1900,9 +2369,10 @@ class JarvisLive:
                         text,
                         self.session_context.build_user_turn_context(text),
                     )
-                    await self.session.send_client_content(
+                    await self._send_client_content(
                         turns={"parts": [{"text": payload_text}]},
                         turn_complete=True,
+                        session=self.session,
                     )
                     self.ui.write_log(f"[Web]: {text}")
                 else:
@@ -1917,6 +2387,19 @@ class JarvisLive:
 
     async def run(self):
         self._loop = asyncio.get_event_loop()
+        self._ensure_client_turn_controls()
+
+        # Runs once for the process lifetime; it follows whichever Live session is active.
+        if self._reminder_event_task is None or self._reminder_event_task.done():
+            self._reminder_event_task = asyncio.create_task(
+                self._process_reminder_events(),
+                name="reminder-events",
+            )
+        if self._reminder_delivery_task is None or self._reminder_delivery_task.done():
+            self._reminder_delivery_task = asyncio.create_task(
+                self._deliver_queued_reminder_events(),
+                name="reminder-delivery",
+            )
 
         # Start dashboard (optional — needs: pip install fastapi "uvicorn[standard]" cryptography)
         try:

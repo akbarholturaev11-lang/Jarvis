@@ -32,7 +32,7 @@ It's not just an assistant — it's an extension of your digital life.
 | 🌤️ Weather Report | Live weather data for your city, personalized from memory |
 | 🗺️ Dynamic Content Panel | Scrollable display layer beneath the HUD that renders web results, news, and search data with timestamps |
 | 🔍 Multi-Mode Web Search | `news` / `research` / `price` / `compare` / `search` — Gemini Grounded first, DDG fallback |
-| ⏰ Smart Reminders | OS-native scheduled notifications (Windows Task Scheduler / macOS LaunchAgent / Linux systemd) |
+| ⏰ Smart Reminders | OS-native notifications plus spoken delivery through active Gemini Live/Charon, with local system-voice fallback |
 | ✈️ Flight Finder | Live flight price and availability lookup |
 | 🎮 Game Updater | Checks and triggers game updates on demand |
 | 📂 File Processor | Read, summarize, and answer questions about local files |

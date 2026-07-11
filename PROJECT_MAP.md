@@ -20,6 +20,7 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Runtime action history, follow-up intent routing, corrections, and truthful result status in `core/session_context.py`
    - Narrow Personal Briefing / explicit world-news intent policy in `core/briefing_routing.py`
    - Device intelligence and environment discovery in `core/device_profile.py` and `core/environment_discovery.py`
+   - Atomic scheduled-reminder event bridge in `core/reminder_events.py`
    - Platform adapters in `core/platform_adapters/`
    - Narrow runtime warning policy in `core/runtime_warnings.py`
 
@@ -84,6 +85,7 @@ main.py
 -> core/briefing_routing.py
 -> core/device_profile.py
 -> core/environment_discovery.py
+-> core/reminder_events.py
 -> core/runtime_warnings.py
 -> core/platform_adapters/base.py
 -> core/platform_adapters/macos.py
@@ -134,6 +136,7 @@ main.py
 - Resource guide: `AI_RESOURCES.md`
 - Prompt: `core/prompt.txt`
 - Runtime session context: `core/session_context.py`
+- Scheduled reminder event bridge: `core/reminder_events.py`
 - Briefing route policy: `core/briefing_routing.py`
 - Personal briefing action/source registry: `actions/personal_briefing.py`
 - Zerno statistics adapter/parser: `actions/zerno_stats.py`
@@ -167,6 +170,8 @@ main.py
 - Automatic startup calls `actions/personal_briefing.py` directly for verified local/source-registry output, records it in SessionContext, and sends only that report to Gemini for a short spoken summary.
 - `actions/personal_briefing.py` reads allowlisted project docs and read-only Git counts, returns evidence-based operational fields, keeps missing standalone social adapters honest, and registers the configured Zerno adapter.
 - `actions/zerno_stats.py` reads only `config/briefing_sources.json` and `ZERNO_API_TOKEN`, performs a bounded Bearer-authenticated JSON GET, sanitizes secret-like values, and normalizes connected/failed/not_configured results for both Personal Briefing and the check CLI.
+- `actions/reminder.py` writes a private one-shot event when a scheduled reminder fires. A connected process claims it immediately, queues it until the Live turn is idle, and verifies local audio playback completion; unclaimed or incomplete Live delivery uses local OS speech while retaining the notification.
+- `core/reminder_events.py` validates event source, bounded message length, and event ID before an atomic owner claim, renews the active lease, atomically recovers only expired claims, preserves failed delivery for bounded retries, and completes only handled events so reminder text is treated as data and duplicate speech is minimized.
 - `SessionContext` records the last 5 meaningful actions, recent browser/app/contact/file/media targets, user corrections, and verified/failed/uncertain/confirmation result status.
 - `SessionContext` resolves vague follow-up commands before generic tool routing, including media stop/pause, browser close, message send confirmation, and correction handling.
 - `DeviceProfile` records current device capability metadata and is consulted before platform-sensitive app/browser/media/message/permission actions.
@@ -197,6 +202,7 @@ main.py
 - `memory/long_term.json` is PRIVATE. Never commit, expose, overwrite, or reset it unless Akbar explicitly asks.
 - `ui.py` is MEDIUM risk. UI changes can affect the Mac app experience.
 - `actions/*.py` depends on tool declarations in `main.py`. When changing an action signature, check the matching declaration and dispatch code.
+- `actions/reminder.py`, `core/reminder_events.py`, and the process-lifetime consumer in `main.py` form one delivery path. Preserve immediate atomic claiming, renewable owner leases, bounded idle waits, serialized Live turns, mechanical tool blocking, local playback confirmation, bounded retry, argv-only speech commands, notification fallback, DeviceProfile routing, and the rule that command completion does not prove audibility.
 - `actions/media_control.py` must not close, quit, or kill apps by default. It should pause first and report uncertainty when playback cannot be verified.
 - `actions/personal_briefing.py` must not read `config/api_keys.json`, `memory/long_term.json`, arbitrary files, or invent external statistics. Zerno may use only its dedicated ignored config/environment adapter; all other missing adapters stay `not_configured`.
 - `actions/zerno_stats.py` must never accept a token from committed config, print Authorization headers, return unsanitized secret fields, or report `connected` before valid JSON is received.
