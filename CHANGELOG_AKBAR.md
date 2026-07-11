@@ -1,5 +1,13 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-11 - PyQt6 Cocoa Startup Fix
+
+### Changed
+
+- Pinned the GUI runtime to PyQt6 6.8.1 and PyQt6-Qt6 6.8.2 after the minimal macOS `QApplication` test verified this pair loads the Cocoa platform plugin successfully.
+- Removed manual `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` exports from `scripts/launch_jarvis.command`; Qt now uses PyQt6's bundled plugin discovery instead of launcher-forced paths.
+- Documented the verified PyQt6/Qt pair in project memory so future dependency updates do not accidentally reinstall the failing PyQt6 6.11 / Qt 6.11 pair.
+
 ## 2026-07-11 - AkbarCustom v0.5 Personal Operations Briefing
 
 ### Audited

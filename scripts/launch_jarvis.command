@@ -4,6 +4,7 @@ set -u
 PROJECT_DIR="$HOME/Desktop/Mark-XLVIII-AkbarCustom"
 LOG_DIR="$PROJECT_DIR/logs"
 LOG_FILE="$LOG_DIR/launcher.log"
+PYTHON="$PROJECT_DIR/.venv/bin/python"
 
 mkdir -p "$LOG_DIR"
 
@@ -19,15 +20,16 @@ mkdir -p "$LOG_DIR"
 
   cd "$PROJECT_DIR" || exit 1
 
-  if [ ! -f ".venv/bin/python" ]; then
+  if [ ! -f "$PYTHON" ]; then
     echo "ERROR: .venv/bin/python not found."
     exit 1
   fi
 
-  echo "Python: $PROJECT_DIR/.venv/bin/python"
+  echo "Python: $PYTHON"
+
   echo "Starting Jarvis..."
   echo "=============================="
 
-  exec "$PROJECT_DIR/.venv/bin/python" "$PROJECT_DIR/main.py"
+  exec "$PYTHON" "$PROJECT_DIR/main.py"
 
 } >> "$LOG_FILE" 2>&1
