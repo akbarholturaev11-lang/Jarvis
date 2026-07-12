@@ -5,10 +5,12 @@ import math
 import os
 import platform
 import random
+import stat
 import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psutil
@@ -41,12 +43,14 @@ from core.i18n import (
     t,
 )
 from core.capabilities import list_capabilities
+from core.credential_service import load_gemini_api_key, store_gemini_api_key
 from core.macros import load_macros, add_macro, remove_macro
+from core.app_settings import load_settings
+from core.app_paths import resolve_app_paths
+from core.gemini_credential_validator import validate_gemini_api_key
 
 def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+    return resolve_app_paths().resource_root
 
 BASE_DIR   = _base_dir()
 CONFIG_DIR = BASE_DIR / "config"
@@ -983,37 +987,29 @@ class SetupOverlay(QWidget):
             QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
         """)
         layout.addWidget(self._key_input)
+        layout.addWidget(_lbl(t("setup.secure_note"), 8, color=C.ACC2,
+                               align=Qt.AlignmentFlag.AlignLeft))
+        permissions_note = _lbl(
+            t("setup.permissions_note"),
+            7,
+            color=C.TEXT_DIM,
+            align=Qt.AlignmentFlag.AlignLeft,
+        )
+        permissions_note.setWordWrap(True)
+        layout.addWidget(permissions_note)
         layout.addSpacing(12)
 
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet(f"color: {C.BORDER};"); layout.addWidget(sep2)
-        layout.addSpacing(4)
+        self._error_label = _lbl("", 8, color=C.RED,
+                                 align=Qt.AlignmentFlag.AlignLeft)
+        self._error_label.setWordWrap(True)
+        self._error_label.hide()
+        layout.addWidget(self._error_label)
 
-        layout.addWidget(_lbl(t("setup.os"), 8, color=C.TEXT_DIM,
-                               align=Qt.AlignmentFlag.AlignLeft))
-        det_name = {"windows": "Windows", "mac": "macOS", "linux": "Linux"}[detected]
-        layout.addWidget(_lbl(t("setup.auto_detected", os=det_name), 8, color=C.ACC2,
-                               align=Qt.AlignmentFlag.AlignLeft))
-
-        os_row = QHBoxLayout(); os_row.setSpacing(6)
-        self._os_btns: dict[str, QPushButton] = {}
-        for key, label in [("windows","⊞  Windows"),("mac","  macOS"),("linux","🐧  Linux")]:
-            btn = QPushButton(label)
-            btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
-            btn.setFixedHeight(32)
-            btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.clicked.connect(lambda _, k=key: self._sel(k))
-            os_row.addWidget(btn)
-            self._os_btns[key] = btn
-        layout.addLayout(os_row)
-        self._sel(detected)
-        layout.addSpacing(12)
-
-        init_btn = QPushButton(f"▸  {t('setup.initialise')}")
-        init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
-        init_btn.setFixedHeight(36)
-        init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        init_btn.setStyleSheet(f"""
+        self._init_btn = QPushButton(f"▸  {t('setup.initialise')}")
+        self._init_btn.setFont(QFont("Courier New", 10, QFont.Weight.Bold))
+        self._init_btn.setFixedHeight(36)
+        self._init_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._init_btn.setStyleSheet(f"""
             QPushButton {{
                 background: transparent; color: {C.PRI};
                 border: 1px solid {C.PRI_DIM}; border-radius: 3px;
@@ -1022,29 +1018,8 @@ class SetupOverlay(QWidget):
                 background: {C.PRI_GHO}; border: 1px solid {C.PRI};
             }}
         """)
-        init_btn.clicked.connect(self._submit)
-        layout.addWidget(init_btn)
-
-    def _sel(self, key: str):
-        self._sel_os = key
-        pal = {"windows":(C.PRI,"#001a22"),"mac":(C.ACC2,"#1a1400"),"linux":(C.GREEN,"#001a0d")}
-        for k, btn in self._os_btns.items():
-            if k == key:
-                fg, bg = pal[k]
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: {fg}; color: {bg};
-                        border: none; border-radius: 3px; font-weight: bold;
-                    }}
-                """)
-            else:
-                btn.setStyleSheet(f"""
-                    QPushButton {{
-                        background: #000d12; color: {C.TEXT_DIM};
-                        border: 1px solid {C.BORDER}; border-radius: 3px;
-                    }}
-                    QPushButton:hover {{ color: {C.TEXT}; border: 1px solid {C.BORDER_B}; }}
-                """)
+        self._init_btn.clicked.connect(self._submit)
+        layout.addWidget(self._init_btn)
 
     def _submit(self):
         key = self._key_input.text().strip()
@@ -1055,6 +1030,28 @@ class SetupOverlay(QWidget):
             )
             return
         self.done.emit(key, self._sel_os)
+
+    def set_busy(self, busy: bool) -> None:
+        self._init_btn.setEnabled(not busy)
+        self._key_input.setEnabled(not busy)
+        if busy:
+            self._error_label.setText(t("setup.validating"))
+            self._error_label.setStyleSheet(
+                f"color: {C.ACC2}; background: transparent;"
+            )
+            self._error_label.show()
+
+    def show_setup_error(self, status: str) -> None:
+        key = {
+            "invalid": "setup.key_invalid",
+            "network_unavailable": "setup.validation_unavailable",
+            "server_unavailable": "setup.validation_unavailable",
+        }.get(status, "setup.secure_store_failed")
+        self._error_label.setText(t(key))
+        self._error_label.setStyleSheet(
+            f"color: {C.RED}; background: transparent;"
+        )
+        self._error_label.show()
 
 
 class RemoteKeyOverlay(QWidget):
@@ -1492,6 +1489,7 @@ class SettingsOverlay(QWidget):
     paired devices, connection status, and command automation (macros)."""
 
     closed = pyqtSignal()
+    product_result = pyqtSignal(dict)
     _OW, _OH = 400, 560
 
     def __init__(self, dispatch, open_qr, parent=None):
@@ -1499,6 +1497,7 @@ class SettingsOverlay(QWidget):
         self._dispatch = dispatch          # (action, **kwargs) -> result
         self._open_qr  = open_qr           # () -> None
         self._macro_builder = None
+        self._payment_ready = False
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet(f"""
             SettingsOverlay {{
@@ -1509,6 +1508,7 @@ class SettingsOverlay(QWidget):
         """)
         self._state = self._get_state()
         self._lang = str(self._state.get("language", "en"))
+        self.product_result.connect(self._on_product_result)
         self._build()
 
     # ── helpers ────────────────────────────────────────────────────────────
@@ -1631,6 +1631,52 @@ class SettingsOverlay(QWidget):
 
         b.addWidget(self._sep())
 
+        # Exact-version product entitlement and explicit update checks.
+        b.addWidget(self._lbl(t("settings.product"), 9, bold=True, color=C.PRI))
+        self._product_lbl = self._lbl(self._product_text(), 8, color=C.TEXT_DIM)
+        b.addWidget(self._product_lbl)
+        self._product_device_lbl = self._lbl(
+            self._product_device_text(), 7, color=C.TEXT_DIM
+        )
+        b.addWidget(self._product_device_lbl)
+        self._product_release_lbl = self._lbl("", 7, color=C.TEXT_MED)
+        self._product_release_lbl.hide()
+        b.addWidget(self._product_release_lbl)
+        product_row = QHBoxLayout(); product_row.setSpacing(6)
+        self._activate_btn = self._mini_btn(
+            t("settings.activate_version"), self._activate_product
+        )
+        self._update_btn = self._mini_btn(
+            t("settings.check_updates"), self._check_product_updates
+        )
+        product_row.addWidget(self._activate_btn)
+        product_row.addWidget(self._update_btn)
+        product_wrap = QWidget(); product_wrap.setStyleSheet("background: transparent;")
+        product_wrap.setLayout(product_row)
+        b.addWidget(product_wrap)
+        b.addWidget(
+            self._mini_btn(t("settings.copy_device_id"), self._copy_product_device_id)
+        )
+        self._download_update_btn = self._mini_btn(
+            t("settings.download_update"), self._download_product_update
+        )
+        b.addWidget(self._download_update_btn)
+        payment_row = QHBoxLayout(); payment_row.setSpacing(6)
+        self._payment_btn = self._mini_btn(
+            t("settings.submit_payment"), self._submit_update_payment
+        )
+        self._payment_status_btn = self._mini_btn(
+            t("settings.check_payment"), self._check_update_payment
+        )
+        payment_row.addWidget(self._payment_btn)
+        payment_row.addWidget(self._payment_status_btn)
+        payment_wrap = QWidget(); payment_wrap.setStyleSheet("background: transparent;")
+        payment_wrap.setLayout(payment_row)
+        b.addWidget(payment_wrap)
+        self._payment_btn.setEnabled(False)
+
+        b.addWidget(self._sep())
+
         # Command automation (macros)
         b.addWidget(self._lbl(t("settings.automation"), 9, bold=True, color=C.PRI))
         self._macro_box = QVBoxLayout(); self._macro_box.setSpacing(5)
@@ -1686,6 +1732,27 @@ class SettingsOverlay(QWidget):
             return t("settings.no_devices")
         return f"{t('settings.devices')}: {n}"
 
+    def _product_text(self) -> str:
+        version = str(self._state.get("product_version") or "—")
+        build = str(self._state.get("product_build") or "—")
+        status = str(self._state.get("product_status") or "not_configured")
+        status_key = {
+            "entitled": "settings.product_entitled",
+            "not_activated": "settings.product_not_activated",
+            "not_available": "settings.product_unavailable",
+            "invalid": "settings.product_invalid",
+            "failed": "settings.product_unavailable",
+        }.get(status, "settings.product_not_configured")
+        return (
+            t("settings.product_version", version=version, build=build)
+            + "\n"
+            + t(status_key)
+        )
+
+    def _product_device_text(self) -> str:
+        device_id = str(self._state.get("product_device_id") or "—")
+        return t("settings.device_id", device_id=device_id)
+
     def _render_macros(self):
         while self._macro_box.count():
             item = self._macro_box.takeAt(0)
@@ -1731,6 +1798,8 @@ class SettingsOverlay(QWidget):
         self._remote_status.setText(self._remote_status_text())
         self._conn_lbl.setText(self._conn_text())
         self._dev_lbl.setText(self._devices_text())
+        self._product_lbl.setText(self._product_text())
+        self._product_device_lbl.setText(self._product_device_text())
 
     def _on_toggle_remote(self, enabled: bool):
         try:
@@ -1767,6 +1836,211 @@ class SettingsOverlay(QWidget):
         except Exception:
             pass
         self._refresh_state()
+
+    def _set_product_busy(self, busy: bool) -> None:
+        self._activate_btn.setEnabled(not busy)
+        self._update_btn.setEnabled(not busy)
+        self._payment_btn.setEnabled(not busy and self._payment_ready)
+        self._payment_status_btn.setEnabled(not busy)
+        self._download_update_btn.setEnabled(not busy)
+        if busy:
+            self._product_lbl.setText(t("settings.product_working"))
+
+    def _activate_product(self) -> None:
+        key, accepted = QInputDialog.getText(
+            self,
+            t("settings.activation_title"),
+            t("settings.activation_prompt"),
+            QLineEdit.EchoMode.Password,
+        )
+        key = key.strip()
+        if not accepted or not key:
+            return
+        self._run_product_action("activate_product", license_key=key)
+
+    def _check_product_updates(self) -> None:
+        self._run_product_action("check_product_updates")
+
+    def _download_product_update(self) -> None:
+        self._run_product_action("download_product_update")
+
+    def _copy_product_device_id(self) -> None:
+        device_id = str(self._state.get("product_device_id") or "").strip()
+        if not device_id:
+            return
+        QApplication.clipboard().setText(device_id)
+        self._product_lbl.setText(t("settings.device_id_copied"))
+
+    def _submit_update_payment(self) -> None:
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            t("settings.payment_file_title"),
+            str(Path.home()),
+            t("settings.payment_file_filter"),
+        )
+        if not selected:
+            return
+        path = Path(selected)
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+        }.get(path.suffix.casefold())
+        try:
+            if mime is None or not hasattr(os, "O_NOFOLLOW"):
+                raise ValueError("invalid evidence path")
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                opened = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or opened.st_nlink != 1
+                    or not 1 <= opened.st_size <= 10 * 1024 * 1024
+                ):
+                    raise ValueError("invalid evidence file")
+                chunks = []
+                remaining = opened.st_size
+                while remaining:
+                    chunk = os.read(descriptor, min(remaining, 64 * 1024))
+                    if not chunk:
+                        raise ValueError("incomplete evidence read")
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                if os.read(descriptor, 1):
+                    raise ValueError("evidence changed during read")
+                content = b"".join(chunks)
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError):
+            self._product_lbl.setText(t("settings.payment_invalid"))
+            return
+        paid_at = datetime.now(timezone.utc).isoformat(
+            timespec="seconds"
+        ).replace("+00:00", "Z")
+        self._run_product_action(
+            "submit_update_payment",
+            paid_at=paid_at,
+            content=content,
+            content_type=mime,
+        )
+
+    def _check_update_payment(self) -> None:
+        self._run_product_action("check_update_payment")
+
+    def _run_product_action(self, action: str, **kwargs) -> None:
+        self._set_product_busy(True)
+
+        def worker() -> None:
+            try:
+                result = self._dispatch(action, **kwargs)
+                payload = result if isinstance(result, dict) else {
+                    "action": action,
+                    "status": "failed",
+                }
+            except Exception:
+                payload = {"action": action, "status": "failed"}
+            self.product_result.emit(payload)
+
+        threading.Thread(target=worker, daemon=True, name="product-settings").start()
+
+    def _on_product_result(self, result: dict) -> None:
+        self._set_product_busy(False)
+        status = str(result.get("status") or "failed")
+        action = str(result.get("action") or "")
+        if action == "activate_product":
+            key = (
+                "settings.activation_success"
+                if status == "entitled"
+                else "settings.activation_failed"
+            )
+        elif action == "check_product_updates":
+            key = {
+                "current": "settings.update_current",
+                "purchase_required": "settings.update_purchase_required",
+                "entitled": "settings.update_entitled",
+            }.get(status, "settings.update_failed")
+            self._show_release_offer(result.get("offer"), status=status)
+        elif action == "download_product_update":
+            key = (
+                "settings.update_downloaded"
+                if status == "success"
+                else "settings.update_download_failed"
+            )
+        else:
+            key = {
+                "submitted": "settings.payment_submitted",
+                "pending": "settings.payment_pending",
+                "under_review": "settings.payment_review",
+                "rejected": "settings.payment_rejected",
+                "entitled": "settings.update_entitled",
+            }.get(status, "settings.payment_invalid")
+            if action == "submit_update_payment" and status in {
+                "submitted",
+                "pending",
+                "under_review",
+            }:
+                self._payment_ready = False
+                self._payment_btn.setEnabled(False)
+        self._product_lbl.setText(t(key))
+        if action == "activate_product" and status == "entitled":
+            QTimer.singleShot(250, self._refresh_state)
+
+    def _show_release_offer(self, offer: object, *, status: str) -> None:
+        self._payment_ready = False
+        if status == "current" or not isinstance(offer, dict):
+            self._product_release_lbl.clear()
+            self._product_release_lbl.hide()
+            self._payment_btn.setEnabled(False)
+            return
+        lang = "ru" if self._lang.lower().startswith("ru") else "en"
+        platform_names = {
+            "macos": "macOS",
+            "windows": "Windows",
+            "linux": "Linux",
+        }
+        platforms = offer.get("supported_platforms")
+        if not isinstance(platforms, list):
+            platforms = []
+        features = offer.get(f"features_{lang}")
+        fixes = offer.get(f"fixes_{lang}")
+        missing = t("settings.release_not_provided")
+        lines = [
+            t(
+                "settings.release_offer",
+                version=str(offer.get("version") or "—"),
+                amount=str(offer.get("price_minor") or "—"),
+                currency=str(offer.get("currency") or "—"),
+                platforms=", ".join(
+                    platform_names.get(str(item), str(item)) for item in platforms
+                ) or "—",
+            ),
+            t("settings.release_features", text=str(features or missing)),
+            t("settings.release_fixes", text=str(fixes or missing)),
+        ]
+        payment = offer.get("payment_instructions")
+        if status == "purchase_required" and isinstance(payment, dict):
+            if payment.get("status") == "configured":
+                method = payment.get(f"method_{lang}")
+                instructions = payment.get(f"instructions_{lang}")
+                recipient = payment.get("recipient")
+                if method and instructions and recipient:
+                    lines.extend(
+                        [
+                            t(
+                                "settings.payment_destination",
+                                method=str(method),
+                                recipient=str(recipient),
+                            ),
+                            t("settings.payment_steps", text=str(instructions)),
+                        ]
+                    )
+                    self._payment_ready = True
+            else:
+                lines.append(t("settings.payment_not_configured"))
+        self._product_release_lbl.setText("\n".join(lines))
+        self._product_release_lbl.show()
+        self._payment_btn.setEnabled(self._payment_ready)
 
     def _run_macro(self, macro: dict):
         text = str(macro.get("phrase") or "").strip()
@@ -1807,6 +2081,7 @@ class MainWindow(QMainWindow):
     _state_sig   = pyqtSignal(str)
     _content_sig = pyqtSignal(str, str)   # (title, text) — thread-safe content display
     _reconfig_sig = pyqtSignal()          # trigger setup overlay from any thread
+    _setup_result_sig = pyqtSignal(bool, str, str)
     _camera_sig     = pyqtSignal(bytes)   # show camera frame preview (small overlay)
     _cam_stream_sig = pyqtSignal(bool)   # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)  # live camera frame → HUD area
@@ -1945,6 +2220,7 @@ class MainWindow(QMainWindow):
         self._state_sig.connect(self._apply_state)
         self._content_sig.connect(self._show_content)
         self._reconfig_sig.connect(self._show_setup)
+        self._setup_result_sig.connect(self._finish_setup)
         self._camera_sig.connect(self._show_camera_frame)
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
@@ -2006,11 +2282,10 @@ class MainWindow(QMainWindow):
     def _cam_loop(self) -> None:
         try:
             import cv2
-            # Reuse camera index detected by screen_processor (cached in api_keys.json)
+            # Reuse camera index detected by screen_processor (non-secret setting).
             cam_idx = 0
             try:
-                import json as _j
-                cfg = _j.loads((CONFIG_DIR / "api_keys.json").read_text())
+                cfg = load_settings()
                 cam_idx = int(cfg.get("camera_index", 0))
             except Exception:
                 pass
@@ -2902,17 +3177,12 @@ class MainWindow(QMainWindow):
         self.hud.speaking = (state == "SPEAKING")
 
     def _check_config(self) -> bool:
-        if not API_FILE.exists(): return False
-        try:
-            d = json.loads(API_FILE.read_text(encoding="utf-8"))
-            return bool(d.get("gemini_api_key")) and bool(d.get("os_system"))
-        except Exception:
-            return False
+        return load_gemini_api_key(legacy_path=API_FILE).ok
 
     def _show_setup(self):
         ov = SetupOverlay(self.centralWidget())
         cw = self.centralWidget()
-        ow, oh = 460, 390
+        ow, oh = 460, 340
         ov.setGeometry(
             (cw.width()  - ow) // 2,
             (cw.height() - oh) // 2,
@@ -2923,11 +3193,33 @@ class MainWindow(QMainWindow):
         self._overlay = ov
 
     def _on_setup_done(self, key: str, os_name: str):
-        os.makedirs(CONFIG_DIR, exist_ok=True)
-        API_FILE.write_text(
-            json.dumps({"gemini_api_key": key, "os_system": os_name}, indent=4),
-            encoding="utf-8",
-        )
+        if self._overlay:
+            self._overlay.set_busy(True)
+
+        def validate_and_store() -> None:
+            validation = validate_gemini_api_key(key)
+            if not validation.ok:
+                self._setup_result_sig.emit(False, validation.status, os_name)
+                return
+            stored = store_gemini_api_key(key)
+            self._setup_result_sig.emit(
+                stored.ok,
+                "success" if stored.ok else stored.status,
+                os_name,
+            )
+
+        threading.Thread(
+            target=validate_and_store,
+            daemon=True,
+            name="gemini-key-validation",
+        ).start()
+
+    def _finish_setup(self, success: bool, status: str, os_name: str) -> None:
+        if not success:
+            if self._overlay:
+                self._overlay.set_busy(False)
+                self._overlay.show_setup_error(status)
+            return
         self._ready = True
         if self._overlay:
             self._overlay.hide()

@@ -5,11 +5,12 @@ import re
 import time
 from pathlib import Path
 
+from core.credential_service import require_gemini_api_key
+from core.app_paths import resolve_app_paths
+
 
 def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    return resolve_app_paths().resource_root
 
 BASE_DIR           = get_base_dir()
 API_CONFIG_PATH    = BASE_DIR / "config" / "api_keys.json"
@@ -19,8 +20,7 @@ GEMINI_MODEL       = "gemini-2.5-flash"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return require_gemini_api_key(legacy_path=API_CONFIG_PATH)
 
 
 def _get_gemini(model: str = GEMINI_MODEL):

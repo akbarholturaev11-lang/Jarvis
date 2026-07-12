@@ -111,11 +111,18 @@ class ProductVersion:
         return cls(version=SemanticVersion.parse(version), build=build)
 
     def is_newer_than(self, other: ProductVersion) -> bool:
+        """Compare releases using the target-stream monotonic-build policy.
+
+        Within one platform/architecture update stream, a candidate is newer
+        only when its build increases and its semantic version does not move
+        backwards.  This intentionally matches
+        :func:`require_monotonic_upgrade` so discovery and installation cannot
+        disagree about the same artifact.
+        """
+
         if not isinstance(other, ProductVersion):
             raise TypeError("other must be a ProductVersion")
-        return self.version > other.version or (
-            self.version == other.version and self.build > other.build
-        )
+        return self.build > other.build and self.version >= other.version
 
 
 @dataclass(frozen=True, slots=True)

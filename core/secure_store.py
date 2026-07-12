@@ -7,6 +7,8 @@ output is never copied into result messages.
 
 This module does not migrate or read any existing configuration file.  It is an
 isolated foundation that callers can adopt explicitly in a later change.
+Its fixed messages are internal diagnostics, not visible UI copy; UI callers
+must map statuses to the shared English/Russian localization dictionary.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import shutil
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Final
 
 
@@ -138,19 +141,35 @@ def _run_failure(status: str | None) -> SecureStoreResult:
     return SecureStoreResult(STATUS_FAILED, message="Secure storage operation failed.")
 
 
-def _secret_from_stdout(completed: subprocess.CompletedProcess[str]) -> str:
+def _stdout_text(completed: subprocess.CompletedProcess[str]) -> str:
     raw = completed.stdout
     if isinstance(raw, bytes):
-        text = raw.decode("utf-8", errors="replace")
-    elif isinstance(raw, str):
-        text = raw
-    else:
-        return ""
+        return raw.decode("utf-8", errors="replace")
+    if isinstance(raw, str):
+        return raw
+    return ""
+
+
+def _prompt_secret_from_stdout(completed: subprocess.CompletedProcess[str]) -> str:
+    """Read output from a CLI that terminates its printed secret with a newline."""
+
+    text = _stdout_text(completed)
     if text.endswith("\r\n"):
         return text[:-2]
     if text.endswith("\n"):
         return text[:-1]
     return text
+
+
+def _has_stderr(completed: subprocess.CompletedProcess[str]) -> bool:
+    """Tell an operational error from an empty lookup without exposing details."""
+
+    raw = completed.stderr
+    if isinstance(raw, bytes):
+        return bool(raw.strip())
+    if isinstance(raw, str):
+        return bool(raw.strip())
+    return False
 
 
 class SecureStore(ABC):
@@ -210,7 +229,7 @@ class MacOSKeychainStore(SecureStore):
             return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
         if completed.returncode != 0:
             return _run_failure(STATUS_FAILED)
-        secret = _secret_from_stdout(completed)
+        secret = _prompt_secret_from_stdout(completed)
         if not secret:
             return SecureStoreResult(STATUS_FAILED, message="Secure storage returned no secret.")
         return SecureStoreResult(STATUS_SUCCESS, value=secret, message="Secret retrieved.")
@@ -259,7 +278,12 @@ class LinuxSecretToolStore(SecureStore):
     """Secure store backed by ``secret-tool`` when that binary is available."""
 
     def __init__(self, binary_path: str | None = None) -> None:
-        self._binary_path = binary_path or shutil.which("secret-tool")
+        candidate = binary_path if binary_path is not None else shutil.which("secret-tool")
+        self._binary_path = (
+            candidate
+            if isinstance(candidate, str) and Path(candidate).is_absolute()
+            else None
+        )
 
     def _unavailable(self) -> SecureStoreResult:
         return SecureStoreResult(
@@ -282,11 +306,17 @@ class LinuxSecretToolStore(SecureStore):
         )
         if completed is None:
             return _run_failure(run_status)
-        if completed.returncode in _SECRET_TOOL_NOT_FOUND_EXIT_CODES:
+        if (
+            completed.returncode in _SECRET_TOOL_NOT_FOUND_EXIT_CODES
+            and not _has_stderr(completed)
+        ):
             return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
         if completed.returncode != 0:
             return _run_failure(STATUS_FAILED)
-        secret = _secret_from_stdout(completed)
+        # secret-tool writes the exact stored bytes when stdout is a pipe; it
+        # adds a newline only for an interactive TTY.  subprocess always gives
+        # it a pipe here, so stripping would corrupt a valid trailing byte.
+        secret = _stdout_text(completed)
         if not secret:
             return SecureStoreResult(STATUS_FAILED, message="Secure storage returned no secret.")
         return SecureStoreResult(STATUS_SUCCESS, value=secret, message="Secret retrieved.")
@@ -304,7 +334,9 @@ class LinuxSecretToolStore(SecureStore):
                 "account",
                 account,
             ],
-            input_text=f"{secret}\n",
+            # secret-tool reads stdin through EOF and stores every byte.  Do not
+            # append the newline required by the separate macOS prompt path.
+            input_text=secret,
         )
         if completed is None:
             return _run_failure(run_status)
@@ -327,7 +359,10 @@ class LinuxSecretToolStore(SecureStore):
         )
         if completed is None:
             return _run_failure(run_status)
-        if completed.returncode in _SECRET_TOOL_NOT_FOUND_EXIT_CODES:
+        if (
+            completed.returncode in _SECRET_TOOL_NOT_FOUND_EXIT_CODES
+            and not _has_stderr(completed)
+        ):
             return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
         if completed.returncode != 0:
             return _run_failure(STATUS_FAILED)

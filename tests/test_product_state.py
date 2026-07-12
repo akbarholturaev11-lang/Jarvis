@@ -85,12 +85,32 @@ class ProductStateTests(unittest.TestCase):
             can_transition(UpdateState.PURCHASE_REQUIRED, UpdateState.OLD_VERSION)
         )
 
-    def test_failed_install_can_retry_or_roll_back(self):
-        self.assertTrue(can_transition(UpdateState.INSTALLING, UpdateState.FAILED))
-        self.assertTrue(can_transition(UpdateState.FAILED, UpdateState.ENTITLED))
-        self.assertTrue(can_transition(UpdateState.FAILED, UpdateState.ROLLED_BACK))
+    def test_preinstall_failure_requires_preservation_checkpoint(self):
+        self.assertTrue(can_transition(UpdateState.DOWNLOADING, UpdateState.FAILED))
+        self.assertTrue(can_transition(UpdateState.VERIFYING, UpdateState.FAILED))
+        self.assertFalse(can_transition(UpdateState.FAILED, UpdateState.ENTITLED))
+        self.assertFalse(can_transition(UpdateState.FAILED, UpdateState.ROLLED_BACK))
+        self.assertTrue(can_transition(UpdateState.FAILED, UpdateState.PRESERVED))
+        self.assertTrue(
+            can_transition(UpdateState.PRESERVED, UpdateState.OLD_VERSION)
+        )
+        self.assertTrue(
+            can_transition(UpdateState.PRESERVED, UpdateState.ENTITLED)
+        )
+
+    def test_install_failure_requires_real_rollback_checkpoint(self):
+        self.assertFalse(can_transition(UpdateState.INSTALLING, UpdateState.FAILED))
+        self.assertTrue(
+            can_transition(UpdateState.INSTALLING, UpdateState.ROLLBACK_REQUIRED)
+        )
+        self.assertTrue(
+            can_transition(UpdateState.ROLLBACK_REQUIRED, UpdateState.ROLLED_BACK)
+        )
         self.assertTrue(
             can_transition(UpdateState.ROLLED_BACK, UpdateState.OLD_VERSION)
+        )
+        self.assertTrue(
+            can_transition(UpdateState.ROLLED_BACK, UpdateState.ENTITLED)
         )
 
     def test_connectivity_recovers_from_offline_and_server_failure(self):
@@ -99,6 +119,12 @@ class ProductStateTests(unittest.TestCase):
         )
         self.assertTrue(
             can_transition(ConnectivityState.OFFLINE, ConnectivityState.ONLINE)
+        )
+        self.assertTrue(
+            can_transition(
+                ConnectivityState.OFFLINE,
+                ConnectivityState.SERVER_UNAVAILABLE,
+            )
         )
         self.assertTrue(
             can_transition(
@@ -125,7 +151,6 @@ class ProductStateTests(unittest.TestCase):
             (LicenseState.ACTIVE, LicenseState.MISSING),
             (PaymentState.APPROVED, PaymentState.UNDER_REVIEW),
             (UpdateState.INSTALLED, UpdateState.DOWNLOADING),
-            (ConnectivityState.OFFLINE, ConnectivityState.SERVER_UNAVAILABLE),
             (LicenseState.ACTIVE, PaymentState.APPROVED),
             ("active", "missing"),
         )
@@ -142,7 +167,7 @@ class ProductStateTests(unittest.TestCase):
         self.assertIsInstance(transitions, frozenset)
         self.assertEqual(
             transitions,
-            frozenset({UpdateState.ENTITLED, UpdateState.ROLLED_BACK}),
+            frozenset({UpdateState.PRESERVED}),
         )
 
 

@@ -181,9 +181,10 @@ Required implementation order:
     is added.
 11. Visible UI additions stay bilingual (English + Russian).
 
-A task is **not** complete merely because it works on the current Mac. Completion
-requires cross-platform architecture, platform routing, safe fallbacks, tests,
-documentation, commit, and push.
+A task is **not** complete merely because it works on the current Mac. Technical
+completion requires cross-platform architecture, platform routing, safe
+fallbacks, tests, and documentation. Commit/push remains a separate action and
+is performed only when Akbar asks, as specified below.
 
 ## 8. Personal Operations Briefing
 

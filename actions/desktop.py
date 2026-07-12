@@ -9,6 +9,9 @@ import platform
 from pathlib import Path
 from datetime import datetime
 
+from core.credential_service import require_gemini_api_key
+from core.app_paths import resolve_app_paths
+
 try:
     import pyautogui
     _PYAUTOGUI = True
@@ -19,14 +22,11 @@ _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
 
 def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    return resolve_app_paths().resource_root
 
 def _get_api_key() -> str:
     path = _get_base_dir() / "config" / "api_keys.json"
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return require_gemini_api_key(legacy_path=path)
     
 def _get_desktop() -> Path:
     if _OS == "Linux":

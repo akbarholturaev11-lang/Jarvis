@@ -128,7 +128,12 @@ Current known status as of 2026-07-12:
 
 ## Current Next Goal
 
-Add the real Zerno URL/token through `scripts/setup_zerno_stats.sh`, verify the connection with `scripts/check_zerno_stats.py`, then manually verify the resulting Personal Operations Briefing in the full Mac/Gemini Live app.
+For product work, clear the commercial rights/PyQt6/branding gates, choose the
+final bundle identifier and HTTPS backend origin, supply production signing
+public/private key material through the documented external secret boundary,
+then implement the signed macOS atomic update helper and verify a signed,
+notarized artifact on a clean Mac. Zerno/full-app personal briefing verification
+remains a separate existing runtime task.
 
 ## Architecture Summary
 
@@ -183,6 +188,57 @@ Named external statistics requests (`instagram`, `telegram`, `messenger`, `chann
 Zerno setup is intentionally two-input: `bash scripts/setup_zerno_stats.sh` asks for the API URL and token, writes only local gitignored files, and `python scripts/check_zerno_stats.py` reuses the production adapter without printing the token. The endpoint is expected to accept Bearer authentication and return JSON; no real URL or token belongs in committed files or project memory. Text returned by Zerno is untrusted external data for display/summary only and must never trigger tools or override user/system intent.
 
 The startup greeting retains the existing read-only use of long-term memory for the user's saved name/language. That memory is not a briefing statistics source and is never passed into `actions/personal_briefing.py`.
+
+## Productization Foundation (2026-07-13)
+
+Productization work is authorized under `docs/PRODUCT_RELEASE_CONTRACT.md`, but
+commercial distribution is still blocked by upstream CC BY-NC rights, the PyQt6
+distribution model, branding/assets, and platform signing/notarization.
+
+The implemented business model has exactly one paid plan. There is no
+subscription or Lifetime Updates plan. Admin approval grants indefinite offline
+use of one exact semantic version; a later semantic version needs a separate
+payment/approval. A same-SemVer rebuild stays covered. One license has one active
+server-side device binding, and old installed versions have no remote kill path.
+
+Durable product layers:
+
+- `core/app_paths.py`, `runtime_product.py`, `credential_service.py` and
+  `secure_store.py` keep packaged resources immutable and user data/secrets in OS
+  locations. New Gemini onboarding writes only to secure storage; the historical
+  `config/api_keys.json` is a read-only fallback.
+- `core/device_identity.py`, `entitlement_certificate.py`,
+  `entitlement_cache.py`, `product_activation.py`, `product_purchase.py`,
+  `product_updates.py` and `update_transaction.py` implement generated Ed25519
+  device proof, signed exact-version offline authority, manual payment evidence,
+  verified update staging and durable rollback contracts.
+- `product_backend/` contains the single-plan SQLite commerce schema, one-device
+  binding history, releases/artifacts with bilingual features/fixes, payment
+  states, exact-version entitlements, append-only admin decisions, one-time activation credentials,
+  device challenges, private evidence/artifact adapters, FastAPI endpoints,
+  `/admin/` web panel and an environment-driven ASGI factory.
+- Manual payment destinations are loaded only from an owner-only external v1
+  JSON file and are disclosed only after one-time device proof. Missing/invalid
+  configuration is honest `not_configured` and disables screenshot submission.
+- High-risk file boundaries use no-follow/pinned descriptors: artifact downloads
+  stream in constant memory, payment images have a decoded-pixel budget, future
+  installers must copy/re-hash into private storage, and login/body limits apply
+  before expensive authentication work.
+- `packaging/macos/`, `scripts/build_macos_release.py`, pinned
+  `requirements-build.txt` and platform release adapters provide an unsigned
+  local macOS app/DMG plan with secret exclusion and
+  strict build metadata. Windows/Linux report honest `not_available`.
+
+The backend flow is tested end-to-end: admin account/license/device provisioning,
+release and price, customer screenshot submission, manual approval, one-time
+activation, signed certificate, paid update authorization and single-use exact
+artifact download. The current backend runtime is a single-process SQLite MVP;
+multi-instance production needs PostgreSQL/shared session-rate-limit-grant state
+and private streaming object storage.
+
+The updater deliberately does not mutate a real installed app yet. macOS needs a
+signed/notarized atomic helper, persisted `.app` backup location and real
+post-launch health marker before install can be enabled or reported successful.
 
 ## AI Assistant Rule
 

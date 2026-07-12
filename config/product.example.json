@@ -1,0 +1,11 @@
+{
+  "schema": "jarvis.product-client.v1",
+  "api_base_url": "https://product.example.com",
+  "allow_insecure_localhost": false,
+  "entitlement_public_keys": {
+    "replace-with-entitlement-key-id": "REPLACE_WITH_UNPADDED_BASE64URL_ED25519_PUBLIC_KEY"
+  },
+  "release_public_keys": {
+    "replace-with-release-key-id": "REPLACE_WITH_UNPADDED_BASE64URL_ED25519_PUBLIC_KEY"
+  }
+}

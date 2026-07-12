@@ -15,8 +15,12 @@ import re
 import secrets
 import socket
 import string
+import sys
 import time
 from pathlib import Path
+
+from core.credential_service import load_gemini_api_key
+from core.app_paths import resolve_app_paths
 
 _DEPS_OK = False
 try:
@@ -45,7 +49,13 @@ try:
 except Exception:
     pass
 
-BASE_DIR    = Path(__file__).resolve().parent.parent
+APP_PATHS   = resolve_app_paths()
+BASE_DIR    = APP_PATHS.resource_root
+CONFIG_DIR  = (
+    APP_PATHS.config_dir
+    if getattr(sys, "frozen", False)
+    else BASE_DIR / "config"
+)
 STATIC_DIR  = Path(__file__).parent / "static"
 PORT        = 8000
 MAX_UPLOAD_MB = 500
@@ -59,7 +69,7 @@ def _make_uploads_dir() -> Path:
     for candidate in [
         Path.home() / "Downloads" / "JARVIS Uploads",
         Path.home() / "Documents" / "JARVIS Uploads",
-        BASE_DIR / "uploads",
+        APP_PATHS.data_dir / "uploads",
     ]:
         try:
             candidate.mkdir(parents=True, exist_ok=True)
@@ -72,12 +82,10 @@ def _make_uploads_dir() -> Path:
 UPLOADS_DIR = _make_uploads_dir()
 
 def _get_gemini_key() -> str | None:
-    try:
-        import json as _json
-        with open(BASE_DIR / "config" / "api_keys.json", "r", encoding="utf-8") as f:
-            return _json.load(f).get("gemini_api_key")
-    except Exception:
-        return None
+    result = load_gemini_api_key(
+        legacy_path=BASE_DIR / "config" / "api_keys.json"
+    )
+    return result.value if result.ok else None
 
 _KEY_CHARS = [c for c in (string.ascii_uppercase + string.digits)
               if c not in ('O', 'I', 'L', '0', '1')]
@@ -413,7 +421,7 @@ class DashboardServer:
 
     @staticmethod
     def _ssl_enabled() -> bool:
-        certs = BASE_DIR / "config" / "certs"
+        certs = CONFIG_DIR / "certs"
         return (certs / "jarvis.key").exists() and (certs / "jarvis.crt").exists()
 
     def set_public_url(self, url: str | None) -> None:
@@ -915,8 +923,8 @@ class DashboardServer:
         """Second HTTPS server on PORT+1 sharing the same app and in-memory state.
         Chrome HTTPS-upgrades any bare IP:PORT the user types, so this port also needs TLS.
         User types IP:8001 → Chrome tries https → self-signed cert warning → accept once → done."""
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        ssl_key  = CONFIG_DIR / "certs" / "jarvis.key"
+        ssl_cert = CONFIG_DIR / "certs" / "jarvis.crt"
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT + 1)
         cfg = uvicorn.Config(
             self.app, host="0.0.0.0", port=PORT + 1, log_level="warning",
@@ -936,8 +944,8 @@ class DashboardServer:
         asyncio.get_event_loop().run_in_executor(None, _ensure_network_access, PORT)
 
         use_ssl  = self._ssl_enabled()
-        ssl_key  = BASE_DIR / "config" / "certs" / "jarvis.key"
-        ssl_cert = BASE_DIR / "config" / "certs" / "jarvis.crt"
+        ssl_key  = CONFIG_DIR / "certs" / "jarvis.key"
+        ssl_cert = CONFIG_DIR / "certs" / "jarvis.crt"
 
         if use_ssl:
             asyncio.create_task(self._serve_alias())

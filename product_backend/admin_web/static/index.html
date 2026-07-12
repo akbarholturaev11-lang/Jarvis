@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>JARVIS Release Control</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace" data-i18n="skip_to_content">Skip to content</a>
+
+    <div class="language-dock" role="group" aria-label="Language / Язык">
+      <button class="language-button" type="button" data-language="en" aria-pressed="true">EN</button>
+      <button class="language-button" type="button" data-language="ru" aria-pressed="false">RU</button>
+    </div>
+
+    <main id="auth-shell" class="auth-shell">
+      <section class="auth-card" aria-labelledby="login-title">
+        <div class="wordmark" aria-label="JARVIS">
+          <span class="wordmark-mark" aria-hidden="true">J</span>
+          <span>JARVIS</span>
+        </div>
+        <p class="eyebrow" data-i18n="admin_console">Administration console</p>
+        <h1 id="login-title" data-i18n="login_title">Release decisions require a verified operator.</h1>
+        <p class="lede" data-i18n="login_lede">
+          Sign in to review payment evidence and control exact-version access.
+        </p>
+
+        <form id="login-form" class="stack-form" novalidate>
+          <label for="subject" data-i18n="operator_id">Operator ID</label>
+          <input id="subject" name="subject" type="text" autocomplete="username" required minlength="3" maxlength="128">
+
+          <label for="password" data-i18n="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
+
+          <p id="login-error" class="form-error" role="alert" hidden></p>
+          <button id="login-submit" class="button button-primary button-wide" type="submit" data-i18n="sign_in">Sign in</button>
+          <button id="auth-cancel" class="button button-quiet button-wide" type="button" data-i18n="return_read_only" hidden>
+            Return to read-only session
+          </button>
+        </form>
+
+        <div class="auth-footnote">
+          <span class="seal" aria-hidden="true"></span>
+          <p data-i18n="login_security_note">
+            The password stays in this form only. The server session uses an HttpOnly cookie.
+          </p>
+        </div>
+      </section>
+
+      <aside class="custody-card" aria-labelledby="custody-title">
+        <p class="eyebrow" data-i18n="decision_protocol">Decision protocol</p>
+        <h2 id="custody-title" data-i18n="custody_title">Evidence before entitlement</h2>
+        <ol class="custody-rail">
+          <li>
+            <span class="rail-index">01</span>
+            <div>
+              <strong data-i18n="rail_evidence">Open private evidence</strong>
+              <span data-i18n="rail_evidence_note">Inspect the submitted image in this session.</span>
+            </div>
+          </li>
+          <li>
+            <span class="rail-index">02</span>
+            <div>
+              <strong data-i18n="rail_bank">Verify the bank record</strong>
+              <span data-i18n="rail_bank_note">The system never confirms payment automatically.</span>
+            </div>
+          </li>
+          <li>
+            <span class="rail-index">03</span>
+            <div>
+              <strong data-i18n="rail_decide">Record one decision</strong>
+              <span data-i18n="rail_decide_note">Approval grants only the selected version.</span>
+            </div>
+          </li>
+        </ol>
+      </aside>
+    </main>
+
+    <div id="app-shell" class="app-shell" hidden>
+      <header class="topbar">
+        <div class="topbar-brand">
+          <span class="wordmark-mark wordmark-mark-small" aria-hidden="true">J</span>
+          <div>
+            <strong>JARVIS</strong>
+            <span data-i18n="release_control">Release control</span>
+          </div>
+        </div>
+        <div class="session-block">
+          <div>
+            <span class="session-label" data-i18n="signed_in_as">Signed in as</span>
+            <strong id="session-subject">—</strong>
+          </div>
+          <button id="session-action" class="button button-quiet button-small" type="button" data-i18n="sign_out">Sign out</button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="Administration / Администрирование">
+        <nav class="primary-nav">
+          <button class="nav-button is-active" type="button" data-view="payments" aria-current="page">
+            <span class="nav-code">P</span>
+            <span data-i18n="payments">Payments</span>
+            <span id="pending-count" class="nav-count">0</span>
+          </button>
+          <button class="nav-button" type="button" data-view="releases">
+            <span class="nav-code">R</span>
+            <span data-i18n="releases">Releases</span>
+          </button>
+          <button class="nav-button" type="button" data-view="customers">
+            <span class="nav-code">C</span>
+            <span data-i18n="customers">Customers</span>
+          </button>
+          <button class="nav-button" type="button" data-view="audit">
+            <span class="nav-code">A</span>
+            <span data-i18n="audit">Audit</span>
+          </button>
+        </nav>
+        <div class="sidebar-rule">
+          <span data-i18n="control_rule">Control rule</span>
+          <p data-i18n="control_rule_note">An older purchased version remains usable when an update is declined.</p>
+        </div>
+      </aside>
+
+      <main id="workspace" class="workspace" tabindex="-1">
+        <section id="write-lock-banner" class="notice notice-warning" role="status" hidden>
+          <div>
+            <strong data-i18n="read_only_title">Read-only session restored</strong>
+            <p data-i18n="read_only_note">Sign in again to obtain a fresh CSRF token before making decisions.</p>
+          </div>
+          <button id="unlock-button" class="button button-secondary button-small" type="button" data-i18n="enable_changes">Enable changes</button>
+        </section>
+
+        <section class="view-panel" data-panel="payments" aria-labelledby="payments-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" data-i18n="manual_review">Manual review</p>
+              <h1 id="payments-title" data-i18n="payments_title">Payment queue</h1>
+              <p data-i18n="payments_intro">Compare the submitted evidence with the bank record before deciding.</p>
+            </div>
+            <button class="button button-secondary refresh-button" type="button" data-refresh="payments" data-i18n="refresh">Refresh</button>
+          </div>
+
+          <div class="assurance-rail" aria-label="Approval controls / Контроль подтверждения">
+            <div><span>01</span><strong data-i18n="assurance_private">Evidence is private</strong></div>
+            <div><span>02</span><strong data-i18n="assurance_manual">Bank check is manual</strong></div>
+            <div><span>03</span><strong data-i18n="assurance_exact">Access is exact-version</strong></div>
+          </div>
+
+          <div class="queue-toolbar">
+            <label for="payment-filter" data-i18n="filter_state">Filter by state</label>
+            <select id="payment-filter">
+              <option value="" data-i18n="state_all">All states</option>
+              <option value="pending" data-i18n="state_pending">Pending</option>
+              <option value="under_review" data-i18n="state_under_review">Under review</option>
+              <option value="approved" data-i18n="state_approved">Approved</option>
+              <option value="rejected" data-i18n="state_rejected">Rejected</option>
+            </select>
+            <p id="queue-summary" class="queue-summary" aria-live="polite"></p>
+          </div>
+
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col" data-i18n="version">Version</th>
+                  <th scope="col" data-i18n="license">License</th>
+                  <th scope="col" data-i18n="amount">Amount</th>
+                  <th scope="col" data-i18n="paid_at">Paid at</th>
+                  <th scope="col" data-i18n="status">Status</th>
+                  <th scope="col" data-i18n="evidence">Evidence</th>
+                  <th scope="col" data-i18n="actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="payments-body"></tbody>
+            </table>
+            <div id="payments-empty" class="empty-state" hidden>
+              <strong data-i18n="payments_empty">No payments match this filter.</strong>
+              <span data-i18n="payments_empty_note">Change the filter or refresh the queue.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="view-panel" data-panel="releases" aria-labelledby="releases-title" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" data-i18n="version_catalog">Version catalog</p>
+              <h1 id="releases-title" data-i18n="releases_title">Paid releases</h1>
+              <p data-i18n="releases_intro">Each semantic version has its own price and entitlement.</p>
+            </div>
+            <div class="heading-actions">
+              <button class="button button-secondary refresh-button" type="button" data-refresh="releases" data-i18n="refresh">Refresh</button>
+              <button id="new-release-button" class="button button-primary requires-write" type="button" data-i18n="new_release">New release</button>
+            </div>
+          </div>
+
+          <section id="release-create-card" class="form-card requires-write" aria-labelledby="new-release-title" hidden>
+            <div class="form-card-heading">
+              <div>
+                <p class="eyebrow" data-i18n="draft">Draft</p>
+                <h2 id="new-release-title" data-i18n="create_release">Create release</h2>
+              </div>
+              <button id="cancel-release-create" class="button button-quiet button-small" type="button" data-i18n="cancel">Cancel</button>
+            </div>
+            <form id="release-create-form" class="form-grid" novalidate>
+              <label>
+                <span data-i18n="semantic_version">Semantic version</span>
+                <input name="version" type="text" inputmode="numeric" pattern="(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)" required>
+              </label>
+              <label>
+                <span data-i18n="price_minor">Price in minor units</span>
+                <input name="price_minor" type="number" min="1" step="1" required>
+              </label>
+              <label>
+                <span data-i18n="currency">Currency</span>
+                <input name="currency" type="text" value="UZS" pattern="[A-Z]{3}" minlength="3" maxlength="3" required>
+              </label>
+              <label class="form-grid-wide">
+                <span data-i18n="features_en">What is new — English</span>
+                <textarea name="features_en" rows="3" maxlength="4000" required></textarea>
+              </label>
+              <label class="form-grid-wide">
+                <span data-i18n="features_ru">What is new — Russian</span>
+                <textarea name="features_ru" rows="3" maxlength="4000" required></textarea>
+              </label>
+              <label class="form-grid-wide">
+                <span data-i18n="fixes_en">Fixes — English</span>
+                <textarea name="fixes_en" rows="3" maxlength="4000" required></textarea>
+              </label>
+              <label class="form-grid-wide">
+                <span data-i18n="fixes_ru">Fixes — Russian</span>
+                <textarea name="fixes_ru" rows="3" maxlength="4000" required></textarea>
+              </label>
+              <div class="form-actions form-grid-wide">
+                <p class="form-error" data-form-error hidden></p>
+                <button class="button button-primary" type="submit" data-i18n="create_draft">Create draft</button>
+              </div>
+            </form>
+          </section>
+
+          <div class="catalog-note">
+            <strong data-i18n="catalog_scope">Published catalog</strong>
+            <span data-i18n="catalog_scope_note">The current API lists published releases. New drafts remain visible in this browser session.</span>
+          </div>
+          <div id="release-grid" class="release-grid"></div>
+          <div id="releases-empty" class="empty-state empty-state-bordered" hidden>
+            <strong data-i18n="releases_empty">No published releases are available.</strong>
+            <span data-i18n="releases_empty_note">Create a draft when a verified artifact and price are ready.</span>
+          </div>
+        </section>
+
+        <section class="view-panel" data-panel="customers" aria-labelledby="customers-title" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" data-i18n="provisioning">Provisioning</p>
+              <h1 id="customers-title" data-i18n="customers_title">Customer access</h1>
+              <p data-i18n="customers_intro">Create the commercial records in order, then issue a one-time activation key only after payment approval.</p>
+            </div>
+          </div>
+
+          <div class="provisioning-rail" aria-label="Provisioning sequence / Последовательность выдачи">
+            <div><span>01</span><strong data-i18n="provision_account">Account</strong></div>
+            <div><span>02</span><strong data-i18n="provision_license">License</strong></div>
+            <div><span>03</span><strong data-i18n="provision_device">Initial device</strong></div>
+            <div><span>04</span><strong data-i18n="provision_replacement">Device replacement</strong></div>
+            <div><span>05</span><strong data-i18n="provision_activation">Activation key</strong></div>
+          </div>
+
+          <div class="provisioning-grid">
+            <section class="provision-card requires-write" aria-labelledby="account-step-title">
+              <header><span class="step-number">01</span><div><p class="eyebrow" data-i18n="customer_record">Customer record</p><h2 id="account-step-title" data-i18n="create_account">Create account</h2></div></header>
+              <p data-i18n="create_account_note">Use a stable external buyer reference. Do not enter a password or secret.</p>
+              <form id="account-create-form" class="stack-form" novalidate>
+                <label for="external-subject" data-i18n="external_subject">External buyer reference</label>
+                <input id="external-subject" name="external_subject" type="text" minlength="3" maxlength="128" autocomplete="off" required>
+                <p class="form-error" data-form-error hidden></p>
+                <button class="button button-primary" type="submit" data-i18n="create_account">Create account</button>
+              </form>
+              <div id="account-result" class="provision-result" aria-live="polite" hidden></div>
+            </section>
+
+            <section class="provision-card requires-write" aria-labelledby="license-step-title">
+              <header><span class="step-number">02</span><div><p class="eyebrow" data-i18n="single_paid_plan">Single paid plan</p><h2 id="license-step-title" data-i18n="issue_license">Issue license</h2></div></header>
+              <p data-i18n="issue_license_note">One license record represents one purchased JARVIS copy.</p>
+              <form id="license-issue-form" class="stack-form" novalidate>
+                <label for="license-account-id" data-i18n="account_id">Account ID</label>
+                <input id="license-account-id" name="account_id" type="text" minlength="3" maxlength="128" autocomplete="off" required>
+                <p class="form-error" data-form-error hidden></p>
+                <button class="button button-primary" type="submit" data-i18n="issue_license">Issue license</button>
+              </form>
+              <div id="license-result" class="provision-result" aria-live="polite" hidden></div>
+            </section>
+
+            <section class="provision-card provision-card-wide requires-write" aria-labelledby="device-step-title">
+              <header><span class="step-number">03</span><div><p class="eyebrow" data-i18n="device_binding">Device binding</p><h2 id="device-step-title" data-i18n="bind_initial_device">Bind initial device</h2></div></header>
+              <p data-i18n="bind_device_note">Bind only the fingerprint supplied by the customer’s JARVIS installation.</p>
+              <form id="device-bind-form" class="form-grid" novalidate>
+                <label><span data-i18n="license_id">License ID</span><input name="license_id" type="text" minlength="3" maxlength="128" autocomplete="off" required></label>
+                <label class="form-grid-wide"><span data-i18n="device_fingerprint">Device fingerprint</span><input name="device_key_fingerprint" type="text" pattern="sha256:[0-9a-f]{64}" minlength="71" maxlength="71" autocomplete="off" required></label>
+                <label><span data-i18n="platform">Platform</span><select name="platform" required><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select></label>
+                <label><span data-i18n="architecture">Architecture</span><select name="architecture" required><option value="arm64">arm64</option><option value="x86_64">x86_64</option><option value="universal2">universal2</option><option value="x86">x86</option></select></label>
+                <label><span data-i18n="device_label">Device label, optional</span><input name="device_label" type="text" maxlength="120" autocomplete="off"></label>
+                <div class="form-actions form-grid-wide"><p class="form-error" data-form-error hidden></p><button class="button button-primary" type="submit" data-i18n="bind_device">Bind device</button></div>
+              </form>
+              <div id="device-result" class="provision-result" aria-live="polite" hidden></div>
+            </section>
+
+            <section class="provision-card provision-card-wide requires-write" aria-labelledby="device-replace-step-title">
+              <header><span class="step-number">04</span><div><p class="eyebrow" data-i18n="replacement_control">Admin-controlled replacement</p><h2 id="device-replace-step-title" data-i18n="replace_device">Replace active device</h2></div></header>
+              <p data-i18n="replace_device_note">Replace a device only after verifying the owner’s request. The old binding remains in history and loses future delivery access.</p>
+              <form id="device-replace-form" class="form-grid" novalidate>
+                <label><span data-i18n="license_id">License ID</span><input name="license_id" type="text" minlength="3" maxlength="128" autocomplete="off" required></label>
+                <label class="form-grid-wide"><span data-i18n="current_device_fingerprint">Current active device fingerprint</span><input name="current_device_key_fingerprint" type="text" pattern="sha256:[0-9a-f]{64}" minlength="71" maxlength="71" autocomplete="off" required></label>
+                <label class="form-grid-wide"><span data-i18n="new_device_fingerprint">New device fingerprint</span><input name="new_device_key_fingerprint" type="text" pattern="sha256:[0-9a-f]{64}" minlength="71" maxlength="71" autocomplete="off" required></label>
+                <label><span data-i18n="new_platform">New platform</span><select name="new_platform" required><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select></label>
+                <label><span data-i18n="new_architecture">New architecture</span><select name="new_architecture" required><option value="arm64">arm64</option><option value="x86_64">x86_64</option><option value="universal2">universal2</option><option value="x86">x86</option><option value="armv7">armv7</option></select></label>
+                <label><span data-i18n="new_device_label">New device label, optional</span><input name="new_device_label" type="text" maxlength="120" autocomplete="off"></label>
+                <label class="form-grid-wide"><span data-i18n="replacement_reason">Replacement reason</span><textarea name="replacement_reason" minlength="1" maxlength="240" required></textarea></label>
+                <div class="form-actions form-grid-wide"><p class="form-error" data-form-error hidden></p><button class="button button-primary" type="submit" data-i18n="replace_device">Replace active device</button></div>
+              </form>
+              <div id="device-replacement-result" class="provision-result" aria-live="polite" hidden></div>
+            </section>
+
+            <section class="provision-card provision-card-wide activation-card requires-write" aria-labelledby="activation-step-title">
+              <header><span class="step-number">05</span><div><p class="eyebrow" data-i18n="after_approval">After payment approval</p><h2 id="activation-step-title" data-i18n="issue_activation_key">Issue one-time activation key</h2></div></header>
+              <div class="activation-warning"><span aria-hidden="true">!</span><p data-i18n="activation_gate_note">The server issues a key only when this license already owns the exact-version entitlement. A failed request grants nothing.</p></div>
+              <form id="activation-issue-form" class="form-grid" novalidate>
+                <label><span data-i18n="license_id">License ID</span><input name="license_id" type="text" minlength="3" maxlength="128" autocomplete="off" required></label>
+                <label><span data-i18n="semantic_version">Semantic version</span><input name="version" type="text" pattern="(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)" autocomplete="off" required></label>
+                <div class="form-actions form-grid-wide"><p class="form-error" data-form-error hidden></p><button class="button button-primary" type="submit" data-i18n="issue_one_time_key">Issue one-time key</button></div>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="view-panel" data-panel="audit" aria-labelledby="audit-title" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" data-i18n="decision_history">Decision history</p>
+              <h1 id="audit-title" data-i18n="audit_title">Approval audit</h1>
+              <p data-i18n="audit_intro">A read-only record of payment approvals and rejections.</p>
+            </div>
+            <button class="button button-secondary refresh-button" type="button" data-refresh="audit" data-i18n="refresh">Refresh</button>
+          </div>
+          <div class="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col" data-i18n="decision">Decision</th>
+                  <th scope="col" data-i18n="payment">Payment</th>
+                  <th scope="col" data-i18n="operator">Operator</th>
+                  <th scope="col" data-i18n="reason">Reason</th>
+                  <th scope="col" data-i18n="recorded_at">Recorded at</th>
+                </tr>
+              </thead>
+              <tbody id="audit-body"></tbody>
+            </table>
+            <div id="audit-empty" class="empty-state" hidden>
+              <strong data-i18n="audit_empty">No decisions have been recorded.</strong>
+              <span data-i18n="audit_empty_note">Approved or rejected payments will appear here.</span>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="evidence-dialog" class="modal evidence-modal" aria-labelledby="evidence-title">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow" data-i18n="private_evidence">Private evidence</p>
+          <h2 id="evidence-title" data-i18n="evidence_title">Payment screenshot</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="evidence-dialog" data-i18n-aria="close" aria-label="Close">×</button>
+      </div>
+      <p id="evidence-meta" class="modal-meta"></p>
+      <div class="evidence-stage">
+        <p id="evidence-loading" data-i18n="loading_evidence">Loading private evidence…</p>
+        <p id="evidence-error" class="form-error" role="alert" hidden></p>
+        <img id="evidence-image" alt="Payment evidence / Платёжное подтверждение" hidden>
+      </div>
+      <div class="modal-note">
+        <span class="seal" aria-hidden="true"></span>
+        <p data-i18n="evidence_check_note">Opening this image does not verify payment. Compare it with the bank record.</p>
+      </div>
+    </dialog>
+
+    <dialog id="decision-dialog" class="modal decision-modal" aria-labelledby="decision-title">
+      <form id="decision-form" method="dialog">
+        <div class="modal-heading">
+          <div>
+            <p id="decision-eyebrow" class="eyebrow"></p>
+            <h2 id="decision-title"></h2>
+          </div>
+          <button class="icon-button" type="button" data-close-dialog="decision-dialog" data-i18n-aria="close" aria-label="Close">×</button>
+        </div>
+        <p id="decision-copy"></p>
+        <label id="reject-reason-label" for="reject-reason" hidden>
+          <span data-i18n="rejection_reason">Rejection reason</span>
+          <textarea id="reject-reason" name="reason" rows="4" minlength="1" maxlength="1000"></textarea>
+        </label>
+        <p id="decision-error" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions">
+          <button class="button button-quiet" type="button" data-close-dialog="decision-dialog" data-i18n="cancel">Cancel</button>
+          <button id="decision-confirm" class="button button-primary" type="submit"></button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="release-dialog" class="modal release-modal" aria-labelledby="release-dialog-title">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow" data-i18n="release_record">Release record</p>
+          <h2 id="release-dialog-title">—</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="release-dialog" data-i18n-aria="close" aria-label="Close">×</button>
+      </div>
+      <div id="release-detail-summary" class="release-detail-summary"></div>
+      <div class="release-detail-actions">
+        <button id="publish-release-button" class="button button-primary requires-write" type="button" data-i18n="publish_release">Publish release</button>
+      </div>
+      <section aria-labelledby="artifacts-title">
+        <div class="subsection-heading">
+          <h3 id="artifacts-title" data-i18n="artifacts">Artifacts</h3>
+          <span id="artifact-count" class="record-count">0</span>
+        </div>
+        <div id="artifact-list" class="artifact-list"></div>
+      </section>
+      <details id="artifact-create-details" class="artifact-create requires-write">
+        <summary data-i18n="add_verified_artifact">Add verified artifact metadata</summary>
+        <form id="artifact-create-form" class="form-grid artifact-form" novalidate>
+          <label><span data-i18n="platform">Platform</span><select name="platform" required><option value="macos">macOS</option><option value="windows">Windows</option><option value="linux">Linux</option></select></label>
+          <label><span data-i18n="architecture">Architecture</span><select name="architecture" required><option value="arm64">arm64</option><option value="x86_64">x86_64</option><option value="universal2">universal2</option><option value="x86">x86</option></select></label>
+          <label><span data-i18n="artifact_kind">Artifact kind</span><select name="artifact_kind" required><option value="initial_installer" data-i18n="initial_installer">Initial installer</option><option value="update_package" data-i18n="update_package">Update package</option></select></label>
+          <label><span data-i18n="build_number">Build number</span><input name="build" type="number" min="1" step="1" required></label>
+          <label class="form-grid-wide"><span>SHA-256</span><input name="sha256" type="text" pattern="[0-9a-f]{64}" minlength="64" maxlength="64" required></label>
+          <label class="form-grid-wide"><span data-i18n="storage_key">Private storage key</span><input name="storage_key" type="text" maxlength="512" autocomplete="off" required></label>
+          <label class="form-grid-wide"><span data-i18n="signature">Detached signature</span><textarea name="signature" rows="3" minlength="86" maxlength="86" autocomplete="off" required></textarea></label>
+          <label><span data-i18n="signing_key_id">Signing key ID</span><input name="signing_key_id" type="text" minlength="3" maxlength="128" autocomplete="off" required></label>
+          <label><span data-i18n="byte_size">Byte size</span><input name="byte_size" type="number" min="1" step="1" required></label>
+          <label class="form-grid-wide"><span data-i18n="compatible_versions">Compatible source versions, comma separated</span><input name="compatible_source_versions" type="text" autocomplete="off"></label>
+          <div class="form-actions form-grid-wide">
+            <p class="form-error" data-form-error hidden></p>
+            <button class="button button-primary" type="submit" data-i18n="add_artifact">Add artifact</button>
+          </div>
+        </form>
+      </details>
+    </dialog>
+
+    <dialog id="activation-key-dialog" class="modal activation-key-modal" aria-labelledby="activation-key-title">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow" data-i18n="one_time_secret">One-time secret</p>
+          <h2 id="activation-key-title" data-i18n="activation_key_ready">Activation key ready</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="activation-key-dialog" data-i18n-aria="close" aria-label="Close">×</button>
+      </div>
+      <div class="activation-key-warning" role="alert">
+        <strong data-i18n="copy_now">Copy this key now.</strong>
+        <p data-i18n="activation_key_warning">It is shown only in this response, is not stored in browser storage, and cannot be recovered from the server.</p>
+      </div>
+      <label for="activation-key-value" data-i18n="activation_key">Activation key</label>
+      <textarea id="activation-key-value" class="activation-key-value" rows="3" readonly autocomplete="off" spellcheck="false"></textarea>
+      <p id="activation-key-meta" class="modal-meta"></p>
+      <div class="modal-actions">
+        <button id="copy-activation-key" class="button button-primary" type="button" data-i18n="copy_key">Copy key</button>
+        <button class="button button-quiet" type="button" data-close-dialog="activation-key-dialog" data-i18n="copied_hide">I copied it — hide key</button>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

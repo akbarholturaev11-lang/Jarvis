@@ -97,6 +97,17 @@ class ProductVersionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             require_monotonic_upgrade(previous, ProductVersion.parse("0.5.9", 11))
 
+    def test_newer_check_matches_global_monotonic_build_policy(self):
+        previous = ProductVersion.parse("1.0.0", 100)
+        reset_build = ProductVersion.parse("1.1.0", 1)
+        valid_next = ProductVersion.parse("1.1.0", 101)
+
+        self.assertFalse(reset_build.is_newer_than(previous))
+        self.assertTrue(valid_next.is_newer_than(previous))
+        with self.assertRaises(ValueError):
+            require_monotonic_upgrade(previous, reset_build)
+        self.assertIs(require_monotonic_upgrade(previous, valid_next), valid_next)
+
     def test_module_does_not_claim_a_current_release(self):
         import core.product_version as product_version
 

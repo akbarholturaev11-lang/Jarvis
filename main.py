@@ -49,6 +49,9 @@ from core.device_profile import (
     resolve_messaging_route,
 )
 from core.i18n import active_lang, change_ui_language, detect_ui_language_command, t
+from core.credential_service import load_gemini_api_key
+from core.app_paths import resolve_app_paths
+from core.product_runtime import ProductRuntimeService
 from core.power_manager import KeepAwakeManager
 from core.remote_tunnel import CloudflareTunnel, TailscaleFunnel
 from core.app_settings import (
@@ -119,13 +122,13 @@ REMINDER_CLAIM_RETRY_SECONDS = 0.1
 
 
 def get_base_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent
+    return resolve_app_paths().resource_root
 
 
-BASE_DIR        = get_base_dir()
+APP_PATHS       = resolve_app_paths()
+BASE_DIR        = APP_PATHS.resource_root
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+DEVICE_PROFILE_PATH = APP_PATHS.config_dir / "device_profile.json"
 PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
 LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 CHANNELS            = 1
@@ -144,8 +147,10 @@ UNVERIFIED_TOOL_RESULT = (
 )
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    result = load_gemini_api_key(legacy_path=API_CONFIG_PATH)
+    if not result.ok or result.value is None:
+        raise RuntimeError("Gemini API credential is not configured securely.")
+    return result.value
 
 
 def _load_system_prompt() -> str:
@@ -741,7 +746,10 @@ class JarvisLive:
         self._reminder_cleared_event = None
         self.session_context     = SessionContext()
         self._active_user_text   = ""
-        self.device_profile      = ensure_device_profile(BASE_DIR)
+        self.device_profile      = ensure_device_profile(
+            BASE_DIR, profile_path=DEVICE_PROFILE_PATH
+        )
+        self._product_runtime    = ProductRuntimeService()
         print(format_device_profile_summary(self.device_profile))
 
     def _make_remote_key(self):
@@ -774,7 +782,9 @@ class JarvisLive:
         if not (is_device_profile_refresh_request(text) or is_device_profile_query_request(text)):
             return False
         if is_device_profile_refresh_request(text):
-            self.device_profile = refresh_device_profile(BASE_DIR)
+            self.device_profile = refresh_device_profile(
+                BASE_DIR, profile_path=DEVICE_PROFILE_PATH
+            )
             msg = (
                 "Device profile refreshed. / Профиль устройства обновлен.\n"
                 + format_device_profile_summary(self.device_profile)
@@ -1154,7 +1164,9 @@ class JarvisLive:
         action = str(args.get("action") or "summary").strip().lower()
         query = str(args.get("query") or user_text or "").strip()
         if action in {"refresh", "rescan", "scan"} or is_device_profile_refresh_request(query):
-            self.device_profile = refresh_device_profile(BASE_DIR)
+            self.device_profile = refresh_device_profile(
+                BASE_DIR, profile_path=DEVICE_PROFILE_PATH
+            )
             return (
                 "Device profile refreshed. / Профиль устройства обновлен.\n"
                 + format_device_profile_summary(self.device_profile)
@@ -2515,6 +2527,77 @@ class JarvisLive:
                     self.ui.write_log(f"SYS: Revoked {n} paired device(s).")
                     return n
                 return 0
+            if action == "activate_product":
+                license_key = kwargs.get("license_key")
+                if not isinstance(license_key, str):
+                    return {"action": action, "status": "invalid"}
+                outcome = self._product_runtime.activate(license_key)
+                return {"action": action, "status": outcome.status}
+            if action == "check_product_updates":
+                result = self._product_runtime.check_updates()
+                offer = None
+                if result is not None and result.candidate is not None:
+                    candidate = result.candidate
+                    release = candidate.release_info
+                    payment = candidate.payment_instructions
+                    offer = {
+                        "version": release.version,
+                        "price_minor": release.price_minor,
+                        "currency": release.currency,
+                        "supported_platforms": list(release.supported_platforms),
+                        "features_en": release.features_en,
+                        "features_ru": release.features_ru,
+                        "fixes_en": release.fixes_en,
+                        "fixes_ru": release.fixes_ru,
+                        "payment_instructions": (
+                            None
+                            if payment is None
+                            else {
+                                "status": payment.status,
+                                "method_en": payment.method_en,
+                                "method_ru": payment.method_ru,
+                                "recipient": payment.recipient,
+                                "instructions_en": payment.instructions_en,
+                                "instructions_ru": payment.instructions_ru,
+                            }
+                        ),
+                    }
+                return {
+                    "action": action,
+                    "status": result.status if result is not None else "failed",
+                    "offer": offer,
+                }
+            if action == "submit_update_payment":
+                paid_at = kwargs.get("paid_at")
+                content = kwargs.get("content")
+                content_type = kwargs.get("content_type")
+                if (
+                    not isinstance(paid_at, str)
+                    or type(content) is not bytes
+                    or not isinstance(content_type, str)
+                ):
+                    return {"action": action, "status": "invalid"}
+                result = self._product_runtime.submit_update_payment(
+                    paid_at=paid_at,
+                    screenshot=content,
+                    content_type=content_type,
+                )
+                return {
+                    "action": action,
+                    "status": result.status if result is not None else "failed",
+                }
+            if action == "check_update_payment":
+                result = self._product_runtime.poll_update_purchase()
+                return {
+                    "action": action,
+                    "status": result.status if result is not None else "failed",
+                }
+            if action == "download_product_update":
+                result = self._product_runtime.download_update()
+                return {
+                    "action": action,
+                    "status": result.status if result is not None else "failed",
+                }
             if action == "run_command":
                 text = str(kwargs.get("text") or "").strip()
                 if text:
@@ -2532,6 +2615,25 @@ class JarvisLive:
             tunnel_cfg = get_tunnel_config()
         except Exception:
             tunnel_cfg = {"enabled": False}
+        try:
+            product = self._product_runtime.local_state()
+            product_version = (
+                str(product.runtime.product_version.version)
+                if product.runtime is not None
+                else "—"
+            )
+            product_build = (
+                product.runtime.product_version.build
+                if product.runtime is not None
+                else "—"
+            )
+            product_status = product.status
+            product_device_id = self._product_runtime.device_fingerprint() or ""
+        except Exception:
+            product_version = "—"
+            product_build = "—"
+            product_status = "failed"
+            product_device_id = ""
         return {
             "tunnel_enabled": bool(tunnel_cfg.get("enabled")),
             "tunnel_status": self._tunnel.status if self._tunnel else "stopped",
@@ -2542,7 +2644,30 @@ class JarvisLive:
             "language": active_lang(),
             "device_count": (d.device_count() if d else 0),
             "client_count": (d.client_count() if d else 0),
+            "product_version": product_version,
+            "product_build": product_build,
+            "product_status": product_status,
+            "product_device_id": product_device_id,
         }
+
+    def wait_for_packaged_entitlement(self) -> None:
+        """Gate only frozen builds on a local signed exact-version certificate."""
+
+        announced = False
+        while True:
+            state = self._product_runtime.local_state()
+            if state.runtime is None:
+                if not self._product_runtime.packaged_runtime_expected:
+                    return
+            elif not state.runtime.packaged:
+                return
+            if state.entitled:
+                return
+            if not announced:
+                self.ui.set_state("SLEEPING")
+                self.ui.write_log(f"SYS: {t('product.activation_required')}")
+                announced = True
+            time.sleep(2)
 
     def _set_keep_awake_enabled(self, enabled: bool) -> tuple[bool, str]:
         set_keep_awake_enabled(enabled)
@@ -2771,6 +2896,7 @@ def main():
     def runner():
         ui.wait_for_api_key()
         jarvis = JarvisLive(ui)
+        jarvis.wait_for_packaged_entitlement()
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:

@@ -34,12 +34,12 @@ except ImportError:
     _TRANSCRIPT_OK = False
 
 from config import get_os, is_windows, is_mac, is_linux
+from core.credential_service import require_gemini_api_key
+from core.app_paths import resolve_app_paths
 
 
 def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    return resolve_app_paths().resource_root
 
 
 BASE_DIR        = _get_base_dir()
@@ -58,8 +58,7 @@ _YT_VIDEO_FILTER = "EgIQAQ%3D%3D"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return require_gemini_api_key(legacy_path=API_CONFIG_PATH)
 
 
 def _open_url(url: str) -> None:

@@ -5,7 +5,7 @@
 > development workflow. This file is the **map** (layers, dependency graph, do-not-
 > edit-blindly list), not the rules. Read the skill before any change.
 
-This is the project map and local markdown knowledge graph for MARK XLVIII - AkbarCustom.
+This is the project map and local markdown knowledge graph for the JARVIS AkbarCustom fork.
 
 No external Graphiti/Gravity dependency is installed for this foundation step. The markdown graph below is the initial safe knowledge map.
 
@@ -69,6 +69,18 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
      - Accessibility
      - Screen Recording
      - Camera
+
+9. Product/release layer
+   - Desktop facade and exact-version gate: `core/product_runtime.py`
+   - Device proof, activation, purchase, signed update and rollback contracts:
+     `core/device_identity.py`, `core/product_activation.py`,
+     `core/product_purchase.py`, `core/product_updates.py`,
+     `core/update_transaction.py`
+   - Secure credential migration: `core/credential_service.py`,
+     `core/secure_store.py`
+   - Commerce/backend/admin UI: `product_backend/`
+   - macOS packaging plan: `packaging/macos/`,
+     `scripts/build_macos_release.py`, `requirements-build.txt`
 
 ## Dependency Graph
 
@@ -187,7 +199,16 @@ main.py
 - `EnvironmentDiscovery` creates or refreshes `config/device_profile.json` using the current platform adapter.
 - Platform adapters detect OS-specific facts through `base.py`, `macos.py`, `windows.py`, and `linux.py`.
 - `actions/media_control.py` sends safe media pause/play-pause commands on macOS and only reports verified success when playback state can be confirmed.
-- `main.py` reads the Gemini key from `config/api_keys.json`.
+- `main.py` reads the Gemini key through `core/credential_service.py`; the OS
+  secure store is authoritative and `config/api_keys.json` is legacy read-only
+  fallback.
+- Frozen builds must pass `core/product_runtime.py` exact-version signed local
+  entitlement verification before Gemini runtime starts; source runs are not gated.
+- `product_backend/` owns the one-plan account/license/device/release/payment/
+  entitlement model, private evidence/artifact storage, one-time device proof,
+  bilingual admin panel and deployment factory.
+- Payment destinations are loaded only from an external owner-only JSON file;
+  they are never committed and are returned only after verified device proof.
 - `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.
 - `config/settings.json` stores safe non-secret settings such as `ui_language` and only supports `ru` / `en`.
 - `memory_manager.py` saves user facts to `memory/long_term.json`.
@@ -218,6 +239,13 @@ main.py
 - `core/briefing_routing.py` is intentionally narrow. Do not grow it into a parallel command system; normal intent detection remains Gemini tool calling plus central dispatch.
 - `core/runtime_warnings.py` must remain limited to the exact sounddevice NumPy 2.5 shape deprecation; unrelated warnings must stay visible.
 - `requirements.txt` is HIGH risk. Do not change dependency versions casually.
+- `requirements-build.txt`, `packaging/`, release signing keys and updater
+  contracts are RELEASE HIGH RISK. Build tooling stays separate from the runtime;
+  no adapter may claim install success before private-copy verification, atomic
+  mutation, health proof and rollback are real.
+- Real `config/product.json`, payment-instructions files, backend databases,
+  signing keys, activation peppers and admin secrets are LOCAL/DEPLOYMENT data;
+  never commit or print them.
 - `config/macros.json` is LOCAL user data (gitignored) — user command macros; do not commit. `config/settings.json` is committed but non-secret; write it only through `core/app_settings.py` / `core/i18n.py` so unrelated keys are preserved.
 - `core/remote_tunnel.py` must never store cloudflared credentials in the repo (they live in `~/.cloudflared`) and must report honest `not_installed`/`failed` rather than a fake public URL.
 - `core/power_manager.py` + adapter `prevent_sleep`/`release_sleep` must return honest `unsupported` on OSes/tools that can't keep awake; never fake success.

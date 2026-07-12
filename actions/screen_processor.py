@@ -5,6 +5,7 @@ import base64
 import importlib
 import io
 import json
+import platform
 import re
 import sys
 import threading
@@ -14,6 +15,9 @@ from typing import Optional
 
 from core.runtime_warnings import install_runtime_warning_filters
 from core.i18n import t
+from core.app_settings import load_settings, update_settings
+from core.credential_service import require_gemini_api_key
+from core.app_paths import resolve_app_paths
 
 install_runtime_warning_filters()
 
@@ -58,9 +62,7 @@ from google import genai
 from google.genai import types as gtypes
 
 def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    return resolve_app_paths().resource_root
 
 
 _BASE        = _base_dir()
@@ -76,22 +78,19 @@ def _load_config() -> dict:
 
 def _save_config_key(key: str, value) -> None:
     try:
-        cfg = _load_config()
-        cfg[key] = value
-        _CONFIG_PATH.write_text(json.dumps(cfg, indent=4), encoding="utf-8")
+        update_settings({key: value})
     except Exception as e:
-        print(f"[Vision] ⚠️  Could not save config key '{key}': {e}")
+        print(f"[Vision] Could not save camera setting: {type(e).__name__}")
 
 
 def _get_api_key() -> str:
-    key = _load_config().get("gemini_api_key", "")
-    if not key:
-        raise RuntimeError("gemini_api_key not found in config.")
-    return key
+    return require_gemini_api_key(legacy_path=_CONFIG_PATH)
 
 
 def _get_os() -> str:
-    return _load_config().get("os_system", "windows").lower()
+    return {"Windows": "windows", "Darwin": "mac", "Linux": "linux"}.get(
+        platform.system(), "linux"
+    )
 
 _LIVE_MODEL         = "models/gemini-2.5-flash-native-audio-preview-12-2025"
 _CHANNELS           = 1
@@ -190,9 +189,12 @@ def _detect_camera_index() -> int:
 
 
 def _get_camera_index() -> int:
-    cfg = _load_config()
+    cfg = load_settings()
     if "camera_index" in cfg:
         return int(cfg["camera_index"])
+    legacy = _load_config()
+    if "camera_index" in legacy:
+        return int(legacy["camera_index"])
     return _detect_camera_index()
 
 

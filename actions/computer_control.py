@@ -15,6 +15,9 @@ import time
 import random
 from pathlib import Path
 
+from core.credential_service import require_gemini_api_key
+from core.app_paths import resolve_app_paths
+
 try:
     import pyautogui
     pyautogui.FAILSAFE = True
@@ -30,9 +33,7 @@ except ImportError:
     _PYPERCLIP = False
 
 def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    return resolve_app_paths().resource_root
 
 
 _BASE         = _base_dir()
@@ -55,7 +56,7 @@ def _get_os() -> str:
 
 
 def _get_api_key() -> str:
-    return _load_config().get("gemini_api_key", "")
+    return require_gemini_api_key(legacy_path=_CONFIG_PATH)
 
 _SAFE_SCREENSHOT_ROOTS = (
     Path.home(),

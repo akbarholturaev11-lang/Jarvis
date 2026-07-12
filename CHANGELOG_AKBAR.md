@@ -1,5 +1,70 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-13 - Exact-version product, commerce, activation and release foundation
+
+### Added
+
+- Added the one-plan commerce model for account, license, one active device,
+  bilingual release details, target artifacts, manual payment review,
+  exact-version entitlement and append-only admin audit.
+- Added one-time activation credentials, Ed25519 device proof, signed offline
+  entitlement certificates, signed update manifests and single-use downloads.
+- Added an environment-driven FastAPI backend and bilingual EN/RU `/admin/`
+  interface for provisioning, releases, payments and audit.
+- Added private payment-image storage and owner-only external payment-instructions
+  configuration. No real payment details or signing material are stored in Git.
+- Added desktop activation/update/payment controls, exact version/build/status,
+  device ID, release features/fixes/platforms and verified download staging.
+- Added Gemini-key validation before secure-store persistence and a bilingual
+  permission note that does not request extra onboarding fields.
+- Added macOS PyInstaller/DMG planning, strict packaged build metadata, a separate
+  pinned `requirements-build.txt`, release checklist and operations docs.
+
+### Security
+
+- Frozen metadata errors and writable product config can no longer bypass the
+  packaged entitlement/trust-root boundary.
+- Release artifacts use pre-verified pinned-FD constant-memory streaming;
+  payment images enforce a decoded-pixel budget.
+- Admin login has pre-PBKDF2 client and subject budgets, route-aware request-body
+  limits, CSRF and bounded one-time grants.
+- The updater contract passes no raw staged path and requires a private copied
+  artifact to be hash/size verified before any future mutation; all real OS
+  install adapters still report honest `not_available`.
+
+### Release status
+
+- This is a tested product foundation, not a customer-ready release. Commercial
+  rights, PyQt6 licensing, production origins/keys/payment data, Apple signing,
+  notarization, a privileged atomic updater and clean-Mac verification remain
+  external release gates.
+
+## 2026-07-13 - Admin-controlled device replacement
+
+### Added
+
+- Added a CSRF-protected admin API route that replaces the one active device
+  binding only when the submitted current fingerprint still matches.
+- Added an English/Russian admin form with explicit current/new fingerprints,
+  target platform and architecture, optional label, bounded reason, and a
+  confirmation step.
+- Added focused API and static UI tests for authorization, history retention,
+  old-device deactivation, new-device activation, invalid requests, and replay
+  rejection.
+
+### Constraints kept
+
+- Device replacement remains admin-only and platform-neutral.
+- The old binding remains in history; replacement does not create a remote kill
+  switch for an already installed offline copy.
+- The API response does not echo the replacement reason or old fingerprint.
+
+### Verification
+
+- `.venv/bin/python -m py_compile main.py product_backend/api_app.py` passed.
+- Focused device-replacement and admin static tests passed.
+- Admin translations JSON and JavaScript syntax checks passed.
+
 ## 2026-07-13 - Naming consistency: drop leftover XLVIII from UI badge + readme
 
 ### Added

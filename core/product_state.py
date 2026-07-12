@@ -19,6 +19,13 @@ class PaymentState(StrEnum):
 
 
 class UpdateState(StrEnum):
+    """Presentation/progress state only; never proof of authorization.
+
+    In particular, ``ENTITLED`` may be displayed only after a separate exact
+    semantic-version entitlement check bound to the intended license/device.
+    Callers must carry that context; these enum values contain no authority.
+    """
+
     CURRENT = "current"
     OLD_VERSION = "old_version"
     AVAILABLE = "available"
@@ -28,7 +35,10 @@ class UpdateState(StrEnum):
     VERIFYING = "verifying"
     INSTALLING = "installing"
     INSTALLED = "installed"
+    # FAILED is limited to pre-install download/verification failures.
     FAILED = "failed"
+    PRESERVED = "preserved"
+    ROLLBACK_REQUIRED = "rollback_required"
     ROLLED_BACK = "rolled_back"
 
 
@@ -82,13 +92,21 @@ _UPDATE_TRANSITIONS: dict[UpdateState, frozenset[UpdateState]] = {
         {UpdateState.INSTALLING, UpdateState.FAILED}
     ),
     UpdateState.INSTALLING: frozenset(
-        {UpdateState.INSTALLED, UpdateState.FAILED}
+        {UpdateState.INSTALLED, UpdateState.ROLLBACK_REQUIRED}
     ),
     UpdateState.INSTALLED: frozenset({UpdateState.CURRENT}),
-    UpdateState.FAILED: frozenset(
-        {UpdateState.ENTITLED, UpdateState.ROLLED_BACK}
+    # Pre-install failure: verify that the old app is still intact.  This is not
+    # called a rollback because no installed files should have changed yet.
+    UpdateState.FAILED: frozenset({UpdateState.PRESERVED}),
+    UpdateState.PRESERVED: frozenset(
+        {UpdateState.OLD_VERSION, UpdateState.ENTITLED}
     ),
-    UpdateState.ROLLED_BACK: frozenset({UpdateState.OLD_VERSION}),
+    # Install/post-install failure: mutation may have happened and a real
+    # restoration must complete before retry or return to the old version.
+    UpdateState.ROLLBACK_REQUIRED: frozenset({UpdateState.ROLLED_BACK}),
+    UpdateState.ROLLED_BACK: frozenset(
+        {UpdateState.OLD_VERSION, UpdateState.ENTITLED}
+    ),
 }
 
 _CONNECTIVITY_TRANSITIONS: dict[
@@ -97,7 +115,9 @@ _CONNECTIVITY_TRANSITIONS: dict[
     ConnectivityState.ONLINE: frozenset(
         {ConnectivityState.OFFLINE, ConnectivityState.SERVER_UNAVAILABLE}
     ),
-    ConnectivityState.OFFLINE: frozenset({ConnectivityState.ONLINE}),
+    ConnectivityState.OFFLINE: frozenset(
+        {ConnectivityState.ONLINE, ConnectivityState.SERVER_UNAVAILABLE}
+    ),
     ConnectivityState.SERVER_UNAVAILABLE: frozenset(
         {ConnectivityState.ONLINE, ConnectivityState.OFFLINE}
     ),

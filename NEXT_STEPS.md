@@ -2,6 +2,29 @@
 
 Current next steps for MARK XLVIII - AkbarCustom.
 
+## Product Release Gates
+
+The local product foundation is implemented: exact-version offline entitlement,
+one-device binding/replacement history, manual payment approval, one-time
+activation, signed update discovery/download, bilingual release information,
+private payment-instructions config, admin panel, and an unsigned macOS DMG plan.
+
+The following external gates must be cleared before any customer release:
+
+1. Obtain commercial rights for the upstream CC BY-NC code/assets and confirm the
+   PyQt6 distribution license model.
+2. Confirm cleared product name, icon and final bundle identifier.
+3. Supply production HTTPS origin, release public keys, entitlement signing key,
+   activation pepper, admin auth material and owner-only payment instructions.
+4. Provide Apple Developer ID signing, hardened-runtime entitlements,
+   notarization/stapling and Gatekeeper verification.
+5. Implement and audit a signed privileged macOS updater helper; the current app
+   only downloads/verifies and honestly reports install `not_available`.
+6. Run the pinned PyInstaller build on a controlled macOS build environment and
+   complete clean-Mac install, activation, permission, offline, payment, update,
+   rollback and uninstall tests. The local smoke-build is currently blocked by
+   unavailable external package-download approval, not by a source-tree error.
+
 ## Known Bugs
 
 - Jarvisda Zerno orqali statistika eshitganda ovoz chiqmayapti.

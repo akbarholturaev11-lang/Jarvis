@@ -10,10 +10,17 @@ credentials live in ~/.cloudflared, outside the repo.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
+from core.app_paths import resolve_app_paths
+
 BASE_DIR = Path(__file__).resolve().parent.parent
-SETTINGS_FILE = BASE_DIR / "config" / "settings.json"
+SETTINGS_FILE = (
+    resolve_app_paths().config_dir / "settings.json"
+    if getattr(sys, "frozen", False)
+    else BASE_DIR / "config" / "settings.json"
+)
 
 _DEFAULT_TUNNEL = {
     "enabled": False,

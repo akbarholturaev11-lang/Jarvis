@@ -1,0 +1,97 @@
+# JARVIS Product Backend Operations
+
+## Runtime model
+
+Use the ASGI factory; importing the module does not create files or load keys:
+
+```bash
+uvicorn product_backend.runtime:create_app_from_environment \
+  --factory --host 127.0.0.1 --port 8080
+```
+
+Put it behind an HTTPS reverse proxy with the configured host preserved. Do not
+expose the plain HTTP listener publicly. The admin cookie is secure-only and the
+app rejects hosts outside `JARVIS_API_ALLOWED_HOSTS`.
+
+The admin-login CPU budget uses the ASGI peer in `request.client.host`; the app
+does not parse or trust `X-Forwarded-For`. If a reverse proxy rewrites the ASGI
+peer from forwarding headers, configure that trust only for known proxy
+addresses. Otherwise all proxied logins correctly share the proxy peer budget;
+apply an additional edge rate limit when per-origin separation is required.
+
+## Required configuration
+
+The factory fails closed unless all runtime and admin authentication values are
+present:
+
+- `JARVIS_BACKEND_DATA_DIR`: absolute owner-only (`0700`) data directory.
+- `JARVIS_RELEASE_ARTIFACT_ROOT`: existing owner-only artifact directory.
+- `JARVIS_RELEASE_PUBLIC_KEYS_JSON`: JSON map of key ID to raw 32-byte Ed25519
+  public key encoded as unpadded base64url.
+- `JARVIS_ENTITLEMENT_KEY_ID`: active entitlement signing key ID.
+- `JARVIS_ENTITLEMENT_PRIVATE_KEY_FILE`: absolute, regular, owner-only (`0600`),
+  raw 32-byte Ed25519 private key file.
+- `JARVIS_ACTIVATION_PEPPER_FILE`: absolute, regular, owner-only (`0600`), 32–128
+  random bytes.
+- `JARVIS_ADMIN_SUBJECT`, `JARVIS_ADMIN_PASSWORD_SALT_B64URL`,
+  `JARVIS_ADMIN_PASSWORD_HASH_B64URL`, `JARVIS_ADMIN_PBKDF2_ITERATIONS`,
+  `JARVIS_ADMIN_SESSION_SECRET_B64URL`, `JARVIS_API_ALLOWED_HOSTS`: validated by
+  `AdminAuthSettings.from_env()`.
+
+Optional manual-payment configuration:
+
+- `JARVIS_PAYMENT_INSTRUCTIONS_FILE`: absolute owner-owned, single-link regular
+  JSON file with mode `0400` or `0600`, strict schema
+  `jarvis.payment-instructions.v1`, a bounded recipient field and bilingual
+  `method` / `instructions` objects (`en` + `ru`). Invalid or absent input becomes
+  explicit `not_configured`; the desktop then disables screenshot submission.
+  The backend returns configured details only after a valid one-time device proof.
+
+Never put raw passwords, private keys, peppers, session secrets or payment
+credentials in the repository, product config, logs, command arguments or
+project memory. In production, materialize owner-only files from a managed secret
+store immediately before process start.
+
+## Client configuration
+
+The non-secret client `product.json` contains only the HTTPS API origin and
+pinned entitlement/release public keys. Start from
+`config/product.example.json`, replace every placeholder, validate it in a
+controlled build environment and pass it to the macOS build script via
+`--product-config`. The real `config/product.json` is gitignored.
+
+## Artifact publishing
+
+The API accepts artifact metadata only after its canonical Ed25519 signature is
+verified. A separate offline release pipeline must place the exact immutable
+bytes under `JARVIS_RELEASE_ARTIFACT_ROOT` with owner-controlled directories and
+non-writable-by-group/other files. The storage key, size and SHA-256 must match
+the signed manifest and admin artifact record.
+
+Do not reuse entitlement signing keys for release signing. Rotate public keys by
+shipping old and new trusted IDs during the overlap window; never silently
+replace an existing key ID with different key material.
+
+## Backup, monitoring and retention
+
+- Back up the three SQLite databases and private payment evidence together from a
+  quiesced process or a database-aware snapshot.
+- Monitor authentication capacity errors, repeated 401/409/429 responses,
+  artifact integrity failures, payment evidence storage errors and SQLite disk
+  space/locking.
+- Keep the reverse proxy body/concurrency limit at least as strict as the app:
+  small JSON routes are capped before parsing/PBKDF2, while only the payment
+  multipart route accepts the bounded evidence allowance.
+- Define payment evidence retention and deletion policy before production. The
+  current code supports compensating deletion on failed DB persistence, but does
+  not automatically delete approved/rejected evidence.
+- Restore drills must confirm account/license/release/payment/entitlement rows,
+  activation one-time state and private evidence consistency.
+
+## Deployment constraints
+
+The runtime is intentionally one process with SQLite and in-memory sessions/
+grants. Multiple workers would not share sessions, rate limits or download
+grants. A production multi-instance deployment requires PostgreSQL migrations,
+a shared bounded session/grant/rate-limit store, object storage with private
+streaming reads, centralized audit/metrics and operational key rotation.

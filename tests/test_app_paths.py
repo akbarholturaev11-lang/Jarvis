@@ -86,6 +86,25 @@ class AppPathsTests(unittest.TestCase):
             home / "AppData" / "Local" / "JARVIS" / "data",
         )
 
+    def test_relative_windows_environment_paths_are_ignored(self):
+        home = Path("/home/test-user")
+
+        paths = resolve_app_paths(
+            platform_name="Windows",
+            home=home,
+            environ={"APPDATA": "relative/roaming", "LOCALAPPDATA": "relative/local"},
+            resource_root="/bundle/resources",
+        )
+
+        self.assertEqual(
+            paths.config_dir,
+            home / "AppData" / "Roaming" / "JARVIS" / "config",
+        )
+        self.assertEqual(
+            paths.data_dir,
+            home / "AppData" / "Local" / "JARVIS" / "data",
+        )
+
     def test_linux_layout_honors_all_xdg_locations(self):
         home = Path("/home/test-user")
         environment = {
@@ -115,6 +134,26 @@ class AppPathsTests(unittest.TestCase):
             platform_name="Linux",
             home=home,
             environ={},
+            resource_root="/opt/jarvis/resources",
+        )
+
+        self.assertEqual(paths.config_dir, home / ".config" / "JARVIS")
+        self.assertEqual(paths.data_dir, home / ".local" / "share" / "JARVIS")
+        self.assertEqual(paths.cache_dir, home / ".cache" / "JARVIS")
+        self.assertEqual(paths.log_dir, home / ".local" / "state" / "JARVIS" / "logs")
+
+    def test_relative_xdg_environment_paths_are_ignored(self):
+        home = Path("/home/test-user")
+
+        paths = resolve_app_paths(
+            platform_name="Linux",
+            home=home,
+            environ={
+                "XDG_CONFIG_HOME": "relative/config",
+                "XDG_DATA_HOME": "relative/data",
+                "XDG_CACHE_HOME": "relative/cache",
+                "XDG_STATE_HOME": "relative/state",
+            },
             resource_root="/opt/jarvis/resources",
         )
 

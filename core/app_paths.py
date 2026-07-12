@@ -6,7 +6,7 @@ import os
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from core.product_version import PRODUCT_NAME, normalize_platform
 
@@ -45,10 +45,17 @@ def _configured_path(
     environ: Mapping[str, str],
     variable: str,
     fallback: Path,
+    *,
+    allow_windows_absolute: bool = False,
 ) -> Path:
     value = environ.get(variable)
     if isinstance(value, str) and value.strip():
-        return Path(value)
+        cleaned = value.strip()
+        candidate = Path(cleaned)
+        if candidate.is_absolute() or (
+            allow_windows_absolute and PureWindowsPath(cleaned).is_absolute()
+        ):
+            return candidate
     return fallback
 
 
@@ -126,11 +133,13 @@ def resolve_app_paths(
             environment,
             "APPDATA",
             home_path / "AppData" / "Roaming",
+            allow_windows_absolute=True,
         )
         local_root = _configured_path(
             environment,
             "LOCALAPPDATA",
             home_path / "AppData" / "Local",
+            allow_windows_absolute=True,
         )
         config_dir = roaming_root / PRODUCT_NAME / "config"
         data_dir = local_root / PRODUCT_NAME / "data"

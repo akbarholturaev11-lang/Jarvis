@@ -4,12 +4,12 @@ import sys
 from pathlib import Path
 
 from core.i18n import t
+from core.credential_service import require_gemini_api_key
+from core.app_paths import resolve_app_paths
 
 
 def _get_base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
+    return resolve_app_paths().resource_root
 
 
 BASE_DIR        = _get_base_dir()
@@ -17,8 +17,7 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    return require_gemini_api_key(legacy_path=API_CONFIG_PATH)
 
 
 def _gemini_search(query: str) -> str:

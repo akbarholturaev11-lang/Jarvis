@@ -180,6 +180,14 @@ class LinuxSecretToolStoreTests(unittest.TestCase):
         which.assert_called_once_with("secret-tool")
         run.assert_not_called()
 
+    def test_relative_binary_path_is_rejected(self):
+        store = LinuxSecretToolStore("relative/secret-tool")
+        with mock.patch("core.secure_store.subprocess.run") as run:
+            result = store.get(SERVICE, ACCOUNT)
+
+        self.assertEqual(result.status, STATUS_NOT_AVAILABLE)
+        run.assert_not_called()
+
     def test_set_passes_secret_via_stdin_not_argv_and_disables_shell(self):
         with mock.patch("core.secure_store.shutil.which", return_value="/usr/bin/secret-tool"):
             store = LinuxSecretToolStore()
@@ -193,7 +201,7 @@ class LinuxSecretToolStoreTests(unittest.TestCase):
         argv = run.call_args.args[0]
         self.assertEqual(argv[0:2], ["/usr/bin/secret-tool", "store"])
         self.assertNotIn(SECRET, argv)
-        self.assertEqual(run.call_args.kwargs["input"], f"{SECRET}\n")
+        self.assertEqual(run.call_args.kwargs["input"], SECRET)
         self.assertNotIn(SECRET, repr(run.call_args))
         self.assertIs(run.call_args.kwargs["shell"], False)
 
@@ -201,7 +209,7 @@ class LinuxSecretToolStoreTests(unittest.TestCase):
         store = LinuxSecretToolStore("/usr/bin/secret-tool")
         with mock.patch(
             "core.secure_store.subprocess.run",
-            side_effect=[_completed(0, stdout=f"{SECRET}\n"), _completed(1)],
+            side_effect=[_completed(0, stdout=SECRET), _completed(1)],
         ):
             found = store.get(SERVICE, ACCOUNT)
             missing = store.get(SERVICE, ACCOUNT)
@@ -209,6 +217,23 @@ class LinuxSecretToolStoreTests(unittest.TestCase):
         self.assertEqual(found.status, STATUS_SUCCESS)
         self.assertEqual(found.value, SECRET)
         self.assertEqual(missing.status, STATUS_NOT_FOUND)
+
+    def test_exit_one_with_stderr_is_failed_not_missing(self):
+        store = LinuxSecretToolStore("/usr/bin/secret-tool")
+        with mock.patch(
+            "core.secure_store.subprocess.run",
+            side_effect=[
+                _completed(1, stderr="secret service unavailable"),
+                _completed(1, stderr="secret service unavailable"),
+            ],
+        ):
+            lookup = store.get(SERVICE, ACCOUNT)
+            delete = store.delete(SERVICE, ACCOUNT)
+
+        self.assertEqual(lookup.status, STATUS_FAILED)
+        self.assertEqual(delete.status, STATUS_FAILED)
+        self.assertNotIn("secret service unavailable", lookup.message)
+        self.assertNotIn("secret service unavailable", delete.message)
 
     def test_delete_exit_mapping(self):
         store = LinuxSecretToolStore("/usr/bin/secret-tool")

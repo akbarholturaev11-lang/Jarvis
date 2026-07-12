@@ -4,6 +4,8 @@ from threading import Lock
 from pathlib import Path
 import sys
 
+from core.app_paths import resolve_app_paths
+
 
 def get_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -12,7 +14,11 @@ def get_base_dir() -> Path:
 
 
 BASE_DIR         = get_base_dir()
-MEMORY_PATH      = BASE_DIR / "memory" / "long_term.json"
+MEMORY_PATH      = (
+    resolve_app_paths().data_dir / "memory" / "long_term.json"
+    if getattr(sys, "frozen", False)
+    else BASE_DIR / "memory" / "long_term.json"
+)
 _lock            = Lock()
 MAX_VALUE_LENGTH = 380
 MEMORY_MAX_CHARS = 2200

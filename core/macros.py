@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import json
 import secrets
+import sys
 from pathlib import Path
 
+from core.app_paths import resolve_app_paths
 from core.capabilities import compose_macro
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-MACROS_FILE = BASE_DIR / "config" / "macros.json"
+MACROS_FILE = (
+    resolve_app_paths().config_dir / "macros.json"
+    if getattr(sys, "frozen", False)
+    else BASE_DIR / "config" / "macros.json"
+)
 
 
 def load_macros() -> list[dict]:
