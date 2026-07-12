@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import io
 import json
 import re
@@ -12,17 +13,33 @@ from pathlib import Path
 from typing import Optional
 
 from core.runtime_warnings import install_runtime_warning_filters
+from core.i18n import t
 
 install_runtime_warning_filters()
 
 import numpy as np
 import sounddevice as sd
 
-try:
-    import cv2
-    _CV2 = True
-except ImportError:
-    _CV2 = False
+_cv2 = None
+_cv2_import_attempted = False
+_cv2_import_lock = threading.Lock()
+
+
+def _cv2_module():
+    """Load OpenCV only after the PyQt application has initialized."""
+    global _cv2, _cv2_import_attempted
+    if _cv2_import_attempted:
+        return _cv2
+
+    with _cv2_import_lock:
+        if _cv2_import_attempted:
+            return _cv2
+        try:
+            _cv2 = importlib.import_module("cv2")
+        except ImportError:
+            _cv2 = None
+        _cv2_import_attempted = True
+    return _cv2
 
 try:
     import mss
@@ -127,7 +144,8 @@ def _capture_screen() -> tuple[bytes, str]:
 
 def _cv2_backend() -> int:
     """Return the best OpenCV camera backend for the current OS."""
-    if not _CV2:
+    cv2 = _cv2_module()
+    if cv2 is None:
         return 0
     os_name = _get_os()
     if os_name == "windows":
@@ -139,7 +157,8 @@ def _cv2_backend() -> int:
 
 def _probe_camera(index: int, backend: int, warmup: int = 5) -> bool:
 
-    if not _CV2:
+    cv2 = _cv2_module()
+    if cv2 is None:
         return False
     cap = cv2.VideoCapture(index, backend)
     if not cap.isOpened():
@@ -178,8 +197,9 @@ def _get_camera_index() -> int:
 
 
 def _capture_camera() -> tuple[bytes, str]:
-    if not _CV2:
-        raise RuntimeError("OpenCV (cv2) is not installed. Run: pip install opencv-python")
+    cv2 = _cv2_module()
+    if cv2 is None:
+        raise RuntimeError(t("camera.opencv_missing"))
 
     index   = _get_camera_index()
     backend = _cv2_backend()

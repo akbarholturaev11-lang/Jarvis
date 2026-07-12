@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>JARVIS Dashboard</title>
   <meta name="theme-color" content="#07090f">
   <meta name="mobile-web-app-capable" content="yes">
@@ -71,6 +71,11 @@
     .lbl { font-size:9px; font-weight:700; letter-spacing:2px; text-transform:uppercase; opacity:0.45; margin-bottom:4px; }
     .msg-j .lbl { color:var(--accent); }
     .msg-u .lbl { color:var(--muted); text-align:right; }
+
+    /* ── SCREENSHOT MESSAGE ── */
+    .msg-shot { align-self:flex-start; max-width:88%; padding:8px; background:var(--adim); border:1px solid rgba(99,102,241,0.18); border-radius:14px; border-bottom-left-radius:4px; animation:pop 0.18s ease; }
+    .msg-shot .lbl { color:var(--accent); margin-bottom:6px; }
+    .shot-img { display:block; width:100%; border-radius:9px; cursor:pointer; }
 
     /* ── FILE CARD ── */
     .msg-file {
@@ -199,6 +204,39 @@
     .sheet-cancel { background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
     .sheet-save { background: var(--accent); color: #fff; box-shadow: 0 4px 18px rgba(99,102,241,0.4); }
 
+    /* ── SETTINGS (gear + rows + toggle) ── */
+    .hdr-btn {
+      flex-shrink: 0; width: 34px; height: 34px; border-radius: 10px;
+      background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+      font-size: 16px; line-height: 1; cursor: pointer; display: flex;
+      align-items: center; justify-content: center; transition: color 0.15s, border-color 0.15s, transform 0.3s;
+    }
+    .hdr-btn:hover { color: var(--accent); border-color: var(--accent); }
+    .hdr-btn:active { transform: rotate(45deg); }
+    .set-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 14px 2px; border-bottom: 1px solid var(--border); font-size: 14px; color: var(--text);
+    }
+    .set-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+    .lang-opts { display: flex; gap: 6px; }
+    .lang-btn {
+      padding: 7px 11px; border-radius: 9px; background: var(--surface);
+      border: 1px solid var(--border); color: var(--muted); font-size: 12px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .lang-btn.on { color: #fff; background: var(--adim); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+    /* Unlumen-style switch */
+    .toggle {
+      flex-shrink: 0; width: 46px; height: 27px; border-radius: 99px; position: relative;
+      background: var(--surface); border: 1px solid var(--border); cursor: pointer; transition: background 0.2s, border-color 0.2s;
+    }
+    .toggle .knob {
+      position: absolute; top: 2px; left: 2px; width: 21px; height: 21px; border-radius: 50%;
+      background: var(--muted); transition: transform 0.22s cubic-bezier(.3,.9,.3,1), background 0.2s;
+    }
+    .toggle.on { background: var(--gdim); border-color: rgba(34,197,94,0.5); }
+    .toggle.on .knob { transform: translateX(19px); background: var(--green); }
+
     /* ── TOAST ── */
     #toast {
       position:fixed; top:66px; left:50%; transform:translateX(-50%) translateY(-8px);
@@ -209,16 +247,122 @@
       pointer-events:none; white-space:nowrap;
     }
     #toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       MOBILE FIT + UNLUMEN-INSPIRED SKIN  (2026-07-12)
+       Layout: dynamic viewport height + safe-area insets so the footer,
+       header and quick-bar never run off a notched phone screen.
+       Visuals: glass surfaces, gradient accent, glow, shimmer and spring
+       motion — Unlumen used as animation reference only (web/PWA); no
+       desktop hover/cursor/magnetic effects are forced onto touch.
+       ═══════════════════════════════════════════════════════════════════ */
+
+    /* ── Dynamic viewport: fill the *visible* area, not the layout viewport,
+          so the input row stays on-screen when the mobile URL bar shows ── */
+    body {
+      height: 100vh;      /* fallback for older browsers */
+      height: 100dvh;
+      background:
+        radial-gradient(125% 80% at 50% -12%, rgba(99,102,241,0.16), transparent 60%),
+        var(--bg);
+    }
+
+    /* ── Safe-area insets (notch, home indicator, rounded corners) ── */
+    header {
+      padding-top: calc(12px + env(safe-area-inset-top));
+      padding-left: calc(16px + env(safe-area-inset-left));
+      padding-right: calc(16px + env(safe-area-inset-right));
+      background: linear-gradient(180deg, rgba(11,14,22,0.92), rgba(7,9,15,0.72));
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      backdrop-filter: blur(20px) saturate(160%);
+    }
+    main {
+      padding-left: calc(16px + env(safe-area-inset-left));
+      padding-right: calc(16px + env(safe-area-inset-right));
+      overscroll-behavior: contain;
+    }
+    #qbar {
+      padding-left: calc(14px + env(safe-area-inset-left));
+      padding-right: calc(14px + env(safe-area-inset-right));
+      background: rgba(7,9,15,0.72);
+      -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+    }
+    footer {
+      padding-left: calc(14px + env(safe-area-inset-left));
+      padding-right: calc(14px + env(safe-area-inset-right));
+      padding-bottom: calc(10px + env(safe-area-inset-bottom));
+      background: linear-gradient(0deg, rgba(11,14,22,0.94), rgba(7,9,15,0.74));
+      -webkit-backdrop-filter: blur(20px) saturate(160%);
+      backdrop-filter: blur(20px) saturate(160%);
+    }
+
+    /* ── Header stays on one row: a long tunnel URL truncates with an
+          ellipsis instead of pushing the header off the screen edge ── */
+    .logo { flex-shrink: 0; }
+    .url {
+      flex-shrink: 1; min-width: 0; max-width: 42vw;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* ── Shimmering wordmark (Unlumen “Shimmering Text” reference) ── */
+    .logo {
+      background: linear-gradient(100deg, #aeb6c6 22%, #ffffff 50%, #aeb6c6 78%);
+      background-size: 220% 100%;
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent;
+      animation: logo-shimmer 7s linear infinite;
+    }
+    .logo em {
+      -webkit-text-fill-color: var(--accent); color: var(--accent);
+      text-shadow: 0 0 14px rgba(99,102,241,0.6);
+    }
+    @keyframes logo-shimmer { to { background-position: 220% 0; } }
+
+    /* ── Status pill: glowing badge (Unlumen “Glowing Badge”) ── */
+    .pill { -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+    .pill.on { box-shadow: 0 0 0 1px rgba(34,197,94,0.25), 0 0 18px rgba(34,197,94,0.35); }
+
+    /* ── Message bubbles: spring reveal + softer glass ── */
+    .msg { animation: msg-in 0.32s cubic-bezier(.34,1.4,.5,1); }
+    @keyframes msg-in { from { opacity: 0; transform: translateY(8px) scale(0.98); } }
+    .msg-j { background: linear-gradient(180deg, rgba(99,102,241,0.20), rgba(99,102,241,0.10)); }
+
+    /* ── Inputs / buttons: spring press + accent glow (Unlumen “Glow Button”) ── */
+    #inp { transition: border-color .18s, box-shadow .18s, background .18s; }
+    #inp:focus { box-shadow: 0 0 0 3px rgba(99,102,241,0.16); background: rgba(99,102,241,0.06); }
+    .btn, .btn-attach, #mic-btn {
+      transition: transform .12s cubic-bezier(.34,1.56,.64,1), opacity .15s,
+                  border-color .2s, color .2s, box-shadow .2s;
+    }
+    .btn-send {
+      background: linear-gradient(135deg, #7c7ff6, #5b5ef0);
+      box-shadow: 0 4px 18px rgba(99,102,241,0.45);
+    }
+    .btn-send:active { box-shadow: 0 2px 10px rgba(99,102,241,0.4); }
+
+    /* ── Quick chips: subtle spring press ── */
+    .qchip {
+      transition: background .15s, border-color .15s, color .15s,
+                  transform .12s cubic-bezier(.34,1.56,.64,1);
+    }
+
+    /* ── Respect users who ask for less motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      .logo { animation: none; }
+      .msg  { animation: none; }
+      .pill.on .dot { animation: none; }
+      #mic-btn.recording { animation: none; }
+    }
   </style>
 </head>
 <body>
   <div id="toast"></div>
   <header>
     <div class="logo"><em>J</em>ARVIS</div>
-    <div class="pill" id="pill"><span class="dot"></span><span id="st">Connecting</span></div>
+    <div class="pill" id="pill"><span class="dot"></span><span id="st" data-i18n="st.connecting">Connecting</span></div>
     <div class="enc-badge" id="enc">AES-256</div>
     <div class="spacer"></div>
-    <div class="url">__IP__:__PORT__</div>
+    <button id="set-btn" class="hdr-btn" onclick="openSettings()" title="Settings" aria-label="Settings">⚙</button>
   </header>
   <main id="feed"></main>
   <div id="qbar"></div>
@@ -227,9 +371,29 @@
     <label class="btn-attach" for="file-inp" title="Send file">📎</label>
     <input type="file" id="file-inp" multiple accept="*/*" style="display:none">
     <button id="mic-btn" onclick="doMic()" title="Voice command">🎤</button>
-    <button class="btn btn-wake" id="wake" onclick="doWake()">WAKE</button>
-    <button class="btn btn-send" onclick="doSend()">SEND</button>
+    <button class="btn btn-wake" id="wake" onclick="doWake()" data-i18n="btn.wake">WAKE</button>
+    <button class="btn btn-send" onclick="doSend()" data-i18n="btn.send">SEND</button>
   </footer>
+
+  <!-- Settings bottom sheet -->
+  <div class="sheet-back" id="set-sheet">
+    <div class="sheet">
+      <div class="sheet-title" data-i18n="settings.title">Sozlamalar</div>
+      <div class="set-row">
+        <span data-i18n="settings.language">Til</span>
+        <div class="lang-opts">
+          <button class="lang-btn" data-lang="uz" onclick="setLang('uz')">O‘zbek</button>
+          <button class="lang-btn" data-lang="ru" onclick="setLang('ru')">Русский</button>
+          <button class="lang-btn" data-lang="en" onclick="setLang('en')">English</button>
+        </div>
+      </div>
+      <div class="set-row">
+        <div><div data-i18n="settings.voice">Ovozli javob</div><div class="set-sub" data-i18n="settings.voice_sub">Javob telefonda ovoz bilan o‘qiladi</div></div>
+        <button class="toggle" id="voice-toggle" onclick="toggleVoice()" aria-label="Voice reply"><span class="knob"></span></button>
+      </div>
+      <button class="sheet-btn sheet-cancel" onclick="closeSettings()" data-i18n="settings.close">Yopish</button>
+    </div>
+  </div>
 
   <script>
     // ── Auth — bearer token (mutable: auto-reconnect can refresh it) ──────────
@@ -239,6 +403,76 @@
     if (!_authToken) {
       location.replace('/login');
     }
+
+    // ── i18n (uz / ru / en) — one consistent language, default Uzbek ──────────
+    const _I18N = {
+      uz: {
+        'st.connecting':'Ulanmoqda','st.active':'Faol','st.sleeping':'Uxlayapti','st.reconnecting':'Qayta ulanmoqda',
+        'inp.placeholder':"JARVIS'ga buyruq yozing…",'btn.send':'YUBORISH','btn.wake':'UYG‘OTISH',
+        'settings.title':'Sozlamalar','settings.language':'Til','settings.voice':'Ovozli javob','settings.voice_sub':'Javob telefonda ovoz bilan o‘qiladi','settings.close':'Yopish',
+        'sys.active':'Masofaviy sessiya faol.','sys.reconnecting':'Qayta ulanmoqda… (Mac uxlagan bo‘lishi mumkin)','sys.reconnected':"JARVIS'ga qayta ulandi.",'sys.expired':'Sessiya tugadi — login sahifasiga qaytilyapti…','sys.wake':'Uyg‘otish signali yuborildi…',
+        'toast.connected':"JARVIS'ga ulandi",'toast.reconnected':'Qayta ulandi'
+      },
+      ru: {
+        'st.connecting':'Подключение','st.active':'Активен','st.sleeping':'Спит','st.reconnecting':'Переподключение',
+        'inp.placeholder':'Команда для JARVIS…','btn.send':'ОТПРАВИТЬ','btn.wake':'РАЗБУДИТЬ',
+        'settings.title':'Настройки','settings.language':'Язык','settings.voice':'Голосовой ответ','settings.voice_sub':'Ответ читается голосом на телефоне','settings.close':'Закрыть',
+        'sys.active':'Удалённая сессия активна.','sys.reconnecting':'Переподключение… (Mac мог уснуть)','sys.reconnected':'Переподключено к JARVIS.','sys.expired':'Сессия истекла — возврат ко входу…','sys.wake':'Сигнал пробуждения отправлен…',
+        'toast.connected':'Подключено к JARVIS','toast.reconnected':'Переподключено'
+      },
+      en: {
+        'st.connecting':'Connecting','st.active':'Active','st.sleeping':'Sleeping','st.reconnecting':'Reconnecting',
+        'inp.placeholder':'Send a command to JARVIS…','btn.send':'SEND','btn.wake':'WAKE',
+        'settings.title':'Settings','settings.language':'Language','settings.voice':'Voice reply','settings.voice_sub':'The reply is read aloud on the phone','settings.close':'Close',
+        'sys.active':'Remote session active.','sys.reconnecting':'Reconnecting… (Mac may be asleep)','sys.reconnected':'Reconnected to JARVIS.','sys.expired':'Session expired — returning to login…','sys.wake':'Wake signal sent…',
+        'toast.connected':'Connected to JARVIS','toast.reconnected':'Reconnected'
+      }
+    };
+    let _lang = localStorage.getItem('jarvis_lang') || 'uz';
+    let _lastStatus = '';
+    function t(k) { return (_I18N[_lang] && _I18N[_lang][k]) || _I18N.en[k] || k; }
+    function applyLang() {
+      document.documentElement.lang = _lang;
+      document.querySelectorAll('[data-i18n]').forEach(function (el) {
+        el.textContent = t(el.getAttribute('data-i18n'));
+      });
+      var inp = document.getElementById('inp'); if (inp) inp.placeholder = t('inp.placeholder');
+      document.querySelectorAll('.lang-btn').forEach(function (b) {
+        b.classList.toggle('on', b.dataset.lang === _lang);
+      });
+      if (_lastStatus) { try { setStatus(_lastStatus); } catch (_) {} }
+    }
+    function setLang(l) { _lang = l; localStorage.setItem('jarvis_lang', l); applyLang(); }
+
+    // ── Settings bottom sheet ─────────────────────────────────────────────────
+    function openSettings() { document.getElementById('set-sheet').classList.add('show'); }
+    function closeSettings() { document.getElementById('set-sheet').classList.remove('show'); }
+    document.getElementById('set-sheet').addEventListener('click', function (e) {
+      if (e.target.id === 'set-sheet') closeSettings();
+    });
+
+    // ── Voice reply — phone text-to-speech of JARVIS's replies ────────────────
+    let _voiceReply = localStorage.getItem('jarvis_voice_reply') === '1';
+    function updateVoiceToggle() {
+      var tg = document.getElementById('voice-toggle'); if (tg) tg.classList.toggle('on', _voiceReply);
+    }
+    function toggleVoice() {
+      _voiceReply = !_voiceReply;
+      localStorage.setItem('jarvis_voice_reply', _voiceReply ? '1' : '0');
+      updateVoiceToggle();
+      if (!_voiceReply && 'speechSynthesis' in window) { try { speechSynthesis.cancel(); } catch (_) {} }
+    }
+    function _speak(text) {
+      if (!_voiceReply || !text || !('speechSynthesis' in window)) return;
+      try {
+        var u = new SpeechSynthesisUtterance(text);
+        u.lang = _lang === 'ru' ? 'ru-RU' : (_lang === 'en' ? 'en-US' : 'uz-UZ');
+        speechSynthesis.cancel();
+        speechSynthesis.speak(u);
+      } catch (_) {}
+    }
+    applyLang();
+    updateVoiceToggle();
 
     function _authHeader() { return { 'Authorization': `Bearer ${_authToken}` }; }
     function _authFetch(url, opts = {}) {
@@ -331,8 +565,8 @@
 
       ws.onopen = () => {
         _reconnectDelay = _RECONNECT_MIN;
-        if (_wasConnected) { setStatus('active'); sys('Reconnected to JARVIS.'); toast('Reconnected'); }
-        else               { sys('Remote session active.'); toast('Connected to JARVIS'); }
+        if (_wasConnected) { setStatus('active'); sys(t('sys.reconnected')); toast(t('toast.reconnected')); }
+        else               { sys(t('sys.active')); toast(t('toast.connected')); }
         _wasConnected = true;
       };
       ws.onerror = () => { /* onclose fires next — handle there */ };
@@ -344,6 +578,7 @@
         if (m.type === 'wake')          sys('Wake word detected — connecting…');
         if (m.type === 'sys')           sys(m.text);
         if (m.type === 'file_received') _onFileReceived(m);
+        if (m.type === 'screenshot')    _onScreenshot(m);
       };
     }
 
@@ -351,10 +586,10 @@
       // 4001 = token rejected (process restarted) → refresh from paired device token
       if (ev && ev.code === 4001) {
         const ok = await _refreshTokenViaDevice();
-        if (!ok) { sys('Session expired — returning to login…'); location.replace('/login'); return; }
+        if (!ok) { sys(t('sys.expired')); location.replace('/login'); return; }
       }
-      pill.className = 'pill reconnecting'; stTxt.textContent = 'Reconnecting';
-      if (_wasConnected) sys('Reconnecting… (Mac may be asleep)');
+      pill.className = 'pill reconnecting'; stTxt.textContent = t('st.reconnecting');
+      if (_wasConnected) sys(t('sys.reconnecting'));
       _scheduleReconnect();
     }
 
@@ -381,10 +616,11 @@
     connectWS();
 
     function setStatus(s) {
+      _lastStatus = s;
       if (s === 'active') {
-        pill.className = 'pill on'; stTxt.textContent = 'Active'; wake.classList.remove('show');
+        pill.className = 'pill on'; stTxt.textContent = t('st.active'); wake.classList.remove('show');
       } else {
-        pill.className = 'pill'; stTxt.textContent = 'Sleeping'; wake.classList.add('show');
+        pill.className = 'pill'; stTxt.textContent = t('st.sleeping'); wake.classList.add('show');
       }
     }
 
@@ -393,6 +629,7 @@
       if (speaker === 'jarvis') {
         d.className = 'msg msg-j';
         d.innerHTML = `<div class="lbl">Jarvis</div>${esc(text)}`;
+        _speak(text);
       } else {
         d.className = 'msg msg-u';
         d.innerHTML = `<div class="lbl">You</div>${esc(text)}`;
@@ -521,6 +758,19 @@
       feed.appendChild(card);
       feed.scrollTop = feed.scrollHeight;
       toast('File received on computer!');
+    }
+
+    // Screenshot of the Mac screen after a remote command — tap to view full size
+    function _onScreenshot(m) {
+      if (!m.data) return;
+      const card = document.createElement('div');
+      card.className = 'msg msg-shot';
+      card.innerHTML =
+        '<div class="lbl">Screen</div>' +
+        '<img class="shot-img" src="' + m.data + '" alt="Mac screen" ' +
+        'onclick="window.open(this.src)">';
+      feed.appendChild(card);
+      feed.scrollTop = feed.scrollHeight;
     }
 
     // File input change handler
@@ -840,6 +1090,20 @@
       }
       _micIdle();
     }
+
+    // ── Exact-fit height (iOS Safari toolbar + keyboard) ──────────────────────
+    // CSS 100dvh is the *largest* viewport, so when the Safari toolbar or the
+    // keyboard appears the footer slides out of view. Pin the body to the real
+    // visible height (visualViewport) so the input row is always on-screen.
+    (function () {
+      var vv = window.visualViewport;
+      if (!vv) return;
+      function fit() { document.body.style.height = vv.height + 'px'; }
+      vv.addEventListener('resize', fit);
+      vv.addEventListener('scroll', fit);
+      window.addEventListener('orientationchange', function () { setTimeout(fit, 250); });
+      fit();
+    })();
 
     // ── PWA — install to home screen ──────────────────────────────────────────
     if ('serviceWorker' in navigator) {

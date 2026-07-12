@@ -50,7 +50,7 @@ from core.device_profile import (
 )
 from core.i18n import active_lang, change_ui_language, detect_ui_language_command, t
 from core.power_manager import KeepAwakeManager
-from core.remote_tunnel import CloudflareTunnel
+from core.remote_tunnel import CloudflareTunnel, TailscaleFunnel
 from core.app_settings import (
     get_keep_awake_enabled,
     get_tunnel_config,
@@ -2433,14 +2433,26 @@ class JarvisLive:
 
         from dashboard.server import PORT as DASHBOARD_PORT
         cfg = get_tunnel_config()
+        provider = str(cfg.get("provider") or "cloudflare").strip().lower()
+        origin_https = bool(self._dashboard._ssl_enabled())
         self.ui.write_log(f"SYS: {t('tunnel.starting')}")
-        self._tunnel = CloudflareTunnel(
-            port=DASHBOARD_PORT,
-            mode=str(cfg.get("mode") or "quick"),
-            hostname=str(cfg.get("hostname") or ""),
-            on_url=self._on_tunnel_url,
-            on_status=self._on_tunnel_status,
-        )
+        if provider == "tailscale":
+            # Tailscale Funnel: stable *.ts.net URL, no own domain required.
+            self._tunnel = TailscaleFunnel(
+                port=DASHBOARD_PORT,
+                origin_https=origin_https,
+                on_url=self._on_tunnel_url,
+                on_status=self._on_tunnel_status,
+            )
+        else:
+            self._tunnel = CloudflareTunnel(
+                port=DASHBOARD_PORT,
+                mode=str(cfg.get("mode") or "quick"),
+                hostname=str(cfg.get("hostname") or ""),
+                on_url=self._on_tunnel_url,
+                on_status=self._on_tunnel_status,
+                origin_https=origin_https,
+            )
         status, detail = self._tunnel.start()
         if status == CloudflareTunnel.STATUS_NOT_INSTALLED:
             self.ui.write_log(f"SYS: {t('tunnel.not_installed')} ({detail})")
@@ -2583,6 +2595,9 @@ class JarvisLive:
                         session=self.session,
                     )
                     self.ui.write_log(f"[Web]: {text}")
+                    # After a remote command, send the phone a screenshot of the
+                    # resulting Mac screen so the user can see what happened.
+                    asyncio.create_task(self._send_result_screenshot())
                 else:
                     print(f"[Dashboard] Dropped command (no session): {text}")
             except asyncio.TimeoutError:
@@ -2590,6 +2605,40 @@ class JarvisLive:
             except Exception as e:
                 print(f"[Dashboard] Command error: {e}")
                 await asyncio.sleep(0.5)
+
+    # ── result screenshot to phone ───────────────────────────────────────────
+
+    def _capture_result_screenshot_data_uri(self) -> str | None:
+        """Grab the primary screen as a compressed JPEG data URI (runs in an
+        executor — mss/PIL are blocking). Reuses the vision screen capture.
+        Requires macOS Screen Recording permission to show app windows."""
+        try:
+            import base64
+            from actions.screen_processor import _capture_screen
+            img_bytes, mime = _capture_screen()
+            b64 = base64.b64encode(img_bytes).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except Exception as e:
+            print(f"[Screenshot] capture failed: {e}")
+            return None
+
+    async def _send_result_screenshot(self, delay: float = 2.5) -> None:
+        # Give the command's action time to finish before capturing the result.
+        await asyncio.sleep(delay)
+        if not self._dashboard or not self._dashboard._clients:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+            data_uri = await loop.run_in_executor(
+                None, self._capture_result_screenshot_data_uri
+            )
+        except Exception:
+            data_uri = None
+        if data_uri:
+            try:
+                await self._dashboard.broadcast({"type": "screenshot", "data": data_uri})
+            except Exception:
+                pass
 
     # ── main loop ───────────────────────────────────────────────────────────
 

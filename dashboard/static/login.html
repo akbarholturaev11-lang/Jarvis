@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content">
   <title>JARVIS</title>
   <meta name="theme-color" content="#07090f">
   <meta name="mobile-web-app-capable" content="yes">
@@ -138,29 +138,153 @@
       font-size: 12px;
       margin-bottom: 16px;
     }
+    /* Install-first onboarding banner */
+    #install-banner {
+      display: none; text-align: left; background: var(--adim);
+      border: 1px solid rgba(99,102,241,0.3); border-radius: 14px;
+      padding: 15px 17px; margin-bottom: 18px; animation: ibpop 0.3s ease;
+    }
+    @keyframes ibpop { from { opacity: 0; transform: translateY(-6px); } }
+    .ib-title { font-size: 13px; font-weight: 700; color: var(--text);
+      margin-bottom: 9px; letter-spacing: 0.3px; }
+    .ib-steps { margin: 0 0 12px 16px; padding: 0; color: var(--muted);
+      font-size: 12px; line-height: 1.75; }
+    .ib-steps b { color: var(--text); }
+    .ib-skip { width: 100%; padding: 9px; background: transparent;
+      border: 1px solid var(--border); border-radius: 10px; color: var(--muted);
+      font-size: 11px; font-weight: 600; cursor: pointer; letter-spacing: 0.4px;
+      transition: color 0.15s, border-color 0.15s; }
+    .ib-skip:hover { color: var(--text); border-color: var(--accent); }
+
+    /* ═══════════════════════════════════════════════════════════════════
+       MOBILE FIT + UNLUMEN-INSPIRED SKIN  (2026-07-12)
+       Layout: dynamic viewport height + safe areas, a responsive card
+       width, and scroll-when-tall so the card never runs off a small
+       phone screen. Visuals: glass card, gradient accent, glow, shimmer.
+       Unlumen used as animation reference only (web/PWA).
+       ═══════════════════════════════════════════════════════════════════ */
+
+    /* ── Fill the visible viewport; allow scrolling when the card is tall
+          (small phones, install banner + voice note shown) ── */
+    body {
+      height: auto;
+      min-height: 100vh;      /* fallback */
+      min-height: 100dvh;
+      padding: calc(24px + env(safe-area-inset-top))
+               calc(16px + env(safe-area-inset-right))
+               calc(24px + env(safe-area-inset-bottom))
+               calc(16px + env(safe-area-inset-left));
+      overflow-y: auto;
+      background:
+        radial-gradient(125% 70% at 50% -12%, rgba(99,102,241,0.18), transparent 60%),
+        var(--bg);
+    }
+
+    /* ── Responsive card: never wider than the screen; centre or scroll ── */
+    .card {
+      width: min(340px, 100%);
+      margin: auto;                 /* centres when it fits, scrolls when not */
+      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
+      -webkit-backdrop-filter: blur(24px) saturate(150%);
+      backdrop-filter: blur(24px) saturate(150%);
+      box-shadow: 0 24px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04);
+      animation: card-in 0.5s cubic-bezier(.2,.9,.3,1);
+    }
+    @keyframes card-in { from { opacity: 0; transform: translateY(14px) scale(0.97); } }
+
+    /* ── Shimmering wordmark (Unlumen “Shimmering Text” reference) ── */
+    .logo {
+      background: linear-gradient(100deg, #aeb6c6 22%, #ffffff 50%, #aeb6c6 78%);
+      background-size: 220% 100%;
+      -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; color: transparent;
+      animation: logo-shimmer 7s linear infinite;
+    }
+    .logo em {
+      -webkit-text-fill-color: var(--accent); color: var(--accent);
+      text-shadow: 0 0 16px rgba(99,102,241,0.65);
+    }
+    @keyframes logo-shimmer { to { background-position: 220% 0; } }
+
+    /* ── Glow button + spring press (Unlumen “Glow Button” reference) ── */
+    .btn {
+      background: linear-gradient(135deg, #7c7ff6, #5b5ef0);
+      box-shadow: 0 6px 22px rgba(99,102,241,0.45);
+      transition: transform .12s cubic-bezier(.34,1.56,.64,1), box-shadow .2s, opacity .15s;
+    }
+    .btn:active { box-shadow: 0 3px 12px rgba(99,102,241,0.4); }
+
+    /* ── PIN field focus glow ── */
+    .key-input { transition: border-color .18s, background .18s, box-shadow .18s; }
+    .key-input:focus { box-shadow: 0 0 0 4px rgba(99,102,241,0.16); }
+
+    /* ── Respect users who ask for less motion ── */
+    @media (prefers-reduced-motion: reduce) {
+      .logo, .card { animation: none; }
+    }
   </style>
 </head>
 <body>
   <div class="card" id="card">
     <div class="logo"><em>J</em>ARVIS</div>
-    <div class="sub">Remote Access</div>
-    <p id="reconnecting">Reconnecting…</p>
-    <p class="hint">Press <strong style="color:var(--text)">Remote Control</strong> in the JARVIS desktop app to get a QR code or session key.</p>
+    <div class="sub" data-i18n="sub">Masofaviy kirish</div>
+    <div id="install-banner">
+      <div class="ib-title" data-i18n="ibTitle">📲 Ilovani o‘rnating</div>
+      <ol class="ib-steps">
+        <li><span id="ib-share">Share <b>⎋</b></span> <span data-i18n="ibS1">tugmasini bosing</span></li>
+        <li><b>Add to Home Screen</b> <span data-i18n="ibS2">ni tanlang</span></li>
+        <li data-i18n="ibS3">Ekrandagi ikonkани oching, PIN kiriting</li>
+      </ol>
+      <button class="ib-skip" onclick="dismissInstall()" data-i18n="ibSkip">Brauzerda davom etish</button>
+    </div>
+    <p id="reconnecting" data-i18n="reconnecting">Qayta ulanmoqda…</p>
+    <p class="hint" data-i18n="hint">JARVIS ilovasida “Remote Control” tugmasini bosib QR yoki PIN kod oling.</p>
     <div class="key-wrap">
       <input class="key-input" id="key" type="text" maxlength="6"
              autocomplete="off" autocorrect="off" spellcheck="false"
              placeholder="· · · · · ·">
     </div>
     <div class="err" id="err"></div>
-    <button class="btn" onclick="doLogin()">CONNECT</button>
-    <p class="voice-note">
-      🎤 <strong style="color:var(--text)">Voice commands:</strong> open
-      <code>chrome://flags</code> on your phone, search
-      <code>Insecure origins treated as secure</code>, add your JARVIS URL, tap Relaunch.
-    </p>
+    <button class="btn" onclick="doLogin()" data-i18n="connect">ULANISH</button>
+    <p class="voice-note" data-i18n="voicenote">🎤 Ovozli buyruq uchun brauzerda JARVIS manziliga mikrofon ruxsatini bering.</p>
   </div>
 
   <script>
+    // ── i18n (uz / ru / en) — follows the app's saved language, default Uzbek ──
+    var _LI18N = {
+      uz: { sub:'Masofaviy kirish', ibTitle:'📲 Ilovani o‘rnating', ibS1:'tugmasini bosing', ibS2:'ni tanlang', ibS3:'Ekrandagi ikonkани oching, PIN kiriting', ibSkip:'Brauzerda davom etish', reconnecting:'Qayta ulanmoqda…', hint:'JARVIS ilovasida “Remote Control” tugmasini bosib QR yoki PIN kod oling.', connect:'ULANISH', voicenote:'🎤 Ovozli buyruq uchun brauzerda JARVIS manziliga mikrofon ruxsatini bering.', errInvalid:'Kod noto‘g‘ri yoki muddati o‘tgan', errConn:'Ulanish xatosi' },
+      ru: { sub:'Удалённый доступ', ibTitle:'📲 Установите приложение', ibS1:'нажмите', ibS2:'выберите', ibS3:'Откройте иконку на экране и введите PIN', ibSkip:'Продолжить в браузере', reconnecting:'Переподключение…', hint:'В приложении JARVIS нажмите «Remote Control», чтобы получить QR или PIN-код.', connect:'ПОДКЛЮЧИТЬ', voicenote:'🎤 Для голосовых команд разрешите доступ к микрофону в браузере.', errInvalid:'Неверный или просроченный ключ', errConn:'Ошибка подключения' },
+      en: { sub:'Remote Access', ibTitle:'📲 Install the app', ibS1:'button', ibS2:'', ibS3:'Open the icon on your home screen and enter the PIN', ibSkip:'Continue in browser', reconnecting:'Reconnecting…', hint:'Press “Remote Control” in the JARVIS desktop app to get a QR code or PIN.', connect:'CONNECT', voicenote:'🎤 For voice commands, allow microphone access in the browser.', errInvalid:'Invalid or expired key', errConn:'Connection error' }
+    };
+    var _llang = localStorage.getItem('jarvis_lang') || 'uz';
+    function _lt(k) { return (_LI18N[_llang] && _LI18N[_llang][k]) || _LI18N.en[k] || k; }
+    (function () {
+      document.documentElement.lang = _llang;
+      document.querySelectorAll('[data-i18n]').forEach(function (el) {
+        el.textContent = _lt(el.getAttribute('data-i18n'));
+      });
+    })();
+
+    // Install-first onboarding: nudge Add-to-Home-Screen when not yet installed.
+    // (iOS cannot auto-install a PWA — Apple requires a manual Share → Add to Home
+    // Screen gesture — so we guide it instead of pretending it is automatic.)
+    (function () {
+      var standalone = window.matchMedia('(display-mode: standalone)').matches
+                       || window.navigator.standalone === true;
+      if (standalone) return;                              // already installed
+      if (sessionStorage.getItem('jarvis_skip_install')) return;
+      var banner = document.getElementById('install-banner');
+      if (banner) banner.style.display = 'block';
+      var isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      var share = document.getElementById('ib-share');
+      if (share && !isIOS) share.innerHTML = 'menu <b>⋮</b> → Install';
+    })();
+    function dismissInstall() {
+      sessionStorage.setItem('jarvis_skip_install', '1');
+      var b = document.getElementById('install-banner');
+      if (b) b.style.display = 'none';
+    }
+
     // Try auto-reconnect with stored device token (set on first QR login)
     (async function() {
       const devTok = localStorage.getItem('jarvis_device_token');
@@ -206,7 +330,7 @@
         });
         data = await r.json();
       } catch (e) {
-        document.getElementById('err').textContent = 'Connection error';
+        document.getElementById('err').textContent = _lt('errConn');
         shake(); return;
       }
       if (data.ok && data.token) {
@@ -216,7 +340,7 @@
       } else {
         inp.value = '';
         inp.focus();
-        document.getElementById('err').textContent = 'Invalid or expired key';
+        document.getElementById('err').textContent = _lt('errInvalid');
         shake();
       }
     }

@@ -1,8 +1,8 @@
 {
   "ui_language": "ru",
   "remote_tunnel": {
-    "enabled": false,
-    "provider": "cloudflare",
+    "enabled": true,
+    "provider": "tailscale",
     "mode": "quick",
     "hostname": ""
   }

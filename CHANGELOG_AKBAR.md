@@ -1,5 +1,285 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-12 - Mobile app: consistent language, in-app settings, voice reply
+
+### Problem
+
+- The phone web app mixed languages (Uzbek install banner over an English UI), had
+  no in-app settings, and no way to hear replies by voice.
+
+### Added
+
+- Self-contained i18n (uz / ru / en) in `dashboard/static/app.html` and `login.html`,
+  default **Uzbek**, so the UI is one consistent language. Strings are marked with
+  `data-i18n` and swapped live by `applyLang()`; the choice persists in
+  `localStorage.jarvis_lang` and `login.html` follows the same saved language.
+- An in-app **settings** sheet (gear button in the header) with a language selector
+  (O‘zbek / Русский / English) and a **Voice reply** toggle, styled as an
+  Unlumen-style switch.
+- **Voice reply**: when the toggle is on, each JARVIS text reply is read aloud on the
+  phone via the browser `speechSynthesis` API (`_speak()`), in the selected language.
+  Client-side only — no backend audio streaming. (Streaming JARVIS's own Gemini voice
+  to the phone would be a larger backend change; noted as a possible follow-up.)
+
+### Verification
+
+- Rendered at 375×812 (in-app browser): header shows the ⚙ gear; UI defaults to Uzbek
+  ("MASOFAVIY KIRISH", "ULANISH", "JARVIS'ga buyruq yozing", "YUBORISH"). Opening
+  settings shows the language row + voice toggle. Live switch uz→ru updated the SEND
+  button to "ОТПРАВИТЬ" and the title to "Настройки" instantly; voice toggle flips and
+  `speechSynthesis` is available. Login page renders fully in Uzbek. No console errors
+  on either page. Dashboard served the new markers after restart.
+
+## 2026-07-12 - Result screenshot to phone + exact-fit viewport
+
+### Added
+
+- After every remote command, JARVIS sends the phone a screenshot of the resulting
+  Mac screen. `main.py::_process_dashboard_commands` schedules
+  `_send_result_screenshot()` ~2.5s after dispatch (time for the action to run); it
+  reuses `actions/screen_processor._capture_screen()` (mss + JPEG compress) off the
+  event loop, base64-encodes a data URI, and broadcasts `{type:"screenshot"}`. The
+  phone (`app.html`) renders it as a tappable image bubble (`_onScreenshot`).
+- `app.html` now pins the body to `visualViewport.height` (updated on resize/scroll/
+  orientation) so the input row stays on-screen when the iOS Safari toolbar or the
+  keyboard appears — CSS `100dvh` alone left the footer hidden behind them.
+
+### Why
+
+- Akbar asked that any mobile command return a screenshot of the executed screen,
+  and that the phone app stop running off the screen edge.
+
+### Verification
+
+- `actions/screen_processor._capture_screen()` returns a real JPEG (171 KB) — Screen
+  Recording permission is granted. `py_compile` OK; full suite 157 passed.
+- Restarted Jarvis: `/` serves `_onScreenshot`, `msg-shot`, the `screenshot` message
+  branch, and the `visualViewport` fit script. App page renders at 375×812 with no
+  console errors and no horizontal/vertical overflow.
+- NOTE: without macOS Screen Recording permission the capture shows only the desktop,
+  not app windows — an honest OS limitation.
+
+## 2026-07-12 - Tailscale Funnel provider: stable public URL, no own domain
+
+### Problem
+
+- Cloudflare quick tunnel works but mints a new random URL on every restart, so an
+  installed PWA icon breaks. A Cloudflare *named* tunnel needs a domain the user does
+  not have. Deploying JARVIS itself to a PaaS (the user tried Railway) is impossible —
+  JARVIS is a Mac desktop app (PyQt6 GUI, local mic, local machine control), so it
+  crashes on a headless cloud container.
+
+### Fix
+
+- Added a `TailscaleFunnel` provider to `core/remote_tunnel.py`: exposes the local
+  dashboard on a STABLE `https://<host>.<tailnet>.ts.net` URL with real TLS and no
+  domain of one's own. The Funnel config lives in `tailscaled`, so the URL survives
+  Jarvis restarts and reboots. Uses `https+insecure://localhost:PORT` for the
+  self-signed dashboard origin. Honest: not_installed / failed (not logged in) never
+  fake a URL.
+- `main.py::_apply_remote_tunnel` now selects the provider from
+  `settings.remote_tunnel.provider` (`tailscale` | `cloudflare`); `config/settings.json`
+  set to `tailscale`.
+
+### Verification
+
+- Tailscale 1.98.8, logged in; `tailscale funnel --bg https+insecure://localhost:8000`
+  serving `https://macbook-air.<tailnet>.ts.net`.
+- External check from off-tailnet (WebFetch from Anthropic infra + the user's phone on
+  cellular): `https://<host>.ts.net/login` → 200, title "JARVIS", "Remote Access", the
+  install banner rendered, valid TLS, no error. (The Mac cannot test its own Funnel URL
+  — MagicDNS resolves it to the internal tailnet IP.)
+- Jarvis restarted with `provider=tailscale`: dashboard 200, no cloudflared spawned,
+  funnel still serving. `py_compile` OK; full suite 157 passed, 44 subtests.
+
+## 2026-07-12 - Mobile fit + Unlumen-inspired skin for the phone PWA
+
+### Problem
+
+- On a phone the remote-control web app ran off the screen: the footer command
+  row (input, attach, mic, SEND) was pushed below the visible area, and header
+  content sat under the notch / home indicator. Akbar also asked to improve the
+  UI with a matching skin and Unlumen-style animations.
+
+### Fix (web PWA only — no desktop runtime touched)
+
+- `dashboard/static/app.html` + `login.html`: switched the full-height layout
+  from `height:100%` to `100dvh` (with a `100vh` fallback) so the visible
+  viewport — not the taller layout viewport — drives sizing; the input row now
+  stays on-screen when the mobile URL bar shows.
+- Added `env(safe-area-inset-*)` padding to the header, footer, quick-bar and
+  login card so nothing hides under the notch, home indicator, or rounded corners.
+- `login.html`: card width is now `min(340px, 100%)` (was a fixed `340px` that
+  overflowed on ≤372 px phones) and the page scrolls when the card is tall
+  (install banner + voice note); the card centres when it fits.
+- `app.html`: a long `trycloudflare.com` tunnel URL in the header now truncates
+  with an ellipsis (`max-width:42vw`) instead of pushing the header off-screen.
+- Skin/animation pass, Unlumen used as **animation/visual reference only** per
+  `AI_RULES.md` (no desktop hover / cursor / magnetic effects forced onto touch):
+  glass (backdrop-blur) header/footer/card, indigo gradient + glow SEND/CONNECT
+  buttons, glowing status badge, shimmering "JARVIS" wordmark, spring-eased
+  message reveal and press micro-interactions, plus a `prefers-reduced-motion`
+  guard. Changes are additive CSS overrides at the end of each `<style>` block —
+  small and reversible; all element ids/classes and JS behaviour unchanged.
+
+### Constraints kept
+
+- Web-design task only: no change to `main.py`, `ui.py`, `actions/*`, `core/*` or
+  the desktop assistant runtime (Unlumen rule #10). No new backend strings, so no
+  EN+RU i18n keys added. No dependency added (Unlumen stays a reference).
+
+### Verification
+
+- Served `dashboard/static` and rendered both pages in a mobile viewport:
+  - 375×812: `login` card fits and centres; `app` footer bottom = 812 (on-screen),
+    no horizontal overflow.
+  - 320×720 (narrow phone): `login` no horizontal overflow (docW == winW == 320,
+    card 288 px).
+  - Long tunnel URL in `app` header: overflow before fix (scrollW 479 > 375),
+    none after (375 == 375).
+- Static-preview-only artefacts (not bugs): `NO ENC` badge and literal
+  `__IP__:__PORT__` — the real server replaces `__IP__/__PORT__` and loads
+  CryptoJS (AES-256). Not verified on a physical phone yet.
+
+## 2026-07-12 - Tunnel HTTPS-origin fix + install-first onboarding
+
+### Problem
+
+- With the Cloudflare tunnel enabled, the public URL returned 502. Root cause: the
+  dashboard serves HTTPS (a self-signed cert exists under `config/certs/`), but
+  `core/remote_tunnel.py` hard-coded an `http://localhost:PORT` origin, so
+  cloudflared could not reach the TLS origin.
+- The phone flow did not guide PWA installation; the user wanted "scan → install →
+  connect", and iOS cannot auto-install a PWA.
+
+### Fix
+
+- `core/remote_tunnel.py`: `CloudflareTunnel` now takes `origin_https` and, when
+  set, points cloudflared at `https://localhost:PORT --no-tls-verify` (Cloudflare
+  still terminates real TLS at the edge; only the localhost origin cert is skipped).
+  `main.py` passes `origin_https=self._dashboard._ssl_enabled()`.
+- `dashboard/static/login.html`: added an install-first onboarding banner shown only
+  when not already running as an installed PWA (`display-mode: standalone` /
+  `navigator.standalone`), with platform-aware Add-to-Home-Screen steps and a
+  "continue in browser" escape. Honest about the iOS manual-install requirement.
+
+### Verification
+
+- Standalone cloudflared with the corrected `https + --no-tls-verify` origin: public
+  `https://*.trycloudflare.com/login` → 200 (JARVIS page), `/manifest.webmanifest`
+  and `/static/icon-192.png` → 200. The prior `http` origin returned 502.
+- Jarvis's own tunnel now runs the corrected command
+  (`--url https://localhost:8000 --no-tls-verify`).
+- `/login` serves the install banner markers. Full suite: 157 passed, 44 subtests.
+
+## 2026-07-12 - Durable Qt fix applied: venv moved outside iCloud + live run
+
+### Problem
+
+- The diagnosed root cause (macOS re-applying `UF_HIDDEN` to the PyQt6 Qt plugin
+  tree because `.venv` lived under the iCloud-synced `~/Desktop`) kept recurring:
+  a one-time `chflags` repair passed the Cocoa smoke test, but a fresh
+  `main.py` seconds later still crashed with `Could not find the Qt platform
+  plugin "cocoa"` — proving the flags returned within seconds.
+
+### Fix
+
+- With Akbar's approval, moved the virtual environment out of the synced folder:
+  copied `.venv` to `~/Library/Application Support/JARVIS/venv` (fresh files, no
+  hidden flags), stripped any flags with `chflags -R nohidden`, backed up the
+  original as `.venv.icloud-backup`, and replaced `.venv` with a symlink to the
+  external venv. The base Python (`/opt/homebrew/opt/python@3.12`) is absolute, so
+  the relocated venv resolves correctly.
+- Fixed `scripts/launch_jarvis.command`: it hard-coded
+  `~/Desktop/Mark-XLVIII-AkbarCustom`; it now derives `PROJECT_DIR` from the
+  script's own location so it works regardless of the project folder name.
+- Updated `.gitignore` to ignore the `.venv` symlink and `.venv.icloud-backup/`.
+
+### Verification
+
+- `scripts/check_qt_runtime.py` full GUI Cocoa smoke test: OK on the external venv.
+- `main.py` launched for real: process alive, dashboard listening on TCP 8000/8001,
+  Gemini connected (no Cocoa crash). Mobile web app served (HTTP 200 for `/login`,
+  `/manifest.webmanifest`, `/sw.js`, `/static/icon-192.png`); served `/` contains
+  the quick-command bar, PWA manifest/apple-touch-icon, and auto-reconnect markers.
+- Durability re-check 1+ minute later: preflight OK and zero hidden plugin flags on
+  the external venv (macOS no longer re-hides them outside the synced Desktop).
+
+### Constraints kept
+
+- No package versions changed; no `QT_PLUGIN_PATH` / `QT_QPA_PLATFORM_PLUGIN_PATH`
+  overrides; PyQt6 not downgraded. Original venv preserved as a gitignored backup.
+
+## 2026-07-12 - Qt Cocoa hidden-flag diagnosis and startup guard
+
+### Problem
+
+- `QApplication` again failed with `Could not find the Qt platform plugin "cocoa"`
+  even though the Qt wheel, hashes, architecture, signature, metadata, permissions,
+  and direct `QPluginLoader` load were valid.
+- The exact cause was macOS `UF_HIDDEN` on the PyQt6 `Qt6/plugins` directories and
+  `.dylib` files. Qt's default `QDir` scan therefore returned an empty plugin list.
+  Reinstalling the same Qt wheel preserved the hidden parent state and was not a
+  durable repair by itself.
+- Repeated shell-only observation showed hidden flags returning on random plugin
+  entries within seconds, without a Python process. A one-time `chflags` repair is
+  therefore not durable while the venv remains under the current Desktop `.venv`.
+- `actions/screen_processor.py` also imported OpenCV before the desktop
+  `QApplication` existed, keeping an avoidable Qt/OpenCV startup interaction.
+
+### Fix
+
+- Cleared the incorrect local `UF_HIDDEN` flags without changing package versions.
+- Added `scripts/check_qt_runtime.py` and wired it into
+  `scripts/launch_jarvis.command` before `main.py`. The preflight:
+  - resolves symlink aliases to the canonical project venv;
+  - detects macOS `UF_HIDDEN`; the launcher's default path is read-only;
+  - offers an explicit `--repair-hidden-flags` mode that refuses paths outside the
+    venv and clears only `UF_HIDDEN` after user approval;
+  - validates the PyQt/Qt/plugin paths and macOS/Windows/Linux platform filename;
+  - constructs a real `QApplication` and blocks startup on failure;
+  - never adds `QT_PLUGIN_PATH` / `QT_QPA_PLATFORM_PLUGIN_PATH`, installs packages,
+    downgrades PyQt6, or reports a false success.
+- Changed `actions/screen_processor.py` to lazy-load `cv2` behind a thread-safe
+  lock only when camera capture is actually requested, after the desktop Qt
+  application has initialized. The missing-OpenCV error is localized EN+RU.
+- Added focused tests for symlink paths, moved/external venv rejection, missing and
+  hidden platform plugins/directories, real macOS flag normalization, non-macOS
+  no-op behavior, and serialized lazy OpenCV import.
+
+### Verification
+
+- Same versions retained: PyQt6 6.11.0, Qt runtime 6.11.1, PyQt6-sip 13.11.1,
+  `opencv-python-headless` 5.0.0.93; `pip check` passed.
+- Qt Cocoa binary matched its wheel RECORD hash, was arm64, codesign-valid, and
+  directly loadable. After clearing `UF_HIDDEN`, default `QDir` again listed
+  `libqcocoa.dylib`, `libqminimal.dylib`, and `libqoffscreen.dylib`.
+- Controlled recurrence test: Cocoa was temporarily marked hidden, disappeared
+  from Qt's default plugin listing, then explicit preflight repair cleared the
+  plugin-tree flags and restored discovery inside that process. Subsequent
+  shell-only checks observed metadata re-applying flags, proving relocation is
+  still required for a durable runtime.
+- `py_compile`: passed for `main.py` and all changed Python files.
+- `python -m unittest discover -s tests -v`: **157 tests passed**.
+- Focused preflight/lazy-import tests: **13 tests passed**, including the repair
+  and concurrency paths.
+- `bash -n scripts/launch_jarvis.command` and `git diff --check`: passed.
+- `pytest` was unavailable in the venv (`No module named pytest`), so the existing
+  `unittest` runner was used; no new dependency was installed.
+- Fresh live Cocoa launch, dashboard HTTP checks, QR/PIN pairing, and iPhone Home
+  Screen installation remain unverified because the final GUI `open` action was
+  blocked by Codex's external usage limit and the current venv remains unstable.
+  No success is claimed for those steps.
+
+### Constraints kept
+
+- No secret/private config was read or changed. No Qt path override, PyQt downgrade,
+  dependency-version change, commit, or push was made. Launcher messages added by
+  this change are bilingual English + Russian.
+- Durable next step (not performed): after explicit approval, rebuild the venv in
+  a non-hidden runtime directory outside Desktop, symlink project `.venv` to it,
+  then repeat GUI/dashboard/iPhone acceptance tests.
+
 ## 2026-07-11 - Mobile Remote Control: anywhere access, sleep resilience, macros, settings window
 
 ### Added

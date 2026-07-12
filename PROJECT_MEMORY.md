@@ -22,14 +22,36 @@ The original test version and AkbarCustom version are separate. AkbarCustom is t
 
 ## Current Mac Install Status
 
-Current known status as of 2026-07-11:
+Current known status as of 2026-07-12:
 
 - Project cloned.
 - Python 3.12 virtual environment exists.
 - Requirements are installed.
 - OpenCV is `opencv-python-headless==5.0.0.93` (not `opencv-python`). The GUI OpenCV build bundled its own Qt runtime and hijacked Qt's platform-plugin path, masking PyQt6's Cocoa plugin and crashing `QApplication`. The project uses no OpenCV GUI APIs (only `VideoCapture`/`imencode`/`cvtColor` and capture backends), so headless is the correct build. Do not reinstall plain `opencv-python`.
 - PyQt6 6.11.0 / Qt 6.11.1 is installed and verified for the macOS Cocoa GUI path after latest-compatible retesting.
-- Qt platform-plugin discovery was once broken (every platform — cocoa/offscreen/minimal — failed with `Could not find the Qt platform plugin "..." in ""` even though the plugin files were present and directly loadable). Fixed by force-reinstalling the same-version Qt wheel: `python -m pip install --force-reinstall --no-deps PyQt6-Qt6==6.11.1`. If this recurs, re-run that reinstall. Never add `QT_PLUGIN_PATH` / `QT_QPA_PLATFORM_PLUGIN_PATH` overrides and never downgrade PyQt6.
+- Qt platform-plugin discovery previously failed for every platform even though the
+  plugin binaries were intact and directly loadable. The 2026-07-12 recurrence
+  exposed the durable root cause: macOS had marked the PyQt6 `Qt6/plugins` tree
+  with `UF_HIDDEN`, so Qt's default `QDir` scan returned zero plugins. A
+  same-version `PyQt6-Qt6==6.11.1` reinstall does not reliably clear that file
+  flag. Repeated read-only checks then proved macOS metadata re-applies hidden
+  flags to random plugin entries within seconds, even with no Python process
+  running, while this venv remains under the Desktop `.venv` path. Therefore
+  one-time flag repair is diagnostic/temporary, not durable. The read-only
+  `scripts/check_qt_runtime.py` launcher guard now detects the condition, validates
+  canonical paths and forbidden Qt overrides, and smoke-tests real Cocoa before
+  `main.py`. Its explicit repair mode remains approval-only and path-confined.
+  The durable fix is APPLIED (2026-07-12, approved by Akbar): the venv now lives
+  outside the iCloud-synced Desktop at
+  `~/Library/Application Support/JARVIS/venv`, and the project's `.venv` is a
+  symlink to it. Because that path is not iCloud-synced, macOS stops re-applying
+  `UF_HIDDEN`. Verified: `scripts/check_qt_runtime.py` GUI Cocoa smoke test passes,
+  `main.py` launches (dashboard listening on 8000/8001, Gemini connected), and a
+  re-check 1+ minute later shows zero hidden plugin flags. The original Desktop
+  `.venv` is kept as `.venv.icloud-backup` (gitignored) until this is proven over
+  time. If the venv is ever recreated, place it outside Desktop again — do not put
+  a real `.venv` back under `~/Desktop`. Never add `QT_PLUGIN_PATH` /
+  `QT_QPA_PLATFORM_PLUGIN_PATH` overrides and never downgrade PyQt6.
 - `setup.py` completed.
 - `python main.py` runs on Mac.
 - Gemini API is connected.
@@ -63,6 +85,13 @@ Current known status as of 2026-07-11:
 - Keep-awake: while a phone WebSocket client is connected, `main.py` keeps the computer awake through `core/power_manager.py` → adapter `prevent_sleep`/`release_sleep` (macOS `caffeinate`, Windows `SetThreadExecutionState`, Linux `systemd-inhibit`, honest unsupported elsewhere), released after a grace period. Controlled by `keep_awake_enabled` in settings.
 - Command automation/macros: `core/capabilities.py` (JARVIS abilities as pickable options) + `core/macros.py` (`config/macros.json`, gitignored). One macro composes several capability phrases into a single command; built from a picker (not free text) in the phone app and the desktop settings window; shared via `/api/capabilities` + `/api/macros`.
 - Desktop settings window: a corner ⚙ gear in `ui.py` opens `SettingsOverlay` (remote on/off, Show QR/PIN, keep-awake, RU/EN language, revoke paired devices, connection status, macro builder) with an animated native `ToggleSwitch`. Wired to `main.py` via the single `on_settings_action(action, **kwargs)` callback. The desktop stays native PyQt6; Unlumen UI is animation reference only (web-only per `AI_RULES.md`).
+- The macOS launcher runs the read-only `scripts/check_qt_runtime.py` preflight
+  before `main.py`, detects the known `UF_HIDDEN` plugin-discovery fault, rejects
+  Qt path/platform overrides and external plugin symlinks, and blocks startup on
+  a failed real-Cocoa GUI smoke test. Explicitly approved repair can use the
+  helper's path-confined `--repair-hidden-flags` mode, but that mode is temporary
+  in the current Desktop venv. `actions/screen_processor.py` lazy-loads OpenCV
+  behind a thread-safe lock only when camera capture is requested.
 
 ## Known Problems
 
@@ -79,7 +108,15 @@ Current known status as of 2026-07-11:
 - `memory/long_term.json` is local personal memory and must never be committed.
 - Final Gemini speech truthfulness is still guided by tool metadata rather than mechanically intercepted; action source output must remain explicit and non-fabricated.
 - A completed local speech command does not prove the reminder was audible if the output device is muted, unavailable, or the computer cannot play sound at that moment; the notification remains the durable fallback.
-- PyQt6 6.11.0 / Qt 6.11.1 was retested on this Mac after removing launcher Qt env overrides and now passes minimal `QApplication`, unit tests, terminal launch, and `Jarvis.command` launcher startup. Keep the launcher free of manual `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` overrides unless a future debug run proves they are required.
+- Before the latest recurrence, PyQt6 6.11.0 / Qt 6.11.1 was retested on this Mac
+  after removing launcher Qt env overrides and passed minimal `QApplication`, unit
+  tests, terminal launch, and launcher startup. Keep the launcher free of manual
+  `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` overrides.
+- The full unit suite and preflight logic pass, but the current Desktop `.venv`
+  remains operationally blocked because external macOS metadata repeatedly
+  re-applies `UF_HIDDEN` to plugin files. Fresh live Cocoa launch and iPhone PWA
+  pairing are not verified; Codex's final GUI action was also blocked by its
+  external usage limit.
 
 ## Current Purpose
 
@@ -111,6 +148,13 @@ Add the real Zerno URL/token through `scripts/setup_zerno_stats.sh`, verify the 
 - `core/remote_tunnel.py` runs/monitors `cloudflared` for remote-from-anywhere access. `core/power_manager.py` is a cross-platform keep-awake facade over the platform adapters. `core/app_settings.py` is the safe read/modify/write layer for non-secret `config/settings.json` keys (`remote_tunnel`, `keep_awake_enabled`) that preserves unrelated keys. `core/capabilities.py` + `core/macros.py` provide the capability registry and macro store for command automation.
 - `dashboard/server.py` also serves PWA assets, `/api/capabilities`, `/api/macros`, a public-URL/QR path for the tunnel, and `/login` rate limiting; it exposes `set_public_url`, `set_client_count_callback`, `revoke_devices`, `get_lan_url`.
 - `ui.py` adds `ToggleSwitch`, `MacroBuilderOverlay`, `SettingsOverlay`, and a corner gear; `main.py` handles all settings actions via `_handle_settings_action` and keep-awake/tunnel lifecycle.
+- `scripts/check_qt_runtime.py` is the launch-time Qt guard. It validates the
+  canonical venv/PyQt/plugin paths across symlink aliases, detects macOS
+  `UF_HIDDEN`, rejects Qt overrides/external plugin symlinks, checks the per-OS
+  platform plugin, and smoke-tests the real Cocoa platform before the launcher
+  executes `main.py`. Its optional approval-only repair mode clears only
+  `UF_HIDDEN` inside the canonical venv but is not a durable fix for the current
+  Desktop location.
 - `core/platform_adapters/` contains the reusable platform interface and macOS/Windows/Linux adapters for OS info, app/browser/message detection, default browser, media control, launch method, active window capability, screen/camera/audio/clipboard/UI automation capability, and permissions.
 - `memory/memory_manager.py` stores and formats long-term user memory in `memory/long_term.json`.
 - `core/prompt.txt` controls assistant behavior, language, and tool routing rules.

@@ -5,10 +5,18 @@ Current next steps for MARK XLVIII - AkbarCustom.
 ## Known Bugs
 
 - Jarvisda Zerno orqali statistika eshitganda ovoz chiqmayapti.
+- macOS metadata current Desktop `.venv` ichidagi Qt pluginlarga `UF_HIDDEN`
+  flagini qayta qo‘ymoqda; bir martalik repair barqaror emas va Cocoa startupni
+  bloklaydi.
 
 ## Immediate Next Steps
 
 0. Manually verify the new mobile remote-control feature in the full Mac app:
+   - With explicit approval, rebuild the venv in a non-hidden runtime directory
+     outside Desktop, symlink project `.venv` to it, and confirm the read-only Qt
+     preflight remains stable across repeated processes.
+   - Double-click `scripts/launch_jarvis.command`; confirm `logs/launcher.log`
+     records `Qt runtime preflight: OK` and the app reaches `LISTENING`.
    - Press the corner ⚙ gear → settings window opens with remote on/off, Show QR/PIN,
      keep-awake, language RU/EN, paired devices (revoke), connection status, and
      command automation.
