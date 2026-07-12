@@ -28,6 +28,15 @@ Also read the **state/context** docs (not rules, but needed): `PROJECT_MEMORY.md
 Akbar **in Uzbek**. During repository work, the coding AI agent must use Uzbek for
 every work-process message to Akbar and ask for confirmation before any risky edit.
 
+For product, license, payment, update, packaging, or release work, also read
+`docs/PRODUCT_RELEASE_CONTRACT.md`. Preserve its one-plan, per-semantic-version
+paid-entitlement model: a purchased version remains usable indefinitely, future
+semantic versions require separate admin-priced entitlements, there is no
+subscription or Lifetime Updates plan, and declining an update never remotely
+disables the older purchased version. This is a product target, not permission to
+sell or distribute; the upstream-license, PyQt6, branding/assets, and signing
+gates in that document must be cleared first.
+
 ## Strict safety floor (net if the skill fails to load)
 
 - `config/api_keys.json` is secret local config. Do not print, commit, or edit it

@@ -50,7 +50,7 @@ class QtRuntimePreflightTests(unittest.TestCase):
 
     def test_symlink_project_alias_resolves_to_physical_venv(self):
         root, venv, pyqt, qt_prefix, plugins = self._fixture()
-        alias = root.parent / "Mark-XLVIII-AkbarCustom"
+        alias = root.parent / "jarvis-alias"
         try:
             alias.symlink_to(root, target_is_directory=True)
         except (NotImplementedError, OSError) as exc:

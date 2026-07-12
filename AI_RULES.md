@@ -27,6 +27,11 @@ the state to Akbar **in Uzbek**. During repository work, the coding AI agent mus
 also use Uzbek for every work-process message to Akbar, and confirm before any
 risky edit.
 
+For product, license, payment, update, packaging, or release work, also read
+`docs/PRODUCT_RELEASE_CONTRACT.md`. It defines the approved product target and
+the unresolved commercial-distribution gates; do not confuse that target with an
+implemented or legally cleared release.
+
 ## Non-negotiable safety floor (full detail in the skill)
 
 Even before you open the skill, never do these:
@@ -58,7 +63,7 @@ Unlumen UI is an approved optional design library for Jarvis web products only.
 Allowed use cases:
 - Jarvis landing page
 - pricing and license purchase pages
-- account and subscription dashboard
+- account, license, and update dashboard
 - onboarding web flow
 - device and update management dashboard
 - web-based Personal Briefing interface
@@ -85,7 +90,13 @@ Restrictions:
 9. Keep Jarvis core, licensing backend, updater, and platform adapters independent from this UI library.
 10. A web design task must not modify the desktop assistant runtime unless explicitly required.
 
-Current commercial plan:
-- Standard license: user keeps the purchased version; no automatic future updates.
-- Lifetime Updates license: user receives supported future updates automatically.
-- Unlumen UI may be used for the web purchase and license-management interface for these plans.
+Approved product target (subject to the commercial-release gates in
+`docs/PRODUCT_RELEASE_CONTRACT.md`):
+- One paid plan only; no subscription and no Lifetime Updates plan.
+- A purchase grants indefinite use of the exact semantic version bought.
+- Every newly published semantic version has its own admin-set price and requires
+  its own paid entitlement; future versions are never granted automatically.
+- Declining an update must never remotely disable or remove the purchased older
+  version.
+- Unlumen UI may be used for the web purchase and license/update-management
+  interface for this model.

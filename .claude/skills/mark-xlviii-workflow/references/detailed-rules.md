@@ -12,9 +12,11 @@ bot — before, during, and after any change. If you skip them, the work is inva
 
 ## 1. Repository safety
 
-- This is Akbar's **personal** customized fork of `FatihMakes/Mark-XLVIII`. It is
-  not a commercial product — do not discuss "audience" or "market" unless Akbar
-  explicitly asks.
+- This is Akbar's **personal** customized fork of `FatihMakes/Mark-XLVIII`.
+  Productization work is authorized, but commercial sale/distribution remains
+  blocked until the upstream CC BY-NC, PyQt6, branding/assets, and
+  platform-signing gates in `docs/PRODUCT_RELEASE_CONTRACT.md` are cleared and
+  documented. Product planning is not distribution permission.
 - Never expose or commit API keys, bot tokens, passwords, real `DATABASE_URL`
   values, private links, or payment credentials.
 - Never modify these unless Akbar explicitly asks: `config/api_keys.json`,
@@ -31,7 +33,44 @@ bot — before, during, and after any change. If you skip them, the work is inva
 - Keep changes small, testable, and cross-platform. Preserve original
   functionality unless Akbar explicitly asks for a behavior change.
 
-## 2. Required startup read order
+## 2. Product and commercial-release contract
+
+`docs/PRODUCT_RELEASE_CONTRACT.md` is the approved product/release contract for
+license, payment, update, packaging, and release work. Preserve these invariants:
+
+- There is exactly one paid product plan. Do not introduce subscriptions,
+  recurring billing, or a Lifetime Updates plan without new explicit direction
+  from Akbar.
+- A completed purchase grants indefinite use of the exact semantic version bought.
+- Every newly published semantic version has its own admin-set price and requires
+  a distinct paid entitlement. A rebuild/re-sign/repackage that keeps the same
+  semantic version is covered by the existing entitlement.
+- Publishing or discovering a release does not grant installation rights. Only a
+  verified admin approval may grant the exact-version entitlement.
+- If the user does not buy a later version, the purchased older version continues
+  to work. Never add a remote kill switch, forced expiry, or dependency on update
+  server availability for continued use of its core local functions.
+- License/account entitlements stay platform-neutral; installers and update
+  packages may be platform-specific and must return explicit honest availability
+  statuses.
+- Payment, license, updater, rollback, signed app, and DMG behavior described in
+  the contract remains a target until code, tests, and real artifacts verify it.
+
+Commercial sale/distribution is a release blocker until all of these are cleared
+and documented:
+
+1. Upstream `CC BY-NC` commercial permission, relicensing, or a rights-clean
+   replacement.
+2. A lawful PyQt6 distribution model (commercial license or a compatible
+   distribution decision).
+3. Rights to the JARVIS/third-party branding, icons, copy, and bundled assets.
+4. Platform-appropriate code signing; for macOS, Developer ID signing,
+   notarization, and staple verification.
+
+Until then, agents may design and locally verify productization work but must not
+claim the repository is commercially cleared or the product is ready for sale.
+
+## 3. Required startup read order
 
 Before changing anything, read in order:
 
@@ -41,11 +80,14 @@ Before changing anything, read in order:
 3. `PROJECT_MAP.md` — layer map, dependency graph, "do not edit blindly" list.
 4. `NEXT_STEPS.md` — the immediate planned work.
 
+For product, license, payment, update, packaging, or release work, also read
+`docs/PRODUCT_RELEASE_CONTRACT.md`.
+
 If any of these is missing, stop and ask Akbar before making code changes. Then
 run `git status`, summarize the state to Akbar in Uzbek, and ask for confirmation
 before any risky edit.
 
-## 3. Bilingual UI (EN + RU)
+## 4. Bilingual UI (EN + RU)
 
 Every new visible UI string is added in **both** English and Russian — never
 English-only, and never Russian-only unless Akbar explicitly asks. Text lives in
@@ -56,7 +98,7 @@ from `settings.json`, then `JARVIS_UI_LANG`, then `ru`. Don't invent language
 codes or require env vars for normal switching. Existing labels fully apply the new
 language only after an app restart.
 
-## 4. Session context and truthful actions
+## 5. Session context and truthful actions
 
 Jarvis has a runtime-only `SessionContext` (`core/session_context.py`) that keeps
 the last 5 meaningful actions and summarizes sensitive parameters. It never writes
@@ -91,7 +133,7 @@ close, quit, or kill apps without Akbar's confirmation. Keep runtime-warning
 filters narrow and source-specific; don't hide unrelated warnings, downgrade NumPy,
 reinstall PyQt6, or patch third-party packages for log cleanup.
 
-## 5. Universal Device Intelligence (DeviceProfile)
+## 6. Universal Device Intelligence (DeviceProfile)
 
 - Detect the platform through `DeviceProfile` before any platform-specific
   command. Never assume macOS/Windows/Linux, an installed browser, Chrome/Safari,
@@ -113,7 +155,7 @@ reinstall PyQt6, or patch third-party packages for log cleanup.
   `qurilmani qayta tekshir`, `kompyuterni qayta o'rgan`, `Mac'ni qayta tekshir`,
   `Windows'ni qayta tekshir`.
 
-## 6. Universal Cross-Platform Feature Rule — mandatory
+## 7. Universal Cross-Platform Feature Rule — mandatory
 
 Every new Jarvis capability must be designed and implemented for **macOS, Windows,
 and Linux** in parallel. A feature must never ship as a silent macOS-only
@@ -143,7 +185,7 @@ A task is **not** complete merely because it works on the current Mac. Completio
 requires cross-platform architecture, platform routing, safe fallbacks, tests,
 documentation, commit, and push.
 
-## 7. Personal Operations Briefing
+## 8. Personal Operations Briefing
 
 - Automatic startup prepares Akbar's Personal Operations Briefing from verified
   local sources — it must not fetch generic world news.
@@ -183,7 +225,7 @@ documentation, commit, and push.
   route (`core/briefing_routing.py`). Don't add a parallel text-only command system
   that leaves voice commands unprotected.
 
-## 8. Verification, memory discipline, and git
+## 9. Verification, memory discipline, and git
 
 **Verify** before reporting done:
 
@@ -215,14 +257,14 @@ next actions changed. Do not overwrite `memory/long_term.json`.
   the final report. If tests fail, don't commit/push unless Akbar explicitly
   orders it.
 
-## 9. Final report
+## 10. Final report
 
 Every final report to Akbar is **in Uzbek** and covers: what changed (nima
 o'zgardi), files changed (qaysi fayllar), tests/checks and their result
 (tekshiruvlar — say plainly if something failed or was skipped), risks (xavflar),
 and next steps (keyingi qadamlar).
 
-## 10. High-risk files — confirm before editing
+## 11. High-risk files — confirm before editing
 
 - `main.py` — Gemini Live, audio, reconnects, tool declarations, dispatch.
 - `requirements.txt` — dependency versions.

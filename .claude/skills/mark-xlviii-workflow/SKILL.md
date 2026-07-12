@@ -23,8 +23,11 @@ description: >-
 This repo is Akbar's **personal** Mac AI assistant (a Jarvis-style app): Python
 3.12, PyQt6 HUD (`ui.py`), Gemini Live voice + tool-calling (`main.py`), tool
 implementations in `actions/*.py`, and runtime intelligence in `core/*`. It is a
-custom fork of `FatihMakes/Mark-XLVIII` — **not** a commercial product. Treat it
-as personal software: small, reversible, well-explained changes.
+custom fork of `FatihMakes/Mark-XLVIII`. Productization work is authorized, but
+commercial sale/distribution remains blocked until the upstream CC BY-NC,
+PyQt6, branding/assets, and platform-signing gates in
+`docs/PRODUCT_RELEASE_CONTRACT.md` are cleared and documented. Keep every change
+small, reversible, and well explained.
 
 **This skill is the single canonical rulebook for the repo.** `SKILL.md` (this
 file) is the operational checklist; `references/detailed-rules.md` holds the full
@@ -39,6 +42,11 @@ The remaining root docs are **state/context, not rules**, and you still read the
 - `PROJECT_MAP.md` — layer map, dependency graph, "do not edit blindly" list.
 - `NEXT_STEPS.md` — the immediate planned work.
 
+For product, license, payment, update, packaging, or release work, also read
+`docs/PRODUCT_RELEASE_CONTRACT.md`. It is the approved product/release contract,
+not evidence that the described systems are already implemented or commercially
+cleared.
+
 For the exhaustive rules (full cross-platform contract, Personal Briefing / Zerno
 semantics, git/memory discipline, high-risk-file list), read
 `references/detailed-rules.md`.
@@ -50,10 +58,10 @@ semantics, git/memory discipline, high-risk-file list), read
 Do this every session, before touching code. It is cheap and prevents acting on
 stale assumptions.
 
-1. You are already reading the rules (this skill). Skim
-   `references/detailed-rules.md` if the task touches a detailed domain, then read
-   `PROJECT_MEMORY.md`, `PROJECT_MAP.md`, and `NEXT_STEPS.md` for state, map, and
-   next work.
+1. You are already reading the rules (this skill). Read
+   `references/detailed-rules.md`, then read `PROJECT_MEMORY.md`, `PROJECT_MAP.md`,
+   and `NEXT_STEPS.md` for state, map, and next work. For product/release work,
+   also read `docs/PRODUCT_RELEASE_CONTRACT.md`.
 2. Run `git status` to see the real working-tree state.
 3. **Summarize the current project state to Akbar in Uzbek** — what the project
    is, what's changed in the tree, and what the next step is.
@@ -73,6 +81,25 @@ has a reason — honor the reason, not just the letter.
 Prefer the smallest patch that solves the task. Preserve existing behavior unless
 Akbar explicitly asks for a behavior change. Don't refactor opportunistically —
 this app has fragile runtime paths (Gemini Live, audio, reconnects).
+
+### Preserve the product and release entitlement contract
+For product, license, payment, updater, packaging, and release work, preserve
+`docs/PRODUCT_RELEASE_CONTRACT.md`:
+
+- There is exactly one paid product plan; there is no subscription or Lifetime
+  Updates plan.
+- Buying an exact semantic version grants indefinite use of that version.
+- Every newly published semantic version has a separate admin-set price and needs
+  a separate paid entitlement. A rebuild that keeps the same semantic version is
+  not a new paid version.
+- A customer who declines a new version keeps the purchased older version; never
+  add a remote kill switch or make update-server availability a condition for its
+  continued local use.
+- Do not describe, sell, or distribute a commercial release until upstream
+  CC BY-NC rights, the PyQt6 distribution model, branding/assets rights, and
+  platform signing/notarization are cleared and documented.
+- Treat unimplemented payment/license/update/DMG behavior as a target, never as a
+  verified current capability.
 
 ### Never touch the protected files
 These are secret or local-only. Do not print, commit, edit, overwrite, or reset
@@ -243,5 +270,8 @@ tests fail, don't commit unless Akbar explicitly orders it.
 | Localization | `core/i18n.py` (`_MESSAGES`), `config/settings.json` | EN+RU, `ru`/`en` only |
 | Long-term memory | `memory/memory_manager.py`, `memory/long_term.json` | private — don't touch |
 | Prompt/rules | `core/prompt.txt`, `AI_RULES.md`, `CLAUDE.md`, `AGENTS.md` | canonical rules |
+| Product/release contract | `docs/PRODUCT_RELEASE_CONTRACT.md` | approved target + unresolved release gates |
 
-When in doubt, the four canonical docs win over this summary — read them.
+When in doubt, the canonical skill and detailed rules win over this summary; for
+product/release work, the product contract additionally governs the business
+model and release gates.

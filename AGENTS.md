@@ -24,6 +24,11 @@ Then read the **state/context** docs (not rules, but needed): `PROJECT_MEMORY.md
 `PROJECT_MAP.md`, `NEXT_STEPS.md`. If the skill directory or any of these is
 missing, stop and ask Akbar before making code changes.
 
+For product, license, payment, update, packaging, or release work, also read
+`docs/PRODUCT_RELEASE_CONTRACT.md`. It records the approved product target and
+the commercial-distribution gates; it does not claim those systems are already
+implemented or cleared for sale.
+
 ## Every session
 
 1. Load the rules (above).
@@ -33,8 +38,10 @@ missing, stop and ask Akbar before making code changes.
 
 ## Non-negotiable safety floor (full detail in the skill)
 
-- This is Akbar's **personal** fork of `FatihMakes/Mark-XLVIII` — not a commercial
-  product.
+- This is Akbar's **personal** fork of `FatihMakes/Mark-XLVIII`. Productization
+  work is authorized, but commercial sale/distribution remains blocked until the
+  upstream CC BY-NC, PyQt6, branding/assets, and platform-signing gates in
+  `docs/PRODUCT_RELEASE_CONTRACT.md` are cleared and documented.
 - Never expose or commit secrets. Never edit `config/api_keys.json`,
   `memory/long_term.json`, or the gitignored device/Zerno configs unless Akbar
   explicitly asks. Never touch `.venv/`.
@@ -56,7 +63,7 @@ Unlumen UI is an approved optional design library for Jarvis web products only.
 Allowed use cases:
 - Jarvis landing page
 - pricing and license purchase pages
-- account and subscription dashboard
+- account, license, and update dashboard
 - onboarding web flow
 - device and update management dashboard
 - web-based Personal Briefing interface
@@ -83,7 +90,12 @@ Restrictions:
 9. Keep Jarvis core, licensing backend, updater, and platform adapters independent from this UI library.
 10. A web design task must not modify the desktop assistant runtime unless explicitly required.
 
-Current commercial plan:
-- Standard license: user keeps the purchased version; no automatic future updates.
-- Lifetime Updates license: user receives supported future updates automatically.
-- Unlumen UI may be used for the web purchase and license-management interface for these plans.
+Approved product target (subject to the commercial-release gates above):
+- One paid plan only; no subscription and no Lifetime Updates plan.
+- A purchase grants indefinite use of the exact semantic version bought.
+- Every newly published semantic version has its own admin-set price and requires
+  its own paid entitlement; future versions are never granted automatically.
+- Declining an update must never remotely disable or remove the purchased older
+  version.
+- Unlumen UI may be used for the web purchase and license/update-management
+  interface for this model.

@@ -1814,7 +1814,7 @@ class MainWindow(QMainWindow):
     def __init__(self, face_path: str):
         super().__init__()
         self._face_path = face_path
-        self.setWindowTitle("J.A.R.V.I.S — MARK XLVIII")
+        self.setWindowTitle("J.A.R.V.I.S")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -2411,7 +2411,7 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("MARK XLVIII", C.PRI_DIM))
+        lay.addWidget(_badge("JARVIS", C.PRI_DIM))
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
