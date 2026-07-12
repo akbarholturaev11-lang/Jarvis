@@ -1,5 +1,27 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-13 - Naming consistency: drop leftover XLVIII from UI badge + readme
+
+### Added
+
+- HUD footer badge `badge.protocol` (EN + RU) changed from `PROTOCOL / XLVIII` to
+  `PROTOCOL / JARVIS` in `core/i18n.py`, so no visible app string still carries the
+  old MARK number after the rename to Jarvis.
+- `readme.md` reframed: title is now **Jarvis**, described as an AkbarCustom fork of
+  MARK XLVIII (48) by FatihMakes; project-structure folder label `Mark XLVIII/` →
+  `Jarvis/`. Upstream attribution and the CC BY-NC license section were preserved.
+
+### Why
+
+- Follow-up to commit `3a57f8b` (naming cleanup): those two spots still showed the
+  old name, causing visual/documentation inconsistency with the Jarvis rename.
+
+### Verification
+
+- `python -m py_compile main.py ui.py core/i18n.py` → OK.
+- `python -m pytest tests/ -q` → 228 passed, 105 subtests passed.
+- Grep confirms no `XLVIII` remains in any runtime code (`.py/.json/.html/.js`).
+
 ## 2026-07-12 - Mobile app: consistent language, in-app settings, voice reply
 
 ### Problem

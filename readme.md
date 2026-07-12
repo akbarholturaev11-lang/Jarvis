@@ -1,5 +1,5 @@
-# ⚙️ MARK XLVIII (48)
-### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
+# ⚙️ Jarvis
+### Akbar's personal cross-platform AI assistant — an AkbarCustom fork of MARK XLVIII (48) by FatihMakes
 
 > 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/@FatihMakes)**
 
@@ -9,7 +9,7 @@ A real-time voice AI that can hear, see, understand, and control your computer �
 
 ## ✨ Overview
 
-MARK XLVIII is a direct evolution of Mark XLVII — sharper, faster, and more natural to talk to. This build focused entirely on removing every friction point: the silence while JARVIS "thinks," the awkward double-responses, the interrupts that took four seconds to land, the news results that linked to homepages instead of articles. Everything that made the experience feel like software instead of an assistant has been addressed.
+Jarvis is built on **MARK XLVIII** — itself a direct evolution of Mark XLVII — sharper, faster, and more natural to talk to. This build focused entirely on removing every friction point: the silence while JARVIS "thinks," the awkward double-responses, the interrupts that took four seconds to land, the news results that linked to homepages instead of articles. Everything that made the experience feel like software instead of an assistant has been addressed.
 
 It's not just an assistant — it's an extension of your digital life.
 
@@ -106,7 +106,7 @@ python main.py
 ## 🗂️ Project Structure
 
 ```
-Mark XLVIII/
+Jarvis/
 ├── main.py                  # Core loop — Gemini Live session, audio I/O, tool dispatch
 ├── ui.py                    # PyQt6 HUD — waveform, log panel, interrupt button, camera feed
 ├── setup.py                 # First-run configuration wizard
