@@ -82,6 +82,14 @@ The following external gates must be cleared before any customer release:
    - YouTube/media play then `to'xtat` resolves to media pause, not close/settings close.
    - `hali ham o'ynayapti` attaches correction and uses safe fallback without claiming success.
    - message `yubor` follow-ups ask confirmation unless target/chat/delivery are verified.
+8a. Manually verify the universal action-context / follow-up routing in the Mac app:
+   - `Telegramni och` → `endi yop` gracefully quits Telegram (no force-kill) and only claims success when verified closed.
+   - `musiqa qo'y` → `to'xtat` → `davom ettir` pauses then resumes the same media target.
+   - browser page → `orqaga qayt` goes back; `NEXT_STEPS.md'ni och` → `endi tahrir qil` targets the same file.
+   - reminder create → `vaqtini o'zgartir` finds the reminder and honestly says the old one is not auto-removed.
+   - `yana qil` re-runs a safe action (web search) but asks confirmation before repeating a message/close.
+   - `orqaga qaytar` after `open_app` closes it; after a sent message returns an honest "cannot undo".
+   - open an app, run an unrelated stats query, then `<app>ni yop` — the app target is not lost.
 9. Manually verify Personal Operations Briefing in the full Gemini Live app:
    - Start the app and confirm startup gives Personal Operations Briefing, not generic world news.
    - Say `men uydaman` and confirm the `personal_briefing` route is used.

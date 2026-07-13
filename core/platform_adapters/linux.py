@@ -182,6 +182,51 @@ class LinuxAdapter(PlatformAdapter):
         except Exception as e:
             return False, str(e)
 
+    def close_app(self, app_name: str) -> tuple[bool | None, str]:
+        name = (app_name or "").strip()
+        if not name:
+            return False, "No application name provided."
+        import time
+
+        # Prefer a graceful window close via wmctrl.
+        if self._which("wmctrl"):
+            proc = self._run(["wmctrl", "-c", name], timeout=4.0)
+            if proc and proc.returncode == 0:
+                time.sleep(0.4)
+                running = self._process_running(name)
+                if running is False:
+                    return True, f"{name} closed and verified via wmctrl."
+                if running is True:
+                    return None, f"Close request sent to {name} via wmctrl, but it is still running."
+                return None, f"Close request sent to {name} via wmctrl; running state was not verified."
+        # Fallback: graceful SIGTERM via pkill (never SIGKILL by default).
+        pkill = self._which("pkill")
+        if pkill:
+            proc = self._run([pkill, "-TERM", "-f", name], timeout=4.0)
+            if proc is not None and proc.returncode in (0, 1):
+                time.sleep(0.4)
+                running = self._process_running(name)
+                if running is False:
+                    return True, f"{name} terminated and verified (SIGTERM)."
+                if running is True:
+                    return None, f"SIGTERM sent to {name}, but it is still running."
+                return None, f"SIGTERM sent to {name}; running state was not verified."
+            return False, "pkill could not terminate the process on Linux."
+        return False, "No wmctrl or pkill available for app close on Linux."
+
+    def _process_running(self, name: str) -> bool | None:
+        pgrep = self._which("pgrep")
+        if not pgrep:
+            return None
+        proc = self._run([pgrep, "-f", name], timeout=2.0)
+        if proc is None:
+            return None
+        if proc.returncode == 0:
+            return True
+        if proc.returncode == 1:
+            return False
+        return None
+
     def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
         exe = self._which("systemd-inhibit")
         if not exe:

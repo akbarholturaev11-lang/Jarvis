@@ -1,5 +1,57 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-13 - Universal action-context & follow-up execution
+
+### Problem
+
+Jarvis forgot the *target* of an action on short follow-ups: after opening media
+in ChatGPT Atlas, "endi o'chir" sent a generic media key and then asked "which
+app?"; the same target-loss happened for apps, browser pages, files, messages,
+reminders, searches and settings. The prior `SessionContext` was mostly
+media/browser/message-shaped.
+
+### Fix
+
+- Extended `core/session_context.py` into a universal action-context layer:
+  richer `ActionRecord` (`action_id`, `action_category`, `action_name`,
+  `target_type/url/file/project`, `operation`, `reversible`,
+  `available_followups`, `undo_action`, `started_at/completed_at`), a shared
+  `classify_action()` normalizer so every tool is recorded uniformly, and a
+  per-category target stack (`category_targets`) that survives deque eviction so
+  an unrelated action never loses another category's target.
+- Broadened `resolve_follow_up()` with a universal intent layer:
+  `app_close`, `media_resume` (davom ettir), `browser_back` (orqaga qayt),
+  `repeat` (yana qil — safe re-run vs. confirmation for side-effecting actions),
+  `undo` (orqaga qaytar — inverse tool or honest unsupported, never a fake
+  reversal), `file_edit/move` target, `reminder_reschedule`, `open_search_result`
+  — while preserving all existing media/browser/message/correction behavior.
+- Added a real cross-platform `close_app` capability: `close_app` on all four
+  platform adapters (macOS graceful `quit`, Windows `taskkill` without `/F`,
+  Linux `wmctrl -c` / `pkill -TERM`), a new `actions/app_control.py`, and its
+  `main.py` tool declaration, dispatch, DeviceProfile preflight and intent
+  description. Media control still never closes apps.
+- Enforcement lives in `main.py::_execute_tool` (not prompt-only): the follow-up
+  block reroutes name/args for the new intents; a stored `_last_executed` powers
+  safe repeat; high-confidence app-close (an app we opened this session) runs
+  directly, otherwise it confirms.
+
+### Constraints kept
+
+- Truthful status vocabulary unchanged; success only on verified results; no fake
+  undo. Reminder reschedule creates a new reminder and states honestly that the
+  old one is not auto-removed.
+- Cross-platform via adapters; SessionContext stays semantic/platform-neutral.
+- No parallel command system — existing `SessionContext` + `_execute_tool` were
+  extended. Zerno, PyQt6, reminder audio-delivery and remote-tunnel logic
+  untouched. Product-release branch files untouched.
+
+### Verification
+
+- `py_compile` on all changed modules; `pytest tests/` → 447 passed
+  (+23 new: `tests/test_session_context.py` universal scenarios,
+  `tests/test_close_app.py` adapter parity + action mapping). `git diff --check`
+  clean.
+
 ## 2026-07-13 - Exact-version product, commerce, activation and release foundation
 
 ### Added

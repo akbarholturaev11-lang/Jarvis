@@ -189,6 +189,50 @@ class MacOSAdapter(PlatformAdapter):
         detail = (proc.stderr if proc else "") or "osascript media key failed"
         return False, detail.strip()
 
+    def close_app(self, app_name: str) -> tuple[bool | None, str]:
+        name = (app_name or "").strip()
+        if not name:
+            return False, "No application name provided."
+        if not self._which("osascript"):
+            return False, "osascript not available for app close on macOS."
+        # Graceful quit — asks the app to quit (it may still prompt to save),
+        # never a hard SIGKILL.
+        quit_proc = self._run(
+            ["osascript", "-e", f'tell application "{name}" to quit'],
+            timeout=6.0,
+        )
+        if not quit_proc or quit_proc.returncode != 0:
+            detail = (quit_proc.stderr if quit_proc else "") or "osascript quit failed"
+            return False, detail.strip()
+        # Give the app a moment to terminate, then verify.
+        import time
+
+        time.sleep(0.5)
+        running = self._app_is_running(name)
+        if running is True:
+            return None, f"Quit request sent to {name}, but it is still running (it may be prompting to save)."
+        if running is False:
+            return True, f"{name} quit and verified closed."
+        return None, f"Quit request sent to {name}; running state could not be verified."
+
+    def _app_is_running(self, name: str) -> bool | None:
+        proc = self._run(
+            [
+                "osascript",
+                "-e",
+                f'tell application "System Events" to (name of processes) contains "{name}"',
+            ],
+            timeout=2.0,
+        )
+        if not proc or proc.returncode != 0:
+            return None
+        out = (proc.stdout or "").strip().lower()
+        if out == "true":
+            return True
+        if out == "false":
+            return False
+        return None
+
     def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
         exe = self._which("caffeinate")
         if not exe:

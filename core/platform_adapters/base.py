@@ -304,6 +304,16 @@ class PlatformAdapter:
     def media_pause(self, target_app: str = "") -> tuple[bool | None, str]:
         return None, f"Media control is unsupported on {self.os_key}."
 
+    # ── graceful app close ────────────────────────────────────────────────────
+    # Contract: close_app(app_name) returns (ok, detail).
+    #   ok is True  → the app is verified no longer running (graceful quit).
+    #   ok is None  → a quit request was sent but the result could not be verified.
+    #   ok is False → the close failed or is unsupported on this OS.
+    # Adapters must request a graceful quit, never a hard kill by default, and must
+    # never fake a success. Per-OS adapters override this honest fallback.
+    def close_app(self, app_name: str) -> tuple[bool | None, str]:
+        return False, f"App close is unsupported on {self.os_key}."
+
     # ── keep-awake (prevent OS idle sleep during a remote session) ────────────
     # Contract: prevent_sleep() returns (token, status). A non-None token means
     # success and must be passed back to release_sleep() to undo. None means the

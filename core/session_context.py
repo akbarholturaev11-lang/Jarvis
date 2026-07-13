@@ -4,8 +4,9 @@ import json
 import platform
 import re
 import subprocess
+import uuid
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,53 @@ from typing import Any
 MAX_ACTIONS = 5
 SUMMARY_LIMIT = 160
 PARAM_LIMIT = 220
+
+# ── Universal action categories ────────────────────────────────────────────
+# Platform-neutral semantic buckets. Execution stays in the platform adapters;
+# SessionContext only stores the semantic target + metadata per category.
+ACTION_CATEGORY_APP = "app_lifecycle"
+ACTION_CATEGORY_BROWSER = "browser"
+ACTION_CATEGORY_MEDIA = "media"
+ACTION_CATEGORY_FILE = "file"
+ACTION_CATEGORY_MESSAGING = "messaging"
+ACTION_CATEGORY_REMINDER = "reminder"
+ACTION_CATEGORY_SEARCH = "search"
+ACTION_CATEGORY_SCREEN = "screen"
+ACTION_CATEGORY_CAMERA = "camera"
+ACTION_CATEGORY_SETTINGS = "settings"
+ACTION_CATEGORY_BRIEFING = "briefing"
+ACTION_CATEGORY_SYSTEM = "system"
+ACTION_CATEGORY_DEV = "dev"
+ACTION_CATEGORY_OTHER = "other"
+
+# Tools that are safe to re-run verbatim on a "yana qil" / "do it again" repeat.
+SAFE_REPEATABLE_TOOLS = {
+    "web_search",
+    "open_app",
+    "personal_briefing",
+    "system_status",
+    "device_profile",
+    "weather_report",
+    "screen_process",
+}
+# Tools whose repeat has a side effect and therefore needs confirmation.
+DANGEROUS_REPEAT_TOOLS = {
+    "send_message",
+    "reminder",
+    "shutdown_jarvis",
+    "close_app",
+}
+# file_controller sub-actions that mutate the filesystem and must not auto-repeat.
+DANGEROUS_FILE_ACTIONS = {
+    "delete",
+    "move",
+    "write",
+    "rename",
+    "create_file",
+    "create_folder",
+    "copy",
+    "organize_desktop",
+}
 
 BROWSER_NAMES = {
     "chrome",
@@ -173,6 +221,42 @@ _VAGUE_PATTERNS = (
     r"\bотмени\b",
     r"\bhali ham o['‘’`]?ynayapti\b",
     r"\bstill playing\b",
+    # ── Universal follow-up vocabulary ──────────────────────────────────
+    r"\bdavom ettir\b",
+    r"\bdavom et\b",
+    r"\bresume\b",
+    r"\bcontinue\b",
+    r"\bпродолжи\b",
+    r"\byana qil\b",
+    r"\byana bir marta\b",
+    r"\bqayta qil\b",
+    r"\bagain\b",
+    r"\bопять\b",
+    r"\bснова\b",
+    r"\borqaga qaytar\b",
+    r"\bavvalgisiga qayt\b",
+    r"\bavvalgiga qayt\b",
+    r"\bundo\b",
+    r"\bверни\b",
+    r"\borqaga qayt\b",
+    r"\borqaga\b",
+    r"\bback\b",
+    r"\bназад\b",
+    r"\btahrir qil\b",
+    r"\btahrirla\b",
+    r"\bedit\b",
+    r"\bko['‘’`]?chir\b",
+    r"\bboshqa joyga\b",
+    r"\bmove (it|this|that)?\b",
+    r"\bvaqtini o['‘’`]?zgartir\b",
+    r"\bvaqtni o['‘’`]?zgartir\b",
+    r"\breschedule\b",
+    r"\bikkinchisini och\b",
+    r"\bbirinchisini och\b",
+    r"\bshuni och\b",
+    r"\bboshqasini tanla\b",
+    r"\bbu emas\b",
+    r"\bu emas\b",
 )
 
 _CORRECTION_PATTERNS = (
@@ -196,6 +280,10 @@ _CORRECTION_PATTERNS = (
     r"\bdidn['’]?t work\b",
     r"\bне так\b",
     r"\bнеправильно\b",
+    r"\bbu emas\b",
+    r"\bu emas\b",
+    r"\bboshqasini tanla\b",
+    r"\bmen ochgan emas\b",
 )
 
 
@@ -213,6 +301,20 @@ class ActionRecord:
     verified: bool
     user_visible_claim: str
     user_correction: str = ""
+    # ── Universal action-context fields (optional; never force-filled) ──────
+    action_id: str = ""
+    action_category: str = ""
+    action_name: str = ""
+    target_type: str = ""
+    target_url: str = ""
+    target_file: str = ""
+    target_project: str = ""
+    operation: str = ""
+    reversible: bool | None = None
+    available_followups: list[str] = field(default_factory=list)
+    undo_action: dict[str, Any] | None = None
+    started_at: str = ""
+    completed_at: str = ""
 
 
 def _now_iso() -> str:
@@ -340,6 +442,91 @@ def _is_what_done_text(lowered_text: str) -> bool:
     return _contains_any(lowered_text, ("nima qilding", "what did you do"))
 
 
+def _is_resume_text(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "davom ettir",
+            "davom et",
+            "resume",
+            "continue",
+            "продолж",
+        ),
+    )
+
+
+def _is_repeat_text(lowered_text: str) -> bool:
+    if _contains_any(lowered_text, ("yana qil", "qayta qil", "yana bir marta")):
+        return True
+    return bool(re.search(r"\b(do (it )?again|again|redo)\b", lowered_text)) or _contains_any(
+        lowered_text, ("опять", "снова")
+    )
+
+
+def _is_undo_text(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "orqaga qaytar",
+            "avvalgisiga qayt",
+            "avvalgiga qayt",
+            "bekor qil",
+            "undo",
+            "верни",
+            "отмени",
+        ),
+    )
+
+
+def _is_back_text(lowered_text: str) -> bool:
+    # "orqaga qaytar" is undo, not browser-back — so match "qayt" only on a word
+    # boundary (excludes "qaytar") and require a browser-navigation flavour.
+    if _is_undo_text(lowered_text):
+        return False
+    return bool(re.search(r"\borqaga qayt\b", lowered_text)) or _contains_any(
+        lowered_text, ("back", "назад")
+    ) or bool(re.search(r"\borqaga\b", lowered_text))
+
+
+def _is_edit_text(lowered_text: str) -> bool:
+    return _contains_any(lowered_text, ("tahrir qil", "tahrirla", "edit"))
+
+
+def _is_move_text(lowered_text: str) -> bool:
+    return bool(re.search(r"\bko['‘’`]?chir\b", lowered_text)) or _contains_any(
+        lowered_text, ("boshqa joyga", "move it", "move this", "move that")
+    )
+
+
+def _is_reschedule_text(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "vaqtini o'zgartir",
+            "vaqtini o‘zgartir",
+            "vaqtini o’zgartir",
+            "vaqtni o'zgartir",
+            "vaqtni o‘zgartir",
+            "reschedule",
+        ),
+    )
+
+
+def _is_open_result_text(lowered_text: str) -> bool:
+    return _contains_any(
+        lowered_text,
+        (
+            "ikkinchisini och",
+            "birinchisini och",
+            "uchinchisini och",
+            "shuni och",
+            "boshqasini tanla",
+            "open the second",
+            "open the first",
+        ),
+    )
+
+
 def _safe_param_value(key: str, value: Any) -> Any:
     if _is_sensitive_key(key):
         return "[redacted]"
@@ -405,6 +592,23 @@ def infer_result_status(tool_name: str, result: Any) -> tuple[str, bool]:
             return "success", True
         return "failed", False
 
+    if tool_name == "close_app":
+        if any(
+            marker in text
+            for marker in (
+                "verified closed",
+                "closed and verified",
+                "quit and verified",
+                "terminated and verified",
+                "already closed",
+                "is not running",
+            )
+        ):
+            return "success", True
+        if text.startswith("could not") or "failed" in text or "unsupported" in text or "no application name" in text:
+            return "failed", False
+        return "uncertain", False
+
     if any(pattern in text for pattern in _CONFIRMATION_PATTERNS):
         return "needs_confirmation", False
     if any(pattern in text for pattern in _UNCERTAIN_PATTERNS):
@@ -450,6 +654,235 @@ def detect_active_app() -> str:
     return ""
 
 
+def classify_action(tool_name: str, parameters: dict[str, Any] | None) -> dict[str, Any]:
+    """Typed, shared normalizer: map any tool call to a platform-neutral
+    action-context record. Kept here (not in main.py) so recording stays a
+    single shared path and the dispatcher does not accrue per-tool branches.
+
+    Returns semantic metadata only — never a platform-specific command.
+    Missing fields stay empty / None; they are never force-filled.
+    """
+    params = parameters or {}
+    action = str(params.get("action") or "").strip().lower().replace("-", "_")
+    info: dict[str, Any] = {
+        "action_category": ACTION_CATEGORY_OTHER,
+        "action_name": tool_name,
+        "target_type": "",
+        "target_name": "",
+        "target_url": "",
+        "target_file": "",
+        "target_project": "",
+        "operation": action,
+        "reversible": None,
+        "available_followups": [],
+        "undo_action": None,
+    }
+
+    if tool_name == "open_app":
+        app = _short_text(params.get("app_name"), 90)
+        info.update(
+            action_category=ACTION_CATEGORY_APP,
+            action_name="open_app",
+            target_type="application",
+            target_name=app,
+            operation="open",
+            reversible=True,
+            available_followups=["close", "focus", "reopen"],
+            undo_action=({"tool": "close_app", "args": {"app_name": app}} if app else None),
+        )
+    elif tool_name == "close_app":
+        app = _short_text(params.get("app_name"), 90)
+        info.update(
+            action_category=ACTION_CATEGORY_APP,
+            action_name="close_app",
+            target_type="application",
+            target_name=app,
+            operation="close",
+            reversible=True,
+            available_followups=["reopen"],
+            undo_action=({"tool": "open_app", "args": {"app_name": app}} if app else None),
+        )
+    elif tool_name == "youtube_video":
+        target_app = _short_text(params.get("target_app"), 90)
+        url = _short_text(params.get("url"), 200)
+        query = _short_text(params.get("query"), 120)
+        info.update(
+            action_category=ACTION_CATEGORY_MEDIA,
+            action_name="play",
+            target_type="media",
+            target_name=query or url or target_app,
+            target_url=url,
+            operation=action or "play",
+            reversible=True,
+            available_followups=["pause", "resume", "stop", "close_tab"],
+            undo_action={"tool": "media_control", "args": {"action": "pause", "target_app": target_app}},
+        )
+    elif tool_name == "media_control":
+        target_app = _short_text(params.get("target_app"), 90)
+        op = action or "pause"
+        undo = None
+        if op in ("pause", "media_pause", "stop", "media_stop"):
+            undo = {"tool": "media_control", "args": {"action": "play_pause", "target_app": target_app}}
+        info.update(
+            action_category=ACTION_CATEGORY_MEDIA,
+            action_name=op,
+            target_type="media",
+            target_name=target_app or _short_text(params.get("target_context"), 90),
+            operation=op,
+            reversible=True,
+            available_followups=["resume", "stop"],
+            undo_action=undo,
+        )
+    elif tool_name == "browser_control":
+        browser = _normalize_browser_name(params.get("browser")) or _short_text(params.get("browser"), 90)
+        url = _short_text(params.get("url"), 200)
+        op = action or "go_to"
+        undo = None
+        if op in ("go_to", "search", "new_tab", "click", "smart_click"):
+            undo = {"tool": "browser_control", "args": {"action": "back", "browser": browser}}
+        info.update(
+            action_category=ACTION_CATEGORY_BROWSER,
+            action_name=op,
+            target_type="web_page",
+            target_name=browser,
+            target_url=url,
+            operation=op,
+            reversible=op in ("go_to", "search", "new_tab"),
+            available_followups=["back", "reload", "close_tab"],
+            undo_action=undo,
+        )
+    elif tool_name in ("file_controller", "file_processor"):
+        path = _short_text(params.get("file_path") or params.get("path"), 200)
+        op = action or ("process" if tool_name == "file_processor" else "")
+        destructive = op in DANGEROUS_FILE_ACTIONS
+        info.update(
+            action_category=ACTION_CATEGORY_FILE,
+            action_name=op or tool_name,
+            target_type="file",
+            target_name=path,
+            target_file=path,
+            operation=op,
+            # File mutations have no safe automatic undo — stay honest (None/False),
+            # never fabricate an undo_action.
+            reversible=(False if op == "delete" else None),
+            available_followups=([] if destructive else ["edit", "move", "rename", "delete"]),
+            undo_action=None,
+        )
+    elif tool_name == "send_message":
+        platform_name = _short_text(params.get("platform"), 90)
+        receiver = _short_text(params.get("receiver"), 120)
+        info.update(
+            action_category=ACTION_CATEGORY_MESSAGING,
+            action_name="draft_or_send",
+            target_type="conversation",
+            target_name=receiver,
+            operation=action or "send",
+            reversible=False,
+            available_followups=["edit", "send", "cancel"],
+            undo_action=None,
+        )
+    elif tool_name == "reminder":
+        msg = _short_text(params.get("message"), 120)
+        info.update(
+            action_category=ACTION_CATEGORY_REMINDER,
+            action_name="create",
+            target_type="reminder",
+            target_name=msg,
+            operation="create",
+            reversible=None,
+            available_followups=["reschedule", "cancel"],
+            undo_action=None,
+        )
+    elif tool_name == "web_search":
+        items = params.get("items") or []
+        query = _short_text(params.get("query") or ", ".join(str(i) for i in items), 120)
+        info.update(
+            action_category=ACTION_CATEGORY_SEARCH,
+            action_name="search",
+            target_type="search",
+            target_name=query,
+            operation=str(params.get("mode") or "search"),
+            reversible=True,
+            available_followups=["open_result", "refine"],
+            undo_action=None,
+        )
+    elif tool_name == "screen_process":
+        angle = str(params.get("angle") or "screen").lower()
+        if angle == "camera":
+            info.update(
+                action_category=ACTION_CATEGORY_CAMERA,
+                action_name="camera",
+                target_type="camera",
+                operation="capture",
+                reversible=True,
+                available_followups=["reanalyze", "close"],
+                undo_action={"tool": "close_camera", "args": {}},
+            )
+        else:
+            info.update(
+                action_category=ACTION_CATEGORY_SCREEN,
+                action_name="screen",
+                target_type="screen",
+                operation="capture",
+                reversible=True,
+                available_followups=["reanalyze"],
+                undo_action=None,
+            )
+    elif tool_name in ("computer_settings", "computer_control", "desktop_control"):
+        info.update(
+            action_category=ACTION_CATEGORY_SETTINGS,
+            action_name=tool_name,
+            target_type="setting",
+            target_name=_short_text(params.get("description") or params.get("action"), 90),
+            operation=action,
+            reversible=None,
+            available_followups=["toggle_back"],
+            undo_action=None,
+        )
+    elif tool_name == "personal_briefing":
+        info.update(
+            action_category=ACTION_CATEGORY_BRIEFING,
+            action_name="briefing",
+            target_type="briefing",
+            operation="briefing",
+            reversible=True,
+            available_followups=["refresh"],
+            undo_action=None,
+        )
+    elif tool_name in ("system_status", "device_profile", "weather_report"):
+        info.update(
+            action_category=ACTION_CATEGORY_SYSTEM,
+            action_name=tool_name,
+            operation=action,
+            reversible=True,
+            available_followups=["refresh"],
+        )
+    elif tool_name in ("code_helper", "dev_agent", "game_updater", "flight_finder"):
+        info.update(
+            action_category=ACTION_CATEGORY_DEV,
+            action_name=tool_name,
+            operation=action,
+        )
+
+    return info
+
+
+def _is_repeat_safe_record(record: ActionRecord) -> bool:
+    """A repeat ('yana qil') is safe only for read-only / re-openable actions."""
+    tool = record.tool_name
+    if tool in DANGEROUS_REPEAT_TOOLS:
+        return False
+    if tool == "file_controller" and (record.operation or "") in DANGEROUS_FILE_ACTIONS:
+        return False
+    if tool == "file_processor":
+        return True
+    if tool == "browser_control":
+        return (record.operation or "") in ("go_to", "search", "get_text", "get_url", "screenshot", "reload", "")
+    if tool in ("media_control", "youtube_video"):
+        return True
+    return tool in SAFE_REPEATABLE_TOOLS
+
+
 class SessionContext:
     """Runtime-only short-term action context for the current assistant process."""
 
@@ -462,6 +895,12 @@ class SessionContext:
         self.last_media_search_browser_action = ""
         self.last_message_contact_action = ""
         self.last_file_action_target = ""
+        # ── Per-category last-target stack ─────────────────────────────────
+        # These survive deque eviction so an unrelated action in another
+        # category never loses the target of an earlier category. Each holds a
+        # small dict: {action_id, target, target_app, result_status, verified,
+        # opened_by_us, tool_name}.
+        self.category_targets: dict[str, dict[str, Any]] = {}
 
     def record_action(
         self,
@@ -483,11 +922,14 @@ class SessionContext:
         if verified is None:
             verified = inferred_verified
 
-        target_app, target_context = self._extract_targets(tool_name, tool_parameters or {})
+        params = tool_parameters or {}
+        target_app, target_context = self._extract_targets(tool_name, params)
         claim = user_visible_claim or truthful_claim(result_status, verified)
+        semantic = classify_action(tool_name, params)
+        now = _now_iso()
 
         record = ActionRecord(
-            timestamp=_now_iso(),
+            timestamp=now,
             user_text=_short_text(user_text),
             assistant_intent=_short_text(assistant_intent),
             tool_name=tool_name,
@@ -499,9 +941,22 @@ class SessionContext:
             verified=bool(verified),
             user_visible_claim=_short_text(claim),
             user_correction="",
+            action_id=uuid.uuid4().hex[:8],
+            action_category=semantic["action_category"],
+            action_name=semantic["action_name"],
+            target_type=semantic["target_type"],
+            target_url=_short_text(semantic["target_url"], 200),
+            target_file=_short_text(semantic["target_file"], 200),
+            target_project=_short_text(semantic["target_project"], 120),
+            operation=semantic["operation"],
+            reversible=semantic["reversible"],
+            available_followups=list(semantic["available_followups"]),
+            undo_action=semantic["undo_action"],
+            started_at=now,
+            completed_at=now,
         )
         self.actions.append(record)
-        self._update_recent_targets(record, tool_parameters or {}, active_app)
+        self._update_recent_targets(record, params, active_app)
         return record
 
     def observe_user_text(self, user_text: str) -> bool:
@@ -533,6 +988,14 @@ class SessionContext:
             return {}
 
         recent = list(self.actions)[-lookback:]
+
+        # ── Universal high-level intents (repeat/undo/resume/back/edit/move/
+        # reschedule/open-result/app-close) are resolved before the legacy
+        # send/media/close chain so the same architecture covers every category.
+        universal = self._resolve_universal_intent(lowered, recent)
+        if universal is not None:
+            return universal
+
         selected = self._select_relevant_record(lowered, recent)
         if not selected:
             return {
@@ -623,7 +1086,295 @@ class SessionContext:
             "previous_correction": selected.user_correction,
             "parameter_hints": parameter_hints,
             "must_not_claim_completed": selected.result_status != "success" or not selected.verified,
+            "resolved_from_action_id": selected.action_id,
         }
+
+    # ── Universal intent resolution ─────────────────────────────────────────
+    def _make_resolution(self, selected: ActionRecord | None, **overrides: Any) -> dict[str, Any]:
+        base: dict[str, Any] = {
+            "resolved_intent": "repeat_context",
+            "target_context": self._resolution_target_context(selected) if selected else {},
+            "confidence": "medium",
+            "reason": "",
+            "needs_confirmation": False,
+            "source_tool": selected.tool_name if selected else "",
+            "suggested_tool": selected.tool_name if selected else "",
+            "suggested_action": "",
+            "target_app": selected.target_app if selected else "",
+            "target_context_text": selected.target_context if selected else "",
+            "previous_result_status": selected.result_status if selected else "",
+            "previous_verified": selected.verified if selected else False,
+            "previous_correction": selected.user_correction if selected else "",
+            "parameter_hints": {},
+            "must_not_claim_completed": (
+                (selected.result_status != "success" or not selected.verified) if selected else True
+            ),
+            "resolved_from_action_id": selected.action_id if selected else "",
+        }
+        base.update(overrides)
+        return base
+
+    def _last_record_matching(self, recent, predicate) -> ActionRecord | None:
+        for record in reversed(recent):
+            if predicate(record):
+                return record
+        return None
+
+    def _resolve_universal_intent(self, lowered: str, recent: list[ActionRecord]) -> dict[str, Any] | None:
+        if _is_repeat_text(lowered):
+            return self._resolution_repeat(recent)
+
+        if _is_undo_text(lowered):
+            return self._resolution_undo(recent)
+
+        if _is_resume_text(lowered):
+            rec = self._last_record_matching(recent, self._record_is_media_context)
+            return self._resolution_media_resume(rec) if rec else None
+
+        if _is_reschedule_text(lowered):
+            rec = self._last_record_matching(
+                recent, lambda r: r.action_category == ACTION_CATEGORY_REMINDER
+            )
+            return self._resolution_reminder_reschedule(rec)
+
+        if _is_edit_text(lowered):
+            rec = self._last_record_matching(
+                recent, lambda r: r.action_category == ACTION_CATEGORY_FILE
+            )
+            if rec or self.last_file_action_target:
+                return self._resolution_file_target(rec, "file_edit_target")
+            return None
+
+        if _is_move_text(lowered):
+            rec = self._last_record_matching(
+                recent, lambda r: r.action_category == ACTION_CATEGORY_FILE
+            )
+            if rec or self.last_file_action_target:
+                return self._resolution_file_target(rec, "file_move_target")
+            return None
+
+        if _is_open_result_text(lowered):
+            rec = self._last_record_matching(
+                recent, lambda r: r.action_category == ACTION_CATEGORY_SEARCH
+            )
+            return self._resolution_open_result(rec)
+
+        if _is_back_text(lowered):
+            rec = self._last_record_matching(recent, self._record_is_browser_context)
+            return self._resolution_browser_back(rec) if rec else None
+
+        if _is_close_text(lowered) and not _is_media_stop_text(lowered):
+            kind, rec = self._select_close_record(recent)
+            if kind == "app" and rec is not None:
+                return self._resolution_app_close(rec)
+            # browser / none → fall through to the legacy browser-close/clarify chain.
+            return None
+
+        return None
+
+    def _resolution_repeat(self, recent: list[ActionRecord]) -> dict[str, Any]:
+        last = recent[-1] if recent else None
+        if not last:
+            return {
+                "resolved_intent": "clarify",
+                "target_context": {},
+                "confidence": "low",
+                "needs_confirmation": True,
+                "reason": "Nothing to repeat yet.",
+            }
+        safe = _is_repeat_safe_record(last)
+        return self._make_resolution(
+            last,
+            resolved_intent="repeat",
+            suggested_tool=last.tool_name,
+            confidence="high" if safe else "medium",
+            needs_confirmation=not safe,
+            reason=(
+                "Repeating the last safe/read-only action with the same parameters."
+                if safe
+                else "The last action has a side effect; repeating needs confirmation."
+            ),
+            repeat_tool=last.tool_name,
+            repeat_safe=safe,
+        )
+
+    def _resolution_undo(self, recent: list[ActionRecord]) -> dict[str, Any]:
+        last = recent[-1] if recent else None
+        if not last:
+            return {
+                "resolved_intent": "clarify",
+                "target_context": {},
+                "confidence": "low",
+                "needs_confirmation": True,
+                "reason": "Nothing to undo yet.",
+            }
+        if last.undo_action:
+            return self._make_resolution(
+                last,
+                resolved_intent="undo",
+                undo_action=last.undo_action,
+                suggested_tool=str(last.undo_action.get("tool", "")),
+                confidence="high",
+                needs_confirmation=False,
+                reason="Reversing the last action via its inverse operation.",
+            )
+        if last.action_category == ACTION_CATEGORY_MESSAGING:
+            return self._make_resolution(
+                last,
+                resolved_intent="message_cancel",
+                confidence="medium",
+                needs_confirmation=False,
+                reason="Cancelling the message draft; nothing was sent.",
+            )
+        return self._make_resolution(
+            last,
+            resolved_intent="undo_unsupported",
+            confidence="medium",
+            needs_confirmation=False,
+            reason="The last action cannot be truthfully undone; do not claim it was reversed.",
+        )
+
+    def _resolution_media_resume(self, rec: ActionRecord) -> dict[str, Any]:
+        target_app = self._media_target_app(rec)
+        hints: dict[str, Any] = {}
+        if target_app:
+            hints["target_app"] = target_app
+        if rec.target_context:
+            hints["target_context"] = rec.target_context
+        return self._make_resolution(
+            rec,
+            resolved_intent="media_resume",
+            suggested_tool="media_control",
+            suggested_action="play_pause",
+            confidence="high",
+            needs_confirmation=False,
+            reason="Resume follow-up matched recent media/playback context.",
+            parameter_hints=hints,
+        )
+
+    def _resolution_browser_back(self, rec: ActionRecord) -> dict[str, Any]:
+        browser = _normalize_browser_name(rec.target_app)
+        hints = {"browser": browser} if browser else {}
+        return self._make_resolution(
+            rec,
+            resolved_intent="browser_back",
+            suggested_tool="browser_control",
+            suggested_action="back",
+            confidence="high",
+            needs_confirmation=False,
+            reason="Back follow-up matched recent browser/page context.",
+            parameter_hints=hints,
+        )
+
+    def _resolution_app_close(self, rec: ActionRecord) -> dict[str, Any]:
+        app = rec.target_app
+        opened_by_us = (
+            rec.tool_name == "open_app"
+            and rec.result_status == "success"
+            and rec.verified
+        )
+        high = bool(app) and opened_by_us
+        hints = {"app_name": app} if app else {}
+        return self._make_resolution(
+            rec,
+            resolved_intent="app_close",
+            suggested_tool="close_app",
+            suggested_action="close",
+            confidence="high" if high else ("medium" if app else "low"),
+            # High confidence + app we opened → close directly; otherwise confirm.
+            needs_confirmation=not high,
+            reason=(
+                "Close follow-up matched an app we opened this session."
+                if high
+                else "Close follow-up matched an app target; confirm before quitting."
+            ),
+            parameter_hints=hints,
+        )
+
+    def _resolution_reminder_reschedule(self, rec: ActionRecord | None) -> dict[str, Any]:
+        if not rec:
+            return {
+                "resolved_intent": "reminder_reschedule",
+                "target_context": {},
+                "confidence": "low",
+                "needs_confirmation": True,
+                "reason": "No recent reminder found to reschedule.",
+            }
+        message = rec.target_context or rec.target_app
+        hints = {"message": message} if message else {}
+        return self._make_resolution(
+            rec,
+            resolved_intent="reminder_reschedule",
+            suggested_tool="reminder",
+            confidence="medium",
+            needs_confirmation=False,
+            reason=(
+                "Found the recent reminder. Rescheduling creates a new reminder at the new "
+                "time; the old one is not auto-removed — say so honestly."
+            ),
+            parameter_hints=hints,
+            reschedule_recreates=True,
+        )
+
+    def _resolution_file_target(self, rec: ActionRecord | None, intent: str) -> dict[str, Any]:
+        path = (rec.target_file or rec.target_context) if rec else self.last_file_action_target
+        hints = {"file_path": path, "path": path} if path else {}
+        return self._make_resolution(
+            rec,
+            resolved_intent=intent,
+            suggested_tool="file_controller",
+            confidence="medium",
+            needs_confirmation=False,
+            reason="Follow-up matched the most recent file target.",
+            parameter_hints=hints,
+        )
+
+    def _resolution_open_result(self, rec: ActionRecord | None) -> dict[str, Any]:
+        if not rec:
+            return {
+                "resolved_intent": "open_search_result",
+                "target_context": {},
+                "confidence": "low",
+                "needs_confirmation": True,
+                "reason": "No recent search to open a result from.",
+            }
+        return self._make_resolution(
+            rec,
+            resolved_intent="open_search_result",
+            confidence="low",
+            needs_confirmation=True,
+            reason="Which search result to open is ambiguous; confirm the choice.",
+            parameter_hints={"query": rec.target_context} if rec.target_context else {},
+        )
+
+    def _select_close_record(self, recent: list[ActionRecord]) -> tuple[str | None, ActionRecord | None]:
+        """Pick the most recent app-open OR browser record for a 'yop'/close
+        follow-up. App-open (non-browser) → app close; browser → browser close."""
+        for record in reversed(recent):
+            if self._record_is_browser_context(record):
+                return "browser", record
+            if record.tool_name in ("open_app", "close_app") and not _normalize_browser_name(record.target_app):
+                return "app", record
+        # Deque may have evicted the open; fall back to the per-category app target.
+        app_target = self.category_targets.get(ACTION_CATEGORY_APP)
+        if app_target and app_target.get("target_app") and not _normalize_browser_name(app_target["target_app"]):
+            synthetic = ActionRecord(
+                timestamp=_now_iso(),
+                user_text="",
+                assistant_intent="",
+                tool_name=app_target.get("tool_name", "open_app"),
+                tool_parameters_summary="",
+                target_app=app_target.get("target_app", ""),
+                target_context=app_target.get("target_context", ""),
+                execution_method="",
+                result_status=app_target.get("result_status", ""),
+                verified=bool(app_target.get("verified")),
+                user_visible_claim="",
+                action_id=app_target.get("action_id", ""),
+                action_category=ACTION_CATEGORY_APP,
+            )
+            return "app", synthetic
+        return None, None
 
     def apply_context_to_tool(
         self,
@@ -642,7 +1393,7 @@ class SessionContext:
         if tool_name == "media_control":
             if not args.get("action"):
                 args["action"] = resolution.get("suggested_action") or "pause"
-                notes.append("action=pause from recent media context")
+                notes.append(f"action={args['action']} from recent media context")
             if not args.get("target_app") and hints.get("target_app"):
                 args["target_app"] = hints["target_app"]
                 notes.append(f"target_app={hints['target_app']} from recent media context")
@@ -673,9 +1424,19 @@ class SessionContext:
 
         if tool_name in {"file_processor", "file_controller"}:
             path_key = "file_path" if tool_name == "file_processor" else "path"
-            if not args.get(path_key) and self.last_file_action_target:
-                args[path_key] = self.last_file_action_target
+            if not args.get(path_key) and (hints.get(path_key) or self.last_file_action_target):
+                args[path_key] = hints.get(path_key) or self.last_file_action_target
                 notes.append(f"{path_key} from recent file context")
+
+        if tool_name == "close_app" and not args.get("app_name"):
+            app = hints.get("app_name") or self.category_targets.get(ACTION_CATEGORY_APP, {}).get("target_app")
+            if app:
+                args["app_name"] = app
+                notes.append(f"app_name={app} from recent app context")
+
+        if tool_name == "reminder" and not args.get("message") and hints.get("message"):
+            args["message"] = hints["message"]
+            notes.append("message from recent reminder context")
 
         return args, "; ".join(notes)
 
@@ -705,6 +1466,17 @@ class SessionContext:
             "last_file_action_target": self.last_file_action_target,
         }
         lines.append("Tracked targets: " + json.dumps(tracked, ensure_ascii=False))
+        if self.category_targets:
+            per_category = {
+                category: {
+                    "target": info.get("target", ""),
+                    "target_app": info.get("target_app", ""),
+                    "status": info.get("result_status", ""),
+                    "verified": info.get("verified", False),
+                }
+                for category, info in self.category_targets.items()
+            }
+            lines.append("Category targets: " + json.dumps(per_category, ensure_ascii=False))
         return "\n".join(lines) + "\n"
 
     def build_user_turn_context(self, user_text: str) -> str:
@@ -773,6 +1545,12 @@ class SessionContext:
         if tool_name in {"computer_settings", "computer_control"}:
             context = params.get("description") or params.get("action") or params.get("key") or params.get("keys")
             return self.last_active_app, _short_text(context, 120)
+        if tool_name == "reminder":
+            return "", _short_text(params.get("message"), 120)
+        if tool_name == "web_search":
+            items = params.get("items") or []
+            query = params.get("query") or ", ".join(str(i) for i in items)
+            return "", _short_text(query, 120)
         return "", _short_text(params.get("description") or params.get("action") or "", 120)
 
     def _update_recent_targets(
@@ -815,6 +1593,37 @@ class SessionContext:
 
         if record.tool_name in {"file_processor", "file_controller"} and record.target_context:
             self.last_file_action_target = record.target_context
+
+        self._update_category_target(record)
+
+    def _update_category_target(self, record: ActionRecord) -> None:
+        """Store the last target per action category so an unrelated action in a
+        different category never evicts an earlier category's target."""
+        category = record.action_category
+        if not category or category == ACTION_CATEGORY_OTHER:
+            return
+        opened_by_us = (
+            record.tool_name == "open_app"
+            and record.result_status == "success"
+            and record.verified
+        )
+        target = record.target_app or record.target_file or record.target_url or record.target_context
+        self.category_targets[category] = {
+            "action_id": record.action_id,
+            "tool_name": record.tool_name,
+            "target_app": record.target_app,
+            "target": target,
+            "target_url": record.target_url,
+            "target_file": record.target_file,
+            "target_context": record.target_context,
+            "operation": record.operation,
+            "result_status": record.result_status,
+            "verified": record.verified,
+            "opened_by_us": opened_by_us,
+        }
+
+    def last_category_target(self, category: str) -> dict[str, Any]:
+        return self.category_targets.get(category, {})
 
     def _message_hints(self, record: ActionRecord) -> dict[str, str]:
         hints = {}

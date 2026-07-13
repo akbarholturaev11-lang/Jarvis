@@ -88,6 +88,7 @@ from memory.memory_manager import (
 from actions.file_processor import file_processor
 from actions.flight_finder     import flight_finder
 from actions.open_app          import open_app
+from actions.app_control       import close_app
 from actions.weather_report    import weather_action
 from actions.send_message      import send_message
 from actions.reminder          import reminder, resolve_reminder_os, speak_reminder_fallback
@@ -184,6 +185,26 @@ TOOL_DECLARATIONS = [
                 "app_name": {
                     "type": "STRING",
                     "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
+                }
+            },
+            "required": ["app_name"]
+        }
+    },
+    {
+        "name": "close_app",
+        "description": (
+            "Gracefully quits/closes a running application (asks it to quit, never a "
+            "force-kill). Use this when the user asks to close, quit, or exit an app "
+            "(e.g. 'Telegramni yop', 'close WhatsApp'). For a vague follow-up like "
+            "'endi yop' the session context supplies the recently opened app. Do NOT "
+            "use this to pause music or video — that is media_control."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "app_name": {
+                    "type": "STRING",
+                    "description": "Exact name of the application to close (e.g. 'Telegram', 'WhatsApp')"
                 }
             },
             "required": ["app_name"]
@@ -746,6 +767,8 @@ class JarvisLive:
         self._reminder_cleared_event = None
         self.session_context     = SessionContext()
         self._active_user_text   = ""
+        # Last real tool dispatch (name, args) — used to re-run a safe "yana qil".
+        self._last_executed      = None
         self.device_profile      = ensure_device_profile(
             BASE_DIR, profile_path=DEVICE_PROFILE_PATH
         )
@@ -1146,6 +1169,8 @@ class JarvisLive:
             return f"personal operations briefing: {', '.join(str(item) for item in sources)}"
         if name == "open_app":
             return f"open app: {args.get('app_name', '')}"
+        if name == "close_app":
+            return f"close app: {args.get('app_name', '')}"
         if name == "browser_control":
             target = args.get("url") or args.get("query") or args.get("text") or args.get("description") or ""
             return f"browser {args.get('action', '')}: {target}"
@@ -1217,6 +1242,19 @@ class JarvisLive:
                 notes.append(f"app_launch={route.get('method', 'unknown')} from DeviceProfile")
             else:
                 result = f"{route.get('reason', 'Application not found in DeviceProfile.')} Bajara olmadim."
+
+        elif name == "close_app":
+            # Only require a target; do not block on install-detection since the
+            # app is one we (or the user) just had open. Normalize via aliases.
+            if not str(args.get("app_name", "")).strip():
+                result = "Confirmation needed: Qaysi ilovani yopay? Tasdiqlaysizmi?"
+            else:
+                route = resolve_app_route(self.device_profile, args.get("app_name", ""))
+                if route.get("status") == "ok" and route.get("app_name"):
+                    if route["app_name"] != args.get("app_name"):
+                        args["app_name"] = route["app_name"]
+                        notes.append("app_name normalized from DeviceProfile aliases")
+                notes.append("graceful close routed through platform adapter")
 
         elif name == "media_control":
             route = resolve_media_route(self.device_profile)
@@ -1369,9 +1407,98 @@ class JarvisLive:
                 )
 
             elif (
+                resolved_intent == "media_resume"
+                and confidence in {"high", "medium"}
+                and name != "media_control"
+            ):
+                args = {
+                    "action": followup_resolution.get("suggested_action") or "play_pause",
+                    "target_app": hints.get("target_app") or followup_resolution.get("target_app", ""),
+                    "target_context": hints.get("target_context") or followup_resolution.get("target_context_text", ""),
+                }
+                name = "media_control"
+                context_note = (context_note + "; " if context_note else "") + (
+                    f"rerouted {response_name} to media_control resume from SessionContext"
+                )
+
+            elif resolved_intent == "browser_back" and confidence == "high":
+                back_args = {"action": followup_resolution.get("suggested_action") or "back"}
+                if hints.get("browser"):
+                    back_args["browser"] = hints["browser"]
+                if name == "browser_control":
+                    args.update(back_args)
+                else:
+                    args = back_args
+                    name = "browser_control"
+                context_note = (context_note + "; " if context_note else "") + (
+                    f"rerouted {response_name} to browser back from SessionContext"
+                )
+
+            elif resolved_intent == "app_close":
+                close_app_name = hints.get("app_name") or followup_resolution.get("target_app", "")
+                if followup_resolution.get("needs_confirmation") or not close_app_name:
+                    if close_app_name:
+                        preflight_result = f"Confirmation needed: {close_app_name}ni yopaymi, ser? Tasdiqlaysizmi?"
+                    else:
+                        preflight_result = "Confirmation needed: Qaysi ilovani yopay, ser? Tasdiqlaysizmi?"
+                    context_note = (context_note + "; " if context_note else "") + (
+                        "app close needs confirmation from SessionContext"
+                    )
+                else:
+                    args = {"app_name": close_app_name}
+                    name = "close_app"
+                    context_note = (context_note + "; " if context_note else "") + (
+                        f"rerouted {response_name} to close_app from SessionContext"
+                    )
+
+            elif resolved_intent == "repeat":
+                last_executed = getattr(self, "_last_executed", None)
+                if followup_resolution.get("needs_confirmation"):
+                    label = last_executed[0] if last_executed else "oxirgi amal"
+                    preflight_result = (
+                        f"Confirmation needed: oxirgi amalni ({label}) qayta bajaraymi, ser? "
+                        "Tasdiqlaysizmi?"
+                    )
+                    context_note = (context_note + "; " if context_note else "") + (
+                        "blocked dangerous repeat; needs confirmation"
+                    )
+                elif last_executed and last_executed[0] not in {"save_memory", "shutdown_jarvis"}:
+                    name = last_executed[0]
+                    args = dict(last_executed[1])
+                    context_note = (context_note + "; " if context_note else "") + (
+                        f"repeated last action {name} from SessionContext"
+                    )
+                else:
+                    preflight_result = "Aniq tasdiqlay olmadim: qaysi amalni takrorlay, ser? Tasdiqlaysizmi?"
+
+            elif resolved_intent == "undo":
+                undo_action = followup_resolution.get("undo_action") or {}
+                undo_tool = undo_action.get("tool")
+                if undo_tool:
+                    name = undo_tool
+                    args = dict(undo_action.get("args") or {})
+                    context_note = (context_note + "; " if context_note else "") + (
+                        f"undo → {undo_tool} from SessionContext"
+                    )
+                else:
+                    preflight_result = "Bu amalni orqaga qaytara olmayman, ser. Aniq tasdiqlay olmadim."
+
+            elif resolved_intent == "undo_unsupported":
+                preflight_result = "Bu amalni orqaga qaytara olmayman, ser. Aniq tasdiqlay olmadim."
+                context_note = (context_note + "; " if context_note else "") + (
+                    "undo not supported for the last action"
+                )
+
+            elif resolved_intent == "message_cancel":
+                preflight_result = "Xabar bekor qilindi, ser — hech narsa yuborilmadi."
+                context_note = (context_note + "; " if context_note else "") + (
+                    "message draft cancelled from SessionContext"
+                )
+
+            elif (
                 followup_resolution.get("needs_confirmation")
-                and resolved_intent in {"clarify", "clarify_media_target", "clarify_close_target"}
-                and name in {"computer_settings", "browser_control", "media_control", "youtube_video", "shutdown_jarvis"}
+                and resolved_intent in {"clarify", "clarify_media_target", "clarify_close_target", "open_search_result", "reminder_reschedule"}
+                and name in {"computer_settings", "browser_control", "media_control", "youtube_video", "shutdown_jarvis", "open_app", "close_app", "reminder"}
             ):
                 preflight_result = "Confirmation needed: Qaysi app/browserda to'xtatay? Tasdiqlaysizmi?"
                 context_note = (context_note + "; " if context_note else "") + (
@@ -1417,6 +1544,18 @@ class JarvisLive:
 
             elif name == "open_app":
                 r = await loop.run_in_executor(None, lambda: open_app(parameters=args, response=None, player=self.ui))
+                result = r or UNVERIFIED_TOOL_RESULT
+
+            elif name == "close_app":
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: close_app(
+                        parameters=args,
+                        response=None,
+                        player=self.ui,
+                        device_profile=self.device_profile,
+                    ),
+                )
                 result = r or UNVERIFIED_TOOL_RESULT
 
             elif name == "set_ui_language":
@@ -1603,6 +1742,11 @@ class JarvisLive:
             verified=verified,
             user_visible_claim=claim,
         )
+
+        # Remember the last real tool dispatch so a later "yana qil" repeat can
+        # re-run it verbatim. Skip confirmation-only turns and shutdown.
+        if preflight_result is None and name not in {"save_memory", "shutdown_jarvis"}:
+            self._last_executed = (name, dict(args))
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")

@@ -35,6 +35,7 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
 
 4. Tool/action layer
    - `actions/*.py`
+   - `actions/open_app.py` / `actions/app_control.py` for cross-platform app open and graceful close (`close_app`, never a force-kill by default)
    - `actions/media_control.py` for safe macOS/system media pause/play-pause
    - `actions/personal_briefing.py` for allowlisted local operations data and external source status
    - `actions/zerno_stats.py` for configured, bounded, normalized Zerno JSON statistics
@@ -89,6 +90,7 @@ main.py
 -> ui.py
 -> memory/memory_manager.py
 -> actions/open_app.py
+-> actions/app_control.py
 -> actions/computer_control.py
 -> actions/browser_control.py
 -> actions/screen_processor.py
@@ -234,6 +236,8 @@ main.py
 - `actions/*.py` depends on tool declarations in `main.py`. When changing an action signature, check the matching declaration and dispatch code.
 - `actions/reminder.py`, `core/reminder_events.py`, and the process-lifetime consumer in `main.py` form one delivery path. Preserve immediate atomic claiming, renewable owner leases, bounded idle waits, serialized Live turns, mechanical tool blocking, local playback confirmation, bounded retry, argv-only speech commands, notification fallback, DeviceProfile routing, and the rule that command completion does not prove audibility.
 - `actions/media_control.py` must not close, quit, or kill apps by default. It should pause first and report uncertainty when playback cannot be verified.
+- `actions/app_control.py` (`close_app`) and the adapters' `close_app` must ask for a graceful quit (macOS `quit`, Windows `taskkill` without `/F`, Linux `wmctrl -c`/`pkill -TERM`), verify the app is gone before claiming success, and return honest `uncertain`/`failed`/`unsupported` otherwise — never a force-kill by default and never a fake success. `close` semantics stay out of `media_control`.
+- `core/session_context.py` is the single universal action-context path. Follow-up routing is enforced in `main.py::_execute_tool`, not the prompt. Keep `classify_action()` the one place tools are categorized, keep `undo_action` honest (no fabricated reversals), and do not turn it into a parallel command system.
 - `actions/personal_briefing.py` must not read `config/api_keys.json`, `memory/long_term.json`, arbitrary files, or invent external statistics. Zerno may use only its dedicated ignored config/environment adapter; all other missing adapters stay `not_configured`.
 - `actions/zerno_stats.py` must never accept a token from committed config, print Authorization headers, return unsanitized secret fields, or report `connected` before valid JSON is received.
 - `core/briefing_routing.py` is intentionally narrow. Do not grow it into a parallel command system; normal intent detection remains Gemini tool calling plus central dispatch.

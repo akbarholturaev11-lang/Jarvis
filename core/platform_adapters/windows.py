@@ -180,6 +180,35 @@ class WindowsAdapter(PlatformAdapter):
         except Exception as e:
             return False, str(e)
 
+    def close_app(self, app_name: str) -> tuple[bool | None, str]:
+        name = (app_name or "").strip()
+        if not name:
+            return False, "No application name provided."
+        image = name if name.lower().endswith(".exe") else f"{name}.exe"
+        taskkill = self._which("taskkill") or "taskkill"
+        # No /F → graceful WM_CLOSE request rather than a forced kill.
+        proc = self._run([taskkill, "/IM", image, "/T"], timeout=6.0)
+        if proc is None:
+            return False, "taskkill could not be executed on Windows."
+        combined = ((proc.stdout or "") + (proc.stderr or "")).lower()
+        if proc.returncode != 0:
+            if "not found" in combined or "not running" in combined:
+                return True, f"{name} is not running (already closed)."
+            return False, (proc.stderr or proc.stdout or "taskkill failed").strip()
+        running = self._image_is_running(image)
+        if running is False:
+            return True, f"{name} closed and verified."
+        if running is True:
+            return None, f"Close request sent to {name}, but it is still running."
+        return None, f"Close request sent to {name}; running state was not verified."
+
+    def _image_is_running(self, image: str) -> bool | None:
+        tasklist = self._which("tasklist") or "tasklist"
+        proc = self._run([tasklist, "/FI", f"IMAGENAME eq {image}"], timeout=4.0)
+        if proc is None or proc.returncode != 0:
+            return None
+        return image.lower() in (proc.stdout or "").lower()
+
     def prevent_sleep(self, reason: str = "") -> tuple[object | None, str]:
         try:
             import ctypes
