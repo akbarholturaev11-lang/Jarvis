@@ -1058,6 +1058,179 @@ class SetupOverlay(QWidget):
         self._error_label.show()
 
 
+class ProductGateOverlay(QWidget):
+    """Non-dismissible product authority boundary shown before Gemini setup."""
+
+    activation_requested = pyqtSignal(str)
+    refresh_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._can_activate = False
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("background: rgba(0, 4, 8, 250);")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(24, 24, 24, 24)
+        outer.addStretch()
+        row = QHBoxLayout()
+        row.addStretch()
+        panel = QFrame()
+        panel.setFixedWidth(520)
+        panel.setStyleSheet(f"""
+            QFrame {{
+                background: {C.PANEL};
+                border: 1px solid {C.BORDER_B};
+                border-radius: 10px;
+            }}
+        """)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(30, 24, 30, 24)
+        layout.setSpacing(10)
+
+        def label(
+            text: str,
+            size: int = 9,
+            *,
+            bold: bool = False,
+            color: str = C.TEXT_MED,
+        ) -> QLabel:
+            widget = QLabel(text)
+            widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            widget.setWordWrap(True)
+            widget.setFont(
+                QFont(
+                    "Courier New",
+                    size,
+                    QFont.Weight.Bold if bold else QFont.Weight.Normal,
+                )
+            )
+            widget.setStyleSheet(
+                f"color: {color}; background: transparent; border: none;"
+            )
+            return widget
+
+        layout.addWidget(
+            label(f"◈  {t('product.gate.title')}", 14, bold=True, color=C.PRI)
+        )
+        layout.addWidget(label(t("product.gate.subtitle"), 8, color=C.PRI_DIM))
+        self._version = label("", 8, bold=True, color=C.ACC2)
+        layout.addWidget(self._version)
+        self._status = label("", 9, color=C.TEXT)
+        layout.addWidget(self._status)
+        self._device = label("", 7, color=C.TEXT_DIM)
+        layout.addWidget(self._device)
+
+        self._key_input = QLineEdit()
+        self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_input.setMaxLength(256)
+        self._key_input.setPlaceholderText(t("product.gate.activation_placeholder"))
+        self._key_input.setFont(QFont("Courier New", 9))
+        self._key_input.setFixedHeight(34)
+        self._key_input.setStyleSheet(f"""
+            QLineEdit {{
+                background: #000d12; color: {C.TEXT};
+                border: 1px solid {C.BORDER}; border-radius: 4px;
+                padding: 4px 8px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        layout.addWidget(self._key_input)
+
+        self._activate = QPushButton(t("product.gate.activate"))
+        self._purchase = QPushButton(t("product.gate.purchase"))
+        self._refresh = QPushButton(t("product.gate.refresh"))
+        for button in (self._activate, self._purchase, self._refresh):
+            button.setFixedHeight(34)
+            button.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.PRI};
+                    border: 1px solid {C.PRI_DIM}; border-radius: 4px;
+                    padding: 0 8px;
+                }}
+                QPushButton:hover {{ background: {C.PRI_GHO}; }}
+                QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
+            """)
+        self._activate.clicked.connect(self._submit_activation)
+        self._purchase.clicked.connect(self._show_purchase_entry)
+        self._refresh.clicked.connect(self.refresh_requested.emit)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self._activate)
+        buttons.addWidget(self._purchase)
+        buttons.addWidget(self._refresh)
+        layout.addLayout(buttons)
+        layout.addWidget(
+            label(t("product.gate.security_note"), 7, color=C.TEXT_DIM)
+        )
+        row.addWidget(panel)
+        row.addStretch()
+        outer.addLayout(row)
+        outer.addStretch()
+
+    def apply_snapshot(self, snapshot) -> None:
+        version = getattr(snapshot, "version", None) or "—"
+        build = getattr(snapshot, "build", None)
+        build_text = "—" if build is None else str(build)
+        self._version.setText(
+            t("product.gate.version", version=version, build=build_text)
+        )
+        status = str(getattr(snapshot, "status", "failed"))
+        key = {
+            "activation_required": "product.gate.activation_required",
+            "device_mismatch": "product.gate.device_mismatch",
+            "not_configured": "product.gate.not_configured",
+            "not_available": "product.gate.not_available",
+            "invalid": "product.gate.invalid",
+            "offline": "product.gate.offline",
+            "rejected": "product.gate.rejected",
+            "server_unavailable": "product.gate.server_unavailable",
+            "failed": "product.gate.failed",
+        }.get(status, "product.gate.failed")
+        self._status.setText(t(key))
+        device = getattr(snapshot, "device_fingerprint", None)
+        self._device.setText(
+            t("product.gate.device", device_id=device or t("product.gate.unavailable"))
+        )
+        can_activate = bool(getattr(snapshot, "can_activate", False))
+        self._can_activate = can_activate
+        self._activate.setEnabled(can_activate)
+        self._key_input.setEnabled(can_activate)
+        self._refresh.setEnabled(True)
+        self._purchase.setEnabled(True)
+
+    def set_busy(self, busy: bool) -> None:
+        self._activate.setEnabled(not busy and self._can_activate)
+        self._key_input.setEnabled(not busy and self._can_activate)
+        self._purchase.setEnabled(not busy)
+        self._refresh.setEnabled(not busy)
+        if busy:
+            self._status.setText(t("product.gate.working"))
+
+    def show_failure(self) -> None:
+        self._status.setText(t("product.gate.failed"))
+        self._activate.setEnabled(self._can_activate)
+        self._key_input.setEnabled(self._can_activate)
+        self._refresh.setEnabled(True)
+        self._purchase.setEnabled(True)
+
+    def _submit_activation(self) -> None:
+        key = self._key_input.text().strip()
+        if not key:
+            self._status.setText(t("product.gate.key_required"))
+            return
+        self._key_input.clear()
+        self.set_busy(True)
+        self.activation_requested.emit(key)
+
+    def _show_purchase_entry(self) -> None:
+        # BOSQICH 3 supplies the server-backed initial purchase flow. This
+        # entry point is intentionally visible now but never reports success.
+        self._status.setText(t("product.gate.purchase_not_available"))
+
+
 class RemoteKeyOverlay(QWidget):
     """Floating overlay — QR code for instant phone pairing + manual key fallback."""
 
@@ -2086,11 +2259,14 @@ class MainWindow(QMainWindow):
     _content_sig = pyqtSignal(str, str)   # (title, text) — thread-safe content display
     _reconfig_sig = pyqtSignal()          # trigger setup overlay from any thread
     _setup_result_sig = pyqtSignal(bool, str, str)
+    _product_gate_sig = pyqtSignal(object)
+    _product_gate_result_sig = pyqtSignal(object)
+    _begin_gemini_sig = pyqtSignal()
     _camera_sig     = pyqtSignal(bytes)   # show camera frame preview (small overlay)
     _cam_stream_sig = pyqtSignal(bool)   # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)  # live camera frame → HUD area
 
-    def __init__(self, face_path: str):
+    def __init__(self, face_path: str, *, defer_gemini_onboarding: bool = False):
         super().__init__()
         self._face_path = face_path
         self.setWindowTitle("J.A.R.V.I.S")
@@ -2107,10 +2283,19 @@ class MainWindow(QMainWindow):
         self.on_remote_clicked = None   # callable: () -> (url, key) | None
         self.on_interrupt      = None   # callable: () -> None — stop JARVIS mid-speech
         self.on_settings_action = None  # callable: (action, **kwargs) -> result
+        self.on_product_gate_activate = None
+        self.on_product_gate_refresh = None
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
         self._settings_overlay: "SettingsOverlay | None" = None
+        self._product_gate_overlay: ProductGateOverlay | None = None
+        self._product_action_lock = threading.Lock()
+        self._bootstrap_lock = threading.Lock()
+        self._product_gate_event = threading.Event()
+        self._api_ready_event = threading.Event()
+        self._bootstrap_cancelled = False
+        self._gemini_onboarding_started = False
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -2225,6 +2410,9 @@ class MainWindow(QMainWindow):
         self._content_sig.connect(self._show_content)
         self._reconfig_sig.connect(self._show_setup)
         self._setup_result_sig.connect(self._finish_setup)
+        self._product_gate_sig.connect(self._present_product_gate)
+        self._product_gate_result_sig.connect(self._finish_product_gate_action)
+        self._begin_gemini_sig.connect(self._begin_gemini_onboarding)
         self._camera_sig.connect(self._show_camera_frame)
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
@@ -2234,9 +2422,15 @@ class MainWindow(QMainWindow):
         self._cam_preview = _CameraPreview(self.centralWidget())
 
         self._overlay: SetupOverlay | None = None
-        self._ready = self._check_config()
-        if not self._ready:
-            self._show_setup()
+        self._ready = False
+        if defer_gemini_onboarding:
+            # The window is shown by JarvisUI immediately after construction.
+            # Keep protected controls inert synchronously until the first gate
+            # decision arrives; a queued Qt signal must not create a bypass.
+            self.centralWidget().setEnabled(False)
+            self._gear_btn.setEnabled(False)
+        else:
+            self._begin_gemini_onboarding()
 
         sc_mute = QShortcut(QKeySequence("F4"), self)
         sc_mute.activated.connect(self._toggle_mute)
@@ -2625,6 +2819,16 @@ class MainWindow(QMainWindow):
             cw.height() - ph - 28,
             pw, ph,
         )
+        if self._product_gate_overlay and self._product_gate_overlay.isVisible():
+            self._product_gate_overlay.setGeometry(self.rect())
+            self._product_gate_overlay.raise_()
+
+    def closeEvent(self, event):
+        with self._bootstrap_lock:
+            self._bootstrap_cancelled = True
+            self._product_gate_event.set()
+            self._api_ready_event.set()
+        super().closeEvent(event)
 
     def _update_metrics(self):
         snap = _metrics.snapshot()
@@ -3183,7 +3387,109 @@ class MainWindow(QMainWindow):
     def _check_config(self) -> bool:
         return load_gemini_api_key(legacy_path=API_FILE).ok
 
+    def _present_product_gate(self, snapshot) -> None:
+        with self._bootstrap_lock:
+            if self._bootstrap_cancelled:
+                return
+        if bool(getattr(snapshot, "allowed", False)):
+            if self._product_gate_overlay:
+                overlay = self._product_gate_overlay
+                overlay.hide()
+                self._product_gate_overlay = None
+                overlay.deleteLater()
+            self.centralWidget().setEnabled(True)
+            self._gear_btn.setEnabled(True)
+            status = str(getattr(snapshot, "status", "allowed"))
+            if status == "development_bypass":
+                self._log.append_log(t("product.gate.dev_override_log"))
+            with self._bootstrap_lock:
+                if not self._bootstrap_cancelled:
+                    self._product_gate_event.set()
+            return
+        self.centralWidget().setEnabled(False)
+        self._gear_btn.setEnabled(False)
+        if self._product_gate_overlay is None:
+            overlay = ProductGateOverlay(self)
+            overlay.activation_requested.connect(self._activate_product_gate)
+            overlay.refresh_requested.connect(self._refresh_product_gate)
+            self._product_gate_overlay = overlay
+        self._product_gate_overlay.apply_snapshot(snapshot)
+        self._product_gate_overlay.setGeometry(self.rect())
+        self._product_gate_overlay.show()
+        self._product_gate_overlay.raise_()
+        self._apply_state("SLEEPING")
+
+    def _activate_product_gate(self, license_key: str) -> None:
+        callback = self.on_product_gate_activate
+        if callback is None:
+            if self._product_gate_overlay:
+                self._product_gate_overlay.show_failure()
+            return
+
+        def worker() -> None:
+            try:
+                with self._product_action_lock:
+                    result = callback(license_key)
+            except Exception:
+                result = None
+            self._product_gate_result_sig.emit(result)
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="product-license-activation",
+        ).start()
+
+    def _refresh_product_gate(self) -> None:
+        callback = self.on_product_gate_refresh
+        if callback is None:
+            if self._product_gate_overlay:
+                self._product_gate_overlay.show_failure()
+            return
+        if self._product_gate_overlay:
+            self._product_gate_overlay.set_busy(True)
+
+        def worker() -> None:
+            try:
+                with self._product_action_lock:
+                    result = callback()
+            except Exception:
+                result = None
+            self._product_gate_result_sig.emit(result)
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="product-license-refresh",
+        ).start()
+
+    def _finish_product_gate_action(self, snapshot) -> None:
+        if snapshot is None:
+            if self._product_gate_overlay:
+                self._product_gate_overlay.show_failure()
+            return
+        self._present_product_gate(snapshot)
+
+    def _begin_gemini_onboarding(self) -> None:
+        with self._bootstrap_lock:
+            if self._bootstrap_cancelled or self._gemini_onboarding_started:
+                return
+            self._gemini_onboarding_started = True
+        self._ready = self._check_config()
+        if self._ready:
+            self._api_ready_event.set()
+        else:
+            self._show_setup()
+
     def _show_setup(self):
+        with self._bootstrap_lock:
+            if self._bootstrap_cancelled:
+                return
+        self._ready = False
+        self._api_ready_event.clear()
+        if self._overlay and self._overlay.isVisible():
+            self._overlay.raise_()
+            return
         ov = SetupOverlay(self.centralWidget())
         cw = self.centralWidget()
         ow, oh = 460, 340
@@ -3215,12 +3521,16 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _finish_setup(self, success: bool, status: str, os_name: str) -> None:
+        with self._bootstrap_lock:
+            if self._bootstrap_cancelled:
+                return
         if not success:
             if self._overlay:
                 self._overlay.set_busy(False)
                 self._overlay.show_setup_error(status)
             return
         self._ready = True
+        self._api_ready_event.set()
         if self._overlay:
             overlay = self._overlay
             overlay.hide()
@@ -3239,10 +3549,19 @@ class _RootShim:
 
 
 class JarvisUI:
-    def __init__(self, face_path: str, size=None):
+    def __init__(
+        self,
+        face_path: str,
+        size=None,
+        *,
+        defer_gemini_onboarding: bool = False,
+    ):
         self._app = QApplication.instance() or QApplication(sys.argv)
         self._app.setStyle("Fusion")
-        self._win = MainWindow(face_path)
+        self._win = MainWindow(
+            face_path,
+            defer_gemini_onboarding=defer_gemini_onboarding,
+        )
         self._win.show()
         self.root = _RootShim(self._app)
 
@@ -3291,6 +3610,22 @@ class JarvisUI:
     def on_settings_action(self, cb):
         self._win.on_settings_action = cb
 
+    @property
+    def on_product_gate_activate(self):
+        return self._win.on_product_gate_activate
+
+    @on_product_gate_activate.setter
+    def on_product_gate_activate(self, cb):
+        self._win.on_product_gate_activate = cb
+
+    @property
+    def on_product_gate_refresh(self):
+        return self._win.on_product_gate_refresh
+
+    @on_product_gate_refresh.setter
+    def on_product_gate_refresh(self, cb):
+        self._win.on_product_gate_refresh = cb
+
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()
 
@@ -3300,9 +3635,36 @@ class JarvisUI:
     def write_log(self, text: str):
         self._win._log_sig.emit(localize_log_message(text))
 
-    def wait_for_api_key(self):
-        while not self._win._ready:
-            time.sleep(0.1)
+    def present_product_gate(self, snapshot) -> None:
+        with self._win._bootstrap_lock:
+            if self._win._bootstrap_cancelled:
+                return
+            if not bool(getattr(snapshot, "allowed", False)):
+                # Consume any previous success/spurious wake before presenting
+                # a blocked state so the coordinator awaits a new Qt action.
+                self._win._product_gate_event.clear()
+        self._win._product_gate_sig.emit(snapshot)
+
+    def wait_for_product_gate(self) -> bool:
+        with self._win._bootstrap_lock:
+            if self._win._bootstrap_cancelled:
+                return False
+            event = self._win._product_gate_event
+        event.wait()
+        with self._win._bootstrap_lock:
+            return not self._win._bootstrap_cancelled
+
+    def begin_gemini_onboarding(self) -> None:
+        self._win._begin_gemini_sig.emit()
+
+    def wait_for_api_key(self) -> bool:
+        with self._win._bootstrap_lock:
+            if self._win._bootstrap_cancelled:
+                return False
+            event = self._win._api_ready_event
+        event.wait()
+        with self._win._bootstrap_lock:
+            return not self._win._bootstrap_cancelled and self._win._ready
 
     def show_content(self, title: str, text: str):
         """Thread-safe: display content in the panel below the HUD."""
@@ -3310,7 +3672,7 @@ class JarvisUI:
 
     def prompt_reconfig(self):
         """Thread-safe: show the API key setup overlay (e.g. after an auth error)."""
-        self._win._ready = False
+        self._win._api_ready_event.clear()
         self._win._reconfig_sig.emit()
 
     def show_camera_frame(self, img_bytes: bytes):

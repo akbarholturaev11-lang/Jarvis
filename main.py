@@ -52,6 +52,8 @@ from core.i18n import active_lang, change_ui_language, detect_ui_language_comman
 from core.credential_service import load_gemini_api_key
 from core.app_paths import resolve_app_paths
 from core.product_runtime import ProductRuntimeService
+from core.product_gate import ProductLicenseGate
+from core.product_bootstrap import ProductBootstrapCoordinator
 from core.power_manager import KeepAwakeManager
 from core.remote_tunnel import CloudflareTunnel, TailscaleFunnel
 from core.app_settings import (
@@ -697,7 +699,12 @@ TOOL_DECLARATIONS = [
 
 class JarvisLive:
 
-    def __init__(self, ui: JarvisUI):
+    def __init__(
+        self,
+        ui: JarvisUI,
+        *,
+        product_runtime: ProductRuntimeService | None = None,
+    ):
         self.ui             = ui
         self.session              = None
         self.audio_in_queue       = None
@@ -749,7 +756,11 @@ class JarvisLive:
         self.device_profile      = ensure_device_profile(
             BASE_DIR, profile_path=DEVICE_PROFILE_PATH
         )
-        self._product_runtime    = ProductRuntimeService()
+        self._product_runtime = (
+            ProductRuntimeService()
+            if product_runtime is None
+            else product_runtime
+        )
         print(format_device_profile_summary(self.device_profile))
 
     def _make_remote_key(self):
@@ -2650,25 +2661,6 @@ class JarvisLive:
             "product_device_id": product_device_id,
         }
 
-    def wait_for_packaged_entitlement(self) -> None:
-        """Gate only frozen builds on a local signed exact-version certificate."""
-
-        announced = False
-        while True:
-            state = self._product_runtime.local_state()
-            if state.runtime is None:
-                if not self._product_runtime.packaged_runtime_expected:
-                    return
-            elif not state.runtime.packaged:
-                return
-            if state.entitled:
-                return
-            if not announced:
-                self.ui.set_state("SLEEPING")
-                self.ui.write_log(f"SYS: {t('product.activation_required')}")
-                announced = True
-            time.sleep(2)
-
     def _set_keep_awake_enabled(self, enabled: bool) -> tuple[bool, str]:
         set_keep_awake_enabled(enabled)
         if not enabled:
@@ -2859,8 +2851,8 @@ class JarvisLive:
                     self.ui.write_log("ERR: API key invalid — please re-enter your key.")
                     self.ui.set_state("SLEEPING")
                     self.ui.prompt_reconfig()
-                    while not self.ui._win._ready:
-                        await asyncio.sleep(1)
+                    if not await asyncio.to_thread(self.ui.wait_for_api_key):
+                        return
                     print("[JARVIS] New API key saved — reconnecting...")
                     self._reset_reconnect_backoff()
                     reconnect_delay = RECONNECT_BACKOFF_INITIAL
@@ -2891,12 +2883,20 @@ class JarvisLive:
             await asyncio.sleep(reconnect_delay)
 
 def main():
-    ui = JarvisUI("face.png")
+    ui = JarvisUI("face.png", defer_gemini_onboarding=True)
+    product_runtime = ProductRuntimeService()
+    license_gate = ProductLicenseGate(product_runtime)
+    ui.on_product_gate_activate = license_gate.activate
+    ui.on_product_gate_refresh = license_gate.evaluate
+    bootstrap = ProductBootstrapCoordinator(license_gate, ui)
 
     def runner():
-        ui.wait_for_api_key()
-        jarvis = JarvisLive(ui)
-        jarvis.wait_for_packaged_entitlement()
+        prepared = bootstrap.prepare(
+            lambda: JarvisLive(ui, product_runtime=product_runtime)
+        )
+        if not prepared.ready or not isinstance(prepared.runtime, JarvisLive):
+            return
+        jarvis = prepared.runtime
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:

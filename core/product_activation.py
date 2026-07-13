@@ -28,6 +28,7 @@ from core.product_version import (
 STATUS_SUCCESS: Final = "success"
 STATUS_INVALID: Final = "invalid"
 STATUS_REJECTED: Final = "rejected"
+STATUS_DEVICE_MISMATCH: Final = "device_mismatch"
 STATUS_OFFLINE: Final = "offline"
 STATUS_SERVER_UNAVAILABLE: Final = "server_unavailable"
 STATUS_NOT_AVAILABLE: Final = "not_available"
@@ -42,6 +43,7 @@ _VALID_STATUSES: Final = frozenset(
         STATUS_SUCCESS,
         STATUS_INVALID,
         STATUS_REJECTED,
+        STATUS_DEVICE_MISMATCH,
         STATUS_OFFLINE,
         STATUS_SERVER_UNAVAILABLE,
         STATUS_NOT_AVAILABLE,
@@ -107,10 +109,15 @@ def _api_failure(error: ProductApiError) -> ActivationResult:
         return _result(STATUS_OFFLINE, "Activation requires a network connection.")
     if error.code is ApiErrorCode.SERVER_UNAVAILABLE:
         return _result(STATUS_SERVER_UNAVAILABLE, "Activation server is unavailable.")
+    if error.code is ApiErrorCode.DEVICE_MISMATCH:
+        return _result(
+            STATUS_DEVICE_MISMATCH,
+            "This license may already be bound to another device.",
+        )
     if error.code in {
+        ApiErrorCode.CONFLICT,
         ApiErrorCode.UNAUTHORIZED,
         ApiErrorCode.NOT_FOUND,
-        ApiErrorCode.CONFLICT,
     }:
         return _result(STATUS_REJECTED, "Activation was not approved.")
     if error.code in {
@@ -255,6 +262,7 @@ __all__ = [
     "ACTIVATION_CHALLENGE_PATH",
     "ACTIVATION_COMPLETE_PATH",
     "STATUS_FAILED",
+    "STATUS_DEVICE_MISMATCH",
     "STATUS_INVALID",
     "STATUS_NOT_AVAILABLE",
     "STATUS_OFFLINE",

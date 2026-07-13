@@ -297,6 +297,53 @@ class ProductBackendMvpTests(unittest.TestCase):
                     self.assertNotIn(
                         issued_key["license_key"].encode("utf-8"), activation_db
                     )
+                    wrong_device = DeviceIdentity(Ed25519PrivateKey.generate())
+                    mismatch_challenge = client.post(
+                        "/v1/client/activation/challenge",
+                        json={
+                            "product_id": PRODUCT_ID,
+                            "license_key": issued_key["license_key"],
+                            "device_key_fingerprint": wrong_device.fingerprint,
+                            "device_public_key": wrong_device.public_key_base64,
+                            "version": "1.0.0",
+                            "platform": "macos",
+                            "architecture": "arm64",
+                        },
+                    )
+                    self.assertEqual(mismatch_challenge.status_code, 200)
+                    mismatch = mismatch_challenge.json()
+                    mismatch_complete = client.post(
+                        "/v1/client/activation/complete",
+                        json={
+                            "product_id": PRODUCT_ID,
+                            "challenge_id": mismatch["challenge_id"],
+                            "challenge_nonce": mismatch["challenge_nonce"],
+                            "device_key_fingerprint": wrong_device.fingerprint,
+                            "device_public_key": wrong_device.public_key_base64,
+                            "challenge_signature": wrong_device.sign_challenge(
+                                mismatch["challenge_nonce"]
+                            ),
+                            "version": "1.0.0",
+                            "platform": "macos",
+                            "architecture": "arm64",
+                        },
+                    )
+                    self.assertEqual(mismatch_complete.status_code, 409)
+                    self.assertEqual(
+                        mismatch_complete.headers["X-Jarvis-Error-Code"],
+                        "device_mismatch",
+                    )
+                    self.assertEqual(
+                        mismatch_complete.json(),
+                        {"detail": "activation conflicts with the active device"},
+                    )
+                    self.assertNotIn(
+                        wrong_device.fingerprint,
+                        mismatch_complete.text,
+                    )
+
+                    # The same key remains usable after admin-controlled device
+                    # reconciliation; mismatch must not consume it.
                     challenge = client.post(
                         "/v1/client/activation/challenge",
                         json={

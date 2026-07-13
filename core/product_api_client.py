@@ -29,6 +29,8 @@ DEFAULT_MAX_JSON_BYTES: Final = 1024 * 1024
 MAX_JSON_REQUEST_BYTES: Final = 256 * 1024
 MAX_MULTIPART_FILE_BYTES: Final = 10 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES: Final = 256 * 1024
+DEVICE_MISMATCH_ERROR_HEADER: Final = "X-Jarvis-Error-Code"
+DEVICE_MISMATCH_ERROR_VALUE: Final = "device_mismatch"
 
 _LOOPBACK_HOSTS: Final = frozenset({"localhost", "127.0.0.1", "::1"})
 _JSON_CONTENT_TYPES: Final = frozenset(
@@ -41,6 +43,7 @@ class ApiErrorCode(StrEnum):
     UNAUTHORIZED = "unauthorized"
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
+    DEVICE_MISMATCH = "device_mismatch"
     NETWORK_UNAVAILABLE = "network_unavailable"
     SERVER_UNAVAILABLE = "server_unavailable"
     RESPONSE_INVALID = "response_invalid"
@@ -53,6 +56,7 @@ _ERROR_MESSAGES: Final = {
     ApiErrorCode.UNAUTHORIZED: "Product API authorization was rejected.",
     ApiErrorCode.NOT_FOUND: "Product API resource was not found.",
     ApiErrorCode.CONFLICT: "Product API request conflicts with current state.",
+    ApiErrorCode.DEVICE_MISMATCH: "Product license is bound to another device.",
     ApiErrorCode.NETWORK_UNAVAILABLE: "Network is unavailable.",
     ApiErrorCode.SERVER_UNAVAILABLE: "Product API server is unavailable.",
     ApiErrorCode.RESPONSE_INVALID: "Product API response is invalid.",
@@ -279,11 +283,17 @@ def _validate_headers(headers: object | None) -> dict[str, str]:
     return normalized
 
 
-def _http_error_code(status: int) -> ApiErrorCode:
+def _http_error_code(status: int, headers: object | None = None) -> ApiErrorCode:
     if status in {401, 403}:
         return ApiErrorCode.UNAUTHORIZED
     if status == 404:
         return ApiErrorCode.NOT_FOUND
+    if (
+        status == 409
+        and _header_value(headers, DEVICE_MISMATCH_ERROR_HEADER)
+        == DEVICE_MISMATCH_ERROR_VALUE
+    ):
+        return ApiErrorCode.DEVICE_MISMATCH
     if status in {409, 412}:
         return ApiErrorCode.CONFLICT
     if 500 <= status <= 599:
@@ -354,9 +364,10 @@ class ProductApiClient:
             raise
         except HTTPError as exc:
             try:
+                code = _http_error_code(exc.code, getattr(exc, "headers", None))
                 exc.close()
             finally:
-                raise ProductApiError(_http_error_code(exc.code)) from None
+                raise ProductApiError(code) from None
         except (URLError, TimeoutError, socket.timeout, OSError):
             raise ProductApiError(ApiErrorCode.NETWORK_UNAVAILABLE) from None
         except Exception:
@@ -380,7 +391,10 @@ class ProductApiClient:
             status = response.status
             if type(status) is not int or not 200 <= status <= 299:
                 raise ProductApiError(
-                    _http_error_code(status if type(status) is int else 0)
+                    _http_error_code(
+                        status if type(status) is int else 0,
+                        response.headers,
+                    )
                 )
         except ProductApiError:
             response.close()

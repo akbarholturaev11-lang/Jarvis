@@ -1,5 +1,34 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-14 - Product license gate before Gemini onboarding
+
+### Fix
+
+- Startup now verifies a signed exact-version product entitlement before
+  opening Gemini credential onboarding or constructing `JarvisLive`.
+- Added a framework-independent, event-driven license gate and bootstrap
+  coordinator. Source builds require the explicit
+  `JARVIS_DEV_LICENSE_BYPASS=1` override; packaged builds always ignore it and
+  fail closed.
+- Added a non-dismissible bilingual English/Russian product gate with
+  activation, refresh, device-replacement guidance and an honest initial
+  purchase entry. The initial purchase button does not claim success while the
+  server-backed BOSQICH 3 flow is unavailable.
+- Activation now distinguishes a possible active-device conflict. The backend
+  checks device binding before consuming the one-time activation credential,
+  so an admin replacement can be followed by a retry.
+- Successful activation is reported only after secure license-state readback
+  and offline certificate verification. Cache availability failures remain
+  distinct from invalid certificates.
+
+### Verification
+
+- Added frozen/source override, no-license, exact-version, paid-new-version,
+  offline restart, corrupted certificate, device mismatch, event ordering,
+  UI contract and credential non-consumption tests.
+- Native macOS Qt smoke verified license overlay -> verified gate close ->
+  Gemini setup ordering without reading a real Gemini credential.
+
 ## 2026-07-14 - Non-interactive cross-platform Gemini credential storage
 
 ### Problem

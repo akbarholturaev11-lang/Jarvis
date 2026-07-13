@@ -18,8 +18,10 @@ from core.entitlement_certificate import (
     SCHEMA_VERSION,
 )
 from core.product_activation import (
+    STATUS_DEVICE_MISMATCH,
     STATUS_INVALID,
     STATUS_OFFLINE,
+    STATUS_REJECTED,
     STATUS_SUCCESS,
     ProductActivationService,
 )
@@ -101,9 +103,19 @@ class MemorySecureStore(SecureStore):
 
 
 class FakeResponse:
-    def __init__(self, document: dict[str, object], url: str) -> None:
-        self.status = 200
-        self.headers = {"Content-Type": "application/json"}
+    def __init__(
+        self,
+        document: dict[str, object],
+        url: str,
+        *,
+        status: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        self.status = status
+        self.headers = {
+            "Content-Type": "application/json",
+            **(headers or {}),
+        }
         self.raw = _canonical(document)
         self.offset = 0
         self.url = url
@@ -269,6 +281,36 @@ class ProductActivationServiceTests(unittest.TestCase):
         self.assertEqual(result.status, STATUS_OFFLINE)
         self.assertNotIn("private-host", result.message)
         self.assertNotIn(LICENSE_KEY, repr(result))
+
+    def test_http_conflict_is_a_distinct_device_mismatch(self):
+        response = FakeResponse(
+            {"detail": "sanitized conflict"},
+            "https://api.example.test/v1/client/activation/challenge",
+            status=409,
+            headers={"X-Jarvis-Error-Code": "device_mismatch"},
+        )
+        result = self._service(FakeTransport([response])).activate(
+            LICENSE_KEY,
+            version=VERSION,
+            platform="macos",
+            architecture="arm64",
+        )
+        self.assertEqual(result.status, STATUS_DEVICE_MISMATCH)
+        self.assertNotIn(LICENSE_KEY, repr(result))
+
+    def test_generic_http_conflict_is_rejected_without_device_claim(self):
+        response = FakeResponse(
+            {"detail": "sanitized conflict"},
+            "https://api.example.test/v1/client/activation/challenge",
+            status=409,
+        )
+        result = self._service(FakeTransport([response])).activate(
+            LICENSE_KEY,
+            version=VERSION,
+            platform="macos",
+            architecture="arm64",
+        )
+        self.assertEqual(result.status, STATUS_REJECTED)
 
 
 if __name__ == "__main__":

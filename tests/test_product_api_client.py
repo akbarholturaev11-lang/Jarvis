@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request
 
 import core.product_api_client as api_module
@@ -52,6 +54,14 @@ class FakeTransport:
     def open(self, **kwargs):
         self.requests.append(kwargs)
         return self.responses.pop(0)
+
+
+class ErrorTransport:
+    def __init__(self, error: HTTPError) -> None:
+        self.error = error
+
+    def open(self, **kwargs):
+        raise self.error
 
 
 class ProductApiClientTests(unittest.TestCase):
@@ -231,6 +241,54 @@ class ProductApiClientTests(unittest.TestCase):
         ):
             with self.subTest(path=path), self.assertRaises(ProductApiError):
                 client.request_json("GET", path)
+
+    def test_only_trusted_conflict_header_maps_device_mismatch(self):
+        cases = (
+            ({"X-Jarvis-Error-Code": "device_mismatch"}, ApiErrorCode.DEVICE_MISMATCH),
+            ({}, ApiErrorCode.CONFLICT),
+            ({"X-Jarvis-Error-Code": "another_conflict"}, ApiErrorCode.CONFLICT),
+        )
+        for extra_headers, expected in cases:
+            with self.subTest(expected=expected):
+                response = FakeResponse(
+                    b'{}',
+                    url="https://api.example.test/v1/check",
+                    status=409,
+                    headers={"Content-Type": "application/json", **extra_headers},
+                )
+                client = ProductApiClient(
+                    "https://api.example.test",
+                    transport=FakeTransport([response]),
+                )
+                with self.assertRaises(ProductApiError) as raised:
+                    client.request_json("GET", "/v1/check")
+                self.assertEqual(raised.exception.code, expected)
+                self.assertTrue(response.closed)
+
+    def test_urllib_http_error_requires_exact_device_mismatch_marker(self):
+        cases = (
+            (409, {"X-Jarvis-Error-Code": "device_mismatch"}, ApiErrorCode.DEVICE_MISMATCH),
+            (409, {}, ApiErrorCode.CONFLICT),
+            (412, {"X-Jarvis-Error-Code": "device_mismatch"}, ApiErrorCode.CONFLICT),
+        )
+        for status, headers, expected in cases:
+            with self.subTest(status=status, expected=expected):
+                error = HTTPError(
+                    "https://api.example.test/v1/check",
+                    status,
+                    "private upstream error",
+                    headers,
+                    io.BytesIO(b'{"private":"response body"}'),
+                )
+                client = ProductApiClient(
+                    "https://api.example.test",
+                    transport=ErrorTransport(error),
+                )
+                with self.assertRaises(ProductApiError) as raised:
+                    client.request_json("GET", "/v1/check")
+                self.assertEqual(raised.exception.code, expected)
+                self.assertNotIn("private", str(raised.exception))
+                self.assertTrue(error.fp is None or error.fp.closed)
 
     def test_stream_download_uses_private_exclusive_file_and_digest(self):
         raw = b"signed artifact bytes" * 100

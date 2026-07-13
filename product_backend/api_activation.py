@@ -54,6 +54,10 @@ class ActivationNotAvailableError(RuntimeError):
     """A required activation dependency cannot safely complete the request."""
 
 
+class ActivationDeviceMismatchError(ActivationRejectedError):
+    """The paid license is bound to a different active device."""
+
+
 @dataclass(frozen=True, slots=True)
 class IssuedActivationCredential:
     credential_id: str
@@ -429,6 +433,21 @@ class SQLiteClientActivationService:
         if self._commerce.get_entitlement(license_id, version) is None:
             raise ActivationRejectedError("Exact-version entitlement is required.")
 
+        # Bind (or idempotently confirm) the device before consuming the
+        # one-time activation credential. A device conflict must remain
+        # recoverable after an explicit admin replacement.
+        try:
+            self._commerce.activate_device(
+                license_id,
+                fingerprint,
+                platform=platform,
+                architecture=architecture,
+            )
+        except ConflictError as exc:
+            raise ActivationDeviceMismatchError(
+                "License is bound to another active device."
+            ) from exc
+
         with self._transaction():
             cursor = self._connection.execute(
                 "UPDATE activation_credentials SET consumed_at = ? "
@@ -438,12 +457,6 @@ class SQLiteClientActivationService:
             if cursor.rowcount != 1:
                 raise ActivationRejectedError("Activation credential is unavailable.")
 
-        self._commerce.activate_device(
-            license_id,
-            fingerprint,
-            platform=platform,
-            architecture=architecture,
-        )
         certificate = self._sign_certificate(
             license_id=license_id,
             device_key_fingerprint=fingerprint,
@@ -506,6 +519,7 @@ class SQLiteClientActivationService:
 
 __all__ = [
     "ActivationCompletion",
+    "ActivationDeviceMismatchError",
     "ActivationNotAvailableError",
     "ActivationRejectedError",
     "IssuedActivationChallenge",

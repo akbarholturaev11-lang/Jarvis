@@ -221,6 +221,20 @@ class ProductRuntimeService:
                 license_id,
                 "This exact version is not activated.",
             )
+        if verified.status == "not_available":
+            return LocalProductState(
+                STATUS_NOT_AVAILABLE,
+                self._runtime,
+                license_id,
+                "Offline entitlement storage is not available.",
+            )
+        if verified.status == "failed":
+            return LocalProductState(
+                STATUS_FAILED,
+                self._runtime,
+                license_id,
+                "Offline entitlement could not be loaded.",
+            )
         return LocalProductState(
             STATUS_INVALID,
             self._runtime,
@@ -261,6 +275,13 @@ class ProductRuntimeService:
                 STATUS_NOT_AVAILABLE,
                 result,
                 "Secure license state could not be stored.",
+            )
+        verified = self.local_state()
+        if not verified.entitled:
+            return ProductActivationOutcome(
+                verified.status,
+                result,
+                "Persisted exact-version entitlement could not be verified.",
             )
         return ProductActivationOutcome(
             STATUS_ENTITLED, result, "Exact version activated."

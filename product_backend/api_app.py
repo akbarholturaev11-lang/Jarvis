@@ -30,12 +30,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.background import BackgroundTask
 
+from core.product_api_client import (
+    DEVICE_MISMATCH_ERROR_HEADER,
+    DEVICE_MISMATCH_ERROR_VALUE,
+)
 from core.product_state import PaymentState
 from core.product_version import PRODUCT_ID
 from core.release_manifest import ArtifactKind
 
 from .admin_web import mount_admin_web
 from .api_activation import (
+    ActivationDeviceMismatchError,
     ActivationNotAvailableError,
     ActivationRejectedError,
 )
@@ -652,6 +657,18 @@ def create_product_backend_app(
         _: Request, __: ActivationRejectedError
     ) -> JSONResponse:
         return JSONResponse({"detail": "activation was not approved"}, status_code=401)
+
+    @app.exception_handler(ActivationDeviceMismatchError)
+    async def activation_device_mismatch(
+        _: Request, __: ActivationDeviceMismatchError
+    ) -> JSONResponse:
+        return JSONResponse(
+            {"detail": "activation conflicts with the active device"},
+            status_code=409,
+            headers={
+                DEVICE_MISMATCH_ERROR_HEADER: DEVICE_MISMATCH_ERROR_VALUE,
+            },
+        )
 
     def _client_attempt_key(request: Request) -> str:
         host = "unknown" if request.client is None else request.client.host
