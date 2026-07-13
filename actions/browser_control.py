@@ -328,7 +328,7 @@ def _detect_default_browser() -> str:
                  "LSHandlers"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.lower()
-            for kw in ("firefox", "opera", "brave", "vivaldi", "safari", "chrome", "edge"):
+            for kw in ("firefox", "opera", "brave", "vivaldi", "atlas", "safari", "chrome", "edge"):
                 if kw in out:
                     return kw
         elif _OS == "Linux":
@@ -342,6 +342,85 @@ def _detect_default_browser() -> str:
     except Exception:
         pass
     return "chrome"
+
+
+# ── ChatGPT Atlas (OpenAI) ──────────────────────────────────────────────────
+# Atlas is a macOS-only browser that is NOT a standard Chromium distribution
+# (its bundle has no Chromium framework and no Chrome-style helper apps), so
+# Playwright cannot launch or automate it the way it drives Chrome/Edge/Brave.
+# Jarvis therefore supports Atlas only for *opening URLs*, through the macOS URL
+# opener. Deep automation (click / type / get_text / screenshot) is not
+# available in Atlas and is reported honestly.
+_ATLAS_BUNDLE_ID = "com.openai.atlas"
+_ATLAS_APP_NAME  = "ChatGPT Atlas"
+_ATLAS_ALIASES   = {
+    "atlas", "chatgpt atlas", "chatgpt-atlas", "chatgpt_atlas",
+    "openai atlas", "openai-atlas", "atlas browser",
+}
+_ATLAS_OPEN_ACTIONS = {"", "go_to", "open", "new_tab", "search"}
+_ATLAS_SEARCH_BASES = {
+    "google":     "https://www.google.com/search?q=",
+    "bing":       "https://www.bing.com/search?q=",
+    "duckduckgo": "https://duckduckgo.com/?q=",
+    "yandex":     "https://yandex.com/search/?text=",
+}
+
+
+def is_atlas(name: str | None) -> bool:
+    """True when the requested browser refers to ChatGPT Atlas."""
+    return bool(name) and name.lower().strip() in _ATLAS_ALIASES
+
+
+def _atlas_app_path() -> Optional[Path]:
+    p = Path("/Applications") / f"{_ATLAS_APP_NAME}.app"
+    return p if p.exists() else None
+
+
+def _open_url_in_atlas(url: str) -> bool:
+    """Open a URL in ChatGPT Atlas via the macOS opener; True only on success."""
+    try:
+        proc = subprocess.run(
+            ["open", "-b", _ATLAS_BUNDLE_ID, url],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0:
+            return True
+        print(f"[Browser] Atlas open failed rc={proc.returncode}: {proc.stderr.strip()}")
+        return False
+    except Exception as e:
+        print(f"[Browser] Atlas open error: {e}")
+        return False
+
+
+def _handle_atlas(action: str, params: dict) -> str:
+    """Serve a browser_control request that targets ChatGPT Atlas."""
+    if _OS != "Darwin":
+        return "ChatGPT Atlas is only available on macOS. Bajara olmadim."
+    if _atlas_app_path() is None:
+        return "ChatGPT Atlas is not installed in /Applications. Bajara olmadim."
+    if action not in _ATLAS_OPEN_ACTIONS:
+        return (
+            f"ChatGPT Atlas supports only opening URLs from Jarvis; "
+            f"'{action}' automation is not available in Atlas — use Chrome or "
+            "Safari for that. Aniq tasdiqlay olmadim."
+        )
+
+    if action == "search":
+        query = (params.get("query") or "").strip()
+        if not query:
+            return "No search query given for ChatGPT Atlas. Bajara olmadim."
+        base = _ATLAS_SEARCH_BASES.get((params.get("engine") or "google").lower(),
+                                       _ATLAS_SEARCH_BASES["google"])
+        url = base + query.replace(" ", "+")
+    else:
+        raw = (params.get("url") or "").strip()
+        if not raw:
+            return "No URL given for ChatGPT Atlas. Bajara olmadim."
+        url = _normalize_url(raw)
+
+    if _open_url_in_atlas(url):
+        return f"Opened in ChatGPT Atlas: {url}"
+    return f"Could not open ChatGPT Atlas: {url}. Bajara olmadim."
 
 
 class _BrowserSession:
@@ -811,6 +890,20 @@ def browser_control(
     action  = params.get("action", "").lower().strip()
     browser = params.get("browser", "").lower().strip() or None
     result  = "Unknown action."
+
+    # ── ChatGPT Atlas ───────────────────────────────────────────────────────
+    # Atlas can't be driven by Playwright, so route it to the macOS URL opener.
+    # Fires for an explicit "open in ChatGPT Atlas" and for the case where Atlas
+    # is the OS default and no Playwright session is active yet. Never creates a
+    # (broken) Playwright session for Atlas.
+    if is_atlas(browser) or (
+        browser is None
+        and not _registry._active_browser
+        and _detect_default_browser() == "atlas"
+    ):
+        result = _handle_atlas(action, params)
+        _log(player, result)
+        return result
 
     if action == "switch":
         target = browser or params.get("target", "").lower().strip()

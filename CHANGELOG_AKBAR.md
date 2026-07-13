@@ -1,5 +1,45 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-13 - ChatGPT Atlas: open URLs in Atlas (Playwright can't automate it)
+
+### Problem
+
+- Asking Jarvis to open a page in **ChatGPT Atlas** failed with
+  `'atlas' bu platformda (Darwin) desteklenmiyor`. `browser_control` drives every
+  browser through Playwright, and Atlas (`com.openai.atlas`) is not a standard
+  Chromium distribution (its bundle has no Chromium framework / Chrome-style
+  helper apps), so Playwright cannot launch or automate it. Atlas was also absent
+  from the supported-browser list.
+
+### Fix
+
+- `actions/browser_control.py`: added an Atlas path that opens URLs/searches in
+  Atlas via the macOS opener (`open -b com.openai.atlas <url>`), bypassing the
+  Playwright registry entirely. `is_atlas()` recognizes aliases
+  (atlas / chatgpt atlas / openai atlas …); `browser_control()` intercepts Atlas
+  for explicit requests and when Atlas is the OS default with no active session.
+  `_detect_default_browser()` now recognizes Atlas on macOS.
+- Automation actions (click / type / get_text / screenshot …) return an honest
+  "not available in Atlas — use Chrome/Safari" message instead of failing opaquely.
+- Non-macOS returns an honest `only available on macOS` status; missing install
+  returns `not installed`.
+- `main.py`: `browser_control` tool declaration lists `atlas` and notes it is
+  macOS-only, opening URLs only.
+
+### Constraints kept
+
+- No Playwright session is ever created for Atlas (would be broken).
+- DeviceProfile already detects `atlas`; routing (`resolve_browser_route`) was left
+  untouched. No dependency or version change.
+
+### Verification
+
+- `python -m py_compile main.py actions/browser_control.py` → OK.
+- `python -m pytest tests/test_browser_atlas.py -q` → 9 passed.
+- `python -m pytest tests/ -q` → 456 passed, 341 subtests.
+- Live "open a real URL in Atlas" not yet run (would pop an Atlas window) — pending
+  Akbar's go-ahead.
+
 ## 2026-07-13 - Universal action-context & follow-up execution
 
 ### Problem
