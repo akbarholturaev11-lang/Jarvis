@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 from core.secure_store import (
@@ -81,92 +83,113 @@ class ValidationTests(unittest.TestCase):
 
 
 class MacOSKeychainStoreTests(unittest.TestCase):
+    class Native:
+        def __init__(self) -> None:
+            self.values: dict[tuple[str, str], bytes] = {}
+            self.failure: int | None = None
+
+        def get(self, service: str, account: str):
+            if self.failure is not None:
+                return self.failure, None
+            value = self.values.get((service, account))
+            return (0, value) if value is not None else (-25300, None)
+
+        def set(self, service: str, account: str, secret: bytes):
+            if self.failure is not None:
+                return self.failure
+            self.values[(service, account)] = secret
+            return 0
+
+        def delete(self, service: str, account: str):
+            if self.failure is not None:
+                return self.failure
+            if self.values.pop((service, account), None) is None:
+                return -25300
+            return 0
+
     def test_get_success_returns_value_but_redacts_repr(self):
-        store = MacOSKeychainStore()
-        with mock.patch(
-            "core.secure_store.subprocess.run",
-            return_value=_completed(0, stdout=f"{SECRET}\n"),
-        ) as run:
-            result = store.get(SERVICE, ACCOUNT)
+        native = self.Native()
+        native.values[(SERVICE, ACCOUNT)] = SECRET.encode("utf-8")
+        result = MacOSKeychainStore(native).get(SERVICE, ACCOUNT)
 
         self.assertEqual(result.status, STATUS_SUCCESS)
         self.assertEqual(result.value, SECRET)
         self.assertNotIn(SECRET, repr(result))
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[0:2], ["/usr/bin/security", "find-generic-password"])
-        self.assertIs(run.call_args.kwargs["shell"], False)
-        self.assertIsInstance(argv, list)
 
-    def test_get_exit_44_maps_to_not_found(self):
-        with mock.patch(
-            "core.secure_store.subprocess.run",
-            return_value=_completed(44, stderr="item not found"),
-        ):
-            result = MacOSKeychainStore().get(SERVICE, ACCOUNT)
+    def test_native_item_not_found_maps_to_not_found(self):
+        result = MacOSKeychainStore(self.Native()).get(SERVICE, ACCOUNT)
 
         self.assertEqual(result.status, STATUS_NOT_FOUND)
         self.assertIsNone(result.value)
 
-    def test_get_other_nonzero_exit_maps_to_failed_without_stderr(self):
-        with mock.patch(
-            "core.secure_store.subprocess.run",
-            return_value=_completed(2, stderr=f"failure: {SECRET}"),
-        ):
-            result = MacOSKeychainStore().get(SERVICE, ACCOUNT)
+    def test_native_failure_maps_to_fixed_failed_result(self):
+        native = self.Native()
+        native.failure = -25308
+        result = MacOSKeychainStore(native).get(SERVICE, ACCOUNT)
 
         self.assertEqual(result.status, STATUS_FAILED)
         self.assertNotIn(SECRET, result.message)
         self.assertNotIn(SECRET, repr(result))
 
-    def test_set_uses_prompt_stdin_update_mode_argv_and_no_shell(self):
-        with mock.patch(
-            "core.secure_store.subprocess.run",
-            return_value=_completed(0),
-        ) as run:
-            result = MacOSKeychainStore().set(SERVICE, ACCOUNT, SECRET)
+    def test_crud_update_and_delete_use_native_api_without_subprocess(self):
+        native = self.Native()
+        store = MacOSKeychainStore(native)
+        with mock.patch("core.secure_store.subprocess.run") as run:
+            created = store.set(SERVICE, ACCOUNT, SECRET)
+            first = store.get(SERVICE, ACCOUNT)
+            updated = store.set(SERVICE, ACCOUNT, "updated-secret")
+            second = store.get(SERVICE, ACCOUNT)
+            deleted = store.delete(SERVICE, ACCOUNT)
+            missing = store.delete(SERVICE, ACCOUNT)
 
-        self.assertEqual(result.status, STATUS_SUCCESS)
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[0:2], ["/usr/bin/security", "add-generic-password"])
-        self.assertIn("-U", argv)
-        self.assertEqual(argv[-1], "-w")
-        self.assertNotIn(SECRET, argv)
-        self.assertEqual(run.call_args.kwargs["input"], f"{SECRET}\n")
-        self.assertNotIn(SECRET, repr(run.call_args))
-        self.assertIs(run.call_args.kwargs["shell"], False)
-        self.assertIs(run.call_args.kwargs["check"], False)
-
-    def test_delete_maps_success_and_not_found(self):
-        with mock.patch(
-            "core.secure_store.subprocess.run",
-            side_effect=[_completed(0), _completed(44)],
-        ) as run:
-            deleted = MacOSKeychainStore().delete(SERVICE, ACCOUNT)
-            missing = MacOSKeychainStore().delete(SERVICE, ACCOUNT)
-
+        self.assertEqual(created.status, STATUS_SUCCESS)
+        self.assertEqual(first.value, SECRET)
+        self.assertEqual(updated.status, STATUS_SUCCESS)
+        self.assertEqual(second.value, "updated-secret")
         self.assertEqual(deleted.status, STATUS_SUCCESS)
         self.assertEqual(missing.status, STATUS_NOT_FOUND)
-        for call in run.call_args_list:
-            self.assertIs(call.kwargs["shell"], False)
-            self.assertIsInstance(call.args[0], list)
+        run.assert_not_called()
 
-    def test_missing_security_binary_maps_to_not_available(self):
+    def test_missing_native_framework_maps_to_not_available(self):
         with mock.patch(
-            "core.secure_store.subprocess.run",
-            side_effect=FileNotFoundError,
+            "core.secure_store._MacOSNativeKeychain", side_effect=OSError
         ):
             result = MacOSKeychainStore().get(SERVICE, ACCOUNT)
 
         self.assertEqual(result.status, STATUS_NOT_AVAILABLE)
 
-    def test_timeout_maps_to_failed_without_secret_leak(self):
-        error = subprocess.TimeoutExpired(["/usr/bin/security", SECRET], timeout=15)
-        with mock.patch("core.secure_store.subprocess.run", side_effect=error):
-            result = MacOSKeychainStore().set(SERVICE, ACCOUNT, SECRET)
+    def test_native_exception_maps_to_failed_without_secret_leak(self):
+        native = mock.Mock()
+        native.set.side_effect = RuntimeError(f"backend leaked {SECRET}")
+        result = MacOSKeychainStore(native).set(SERVICE, ACCOUNT, SECRET)
 
         self.assertEqual(result.status, STATUS_FAILED)
         self.assertNotIn(SECRET, result.message)
         self.assertNotIn(SECRET, repr(result))
+
+    def test_lazy_native_initialization_is_single_and_thread_safe(self):
+        native = self.Native()
+        started = threading.Event()
+        release = threading.Event()
+
+        def create_native():
+            started.set()
+            self.assertTrue(release.wait(2))
+            return native
+
+        store = MacOSKeychainStore()
+        with mock.patch(
+            "core.secure_store._MacOSNativeKeychain", side_effect=create_native
+        ) as factory:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(store.get, SERVICE, ACCOUNT)
+                self.assertTrue(started.wait(2))
+                second = pool.submit(store.get, SERVICE, ACCOUNT)
+                release.set()
+                results = [first.result(timeout=2), second.result(timeout=2)]
+
+        factory.assert_called_once_with()
+        self.assertTrue(all(result.status == STATUS_NOT_FOUND for result in results))
 
 
 class LinuxSecretToolStoreTests(unittest.TestCase):
@@ -256,18 +279,87 @@ class LinuxSecretToolStoreTests(unittest.TestCase):
         self.assertEqual(result.status, STATUS_NOT_AVAILABLE)
 
 
-class UnavailableStoreTests(unittest.TestCase):
-    def test_windows_never_fakes_success(self):
-        store = WindowsSecureStore()
-        with mock.patch("core.secure_store.subprocess.run") as run:
-            results = [
-                store.get(SERVICE, ACCOUNT),
-                store.set(SERVICE, ACCOUNT, SECRET),
-                store.delete(SERVICE, ACCOUNT),
-            ]
+class WindowsSecureStoreTests(unittest.TestCase):
+    class Native:
+        def __init__(self) -> None:
+            self.values: dict[tuple[str, str], bytes] = {}
+            self.failure: int | None = None
 
-        self.assertTrue(all(result.status == STATUS_NOT_AVAILABLE for result in results))
+        def get(self, service: str, account: str):
+            if self.failure is not None:
+                return self.failure, None
+            value = self.values.get((service, account))
+            return (0, value) if value is not None else (1168, None)
+
+        def set(self, service: str, account: str, secret: bytes):
+            if self.failure is not None:
+                return self.failure
+            self.values[(service, account)] = secret
+            return 0
+
+        def delete(self, service: str, account: str):
+            if self.failure is not None:
+                return self.failure
+            if self.values.pop((service, account), None) is None:
+                return 1168
+            return 0
+
+    def test_windows_crud_update_delete_and_restart_persistence(self):
+        native = self.Native()
+        first_process = WindowsSecureStore(native)
+        with mock.patch("core.secure_store.subprocess.run") as run:
+            self.assertEqual(
+                first_process.set(SERVICE, ACCOUNT, SECRET).status, STATUS_SUCCESS
+            )
+            restarted = WindowsSecureStore(native)
+            self.assertEqual(restarted.get(SERVICE, ACCOUNT).value, SECRET)
+            self.assertEqual(
+                restarted.set(SERVICE, ACCOUNT, "updated-secret").status,
+                STATUS_SUCCESS,
+            )
+            self.assertEqual(restarted.get(SERVICE, ACCOUNT).value, "updated-secret")
+            self.assertEqual(restarted.delete(SERVICE, ACCOUNT).status, STATUS_SUCCESS)
+            self.assertEqual(restarted.get(SERVICE, ACCOUNT).status, STATUS_NOT_FOUND)
         run.assert_not_called()
+
+    def test_windows_failure_and_unavailable_are_honest(self):
+        native = self.Native()
+        native.failure = 5
+        failed = WindowsSecureStore(native).set(SERVICE, ACCOUNT, SECRET)
+        self.assertEqual(failed.status, STATUS_FAILED)
+        self.assertNotIn(SECRET, repr(failed))
+        with mock.patch(
+            "core.secure_store._WindowsCredentialManager", side_effect=OSError
+        ):
+            unavailable = WindowsSecureStore().get(SERVICE, ACCOUNT)
+        self.assertEqual(unavailable.status, STATUS_NOT_AVAILABLE)
+
+    def test_windows_lazy_initialization_is_single_and_thread_safe(self):
+        native = self.Native()
+        started = threading.Event()
+        release = threading.Event()
+
+        def create_native():
+            started.set()
+            self.assertTrue(release.wait(2))
+            return native
+
+        store = WindowsSecureStore()
+        with mock.patch(
+            "core.secure_store._WindowsCredentialManager", side_effect=create_native
+        ) as factory:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(store.get, SERVICE, ACCOUNT)
+                self.assertTrue(started.wait(2))
+                second = pool.submit(store.get, SERVICE, ACCOUNT)
+                release.set()
+                results = [first.result(timeout=2), second.result(timeout=2)]
+
+        factory.assert_called_once_with()
+        self.assertTrue(all(result.status == STATUS_NOT_FOUND for result in results))
+
+
+class UnavailableStoreTests(unittest.TestCase):
 
     def test_unsupported_os_never_fakes_success(self):
         result = UnsupportedSecureStore().get(SERVICE, ACCOUNT)

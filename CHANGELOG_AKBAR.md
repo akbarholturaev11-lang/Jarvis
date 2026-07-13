@@ -1,5 +1,46 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-14 - Non-interactive cross-platform Gemini credential storage
+
+### Problem
+
+- macOS used `security add-generic-password -w` without a password argument.
+  That command enters an interactive TTY prompt and could leave onboarding with
+  an unavailable-storage result.
+- The legacy JSON credential was a read-only plaintext fallback rather than a
+  verified one-time migration, and Windows had no credential backend.
+
+### Fix
+
+- Replaced the macOS CLI boundary with native Security.framework `SecItem*`
+  calls and explicit authentication-UI denial; no secret enters argv or a shell.
+- Added native Windows Credential Manager CRUD while preserving Linux Secret
+  Service stdin behavior and honest unavailable/failure statuses.
+- Gemini writes now require secure-store readback verification. Added delete,
+  update/restart persistence coverage, fixed-message exception handling, and a
+  bounded, no-follow, atomic, idempotent legacy JSON migration that removes only
+  `gemini_api_key` after verified secure persistence.
+- Separated validation outcomes from storage outcomes and cleared/deallocated
+  the password widget as soon as onboarding hands the value to its bounded
+  worker.
+
+### Constraints kept
+
+- No real credential, API key, private file, environment secret, or command-line
+  secret was added or printed.
+- Other legacy JSON fields are preserved; secure-storage or cleanup uncertainty
+  fails closed.
+- Device identity and product-license users of the shared secure-store contract
+  retain the same platform-neutral result vocabulary.
+
+### Verification
+
+- Focused credential and product secure-store regression tests passed.
+- Full Python test suite passed.
+- Real disposable macOS Keychain CRUD, no-prompt behavior, three-process restart
+  persistence, update/delete, and native legacy migration/cleanup smoke tests
+  passed outside the tool sandbox without printing test secret values.
+
 ## 2026-07-13 - Exact-version product, commerce, activation and release foundation
 
 ### Added

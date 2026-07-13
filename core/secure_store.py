@@ -2,8 +2,9 @@
 
 The public contract is deliberately small: ``get``, ``set`` and ``delete``
 always return a :class:`SecureStoreResult` with one of four honest statuses.
-Platform commands are executed as argv lists with ``shell=False`` and command
-output is never copied into result messages.
+macOS and Windows use their native credential APIs.  The Linux Secret Service
+CLI receives secret bytes only over stdin with ``shell=False``.  Backend output
+and exception details are never copied into result messages.
 
 This module does not migrate or read any existing configuration file.  It is an
 isolated foundation that callers can adopt explicitly in a later change.
@@ -13,9 +14,11 @@ must map statuses to the shared English/Russian localization dictionary.
 
 from __future__ import annotations
 
+import ctypes
 import platform
 import shutil
 import subprocess
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,9 +42,35 @@ _IDENTIFIER_MAX_LENGTH: Final = 255
 _SECRET_MAX_BYTES: Final = 64 * 1024
 _COMMAND_TIMEOUT_SECONDS: Final = 15
 _IDENTIFIER_PUNCTUATION: Final = frozenset("._:@+/- ")
-_MACOS_SECURITY: Final = "/usr/bin/security"
-_MACOS_NOT_FOUND_EXIT_CODES: Final = frozenset({44})
 _SECRET_TOOL_NOT_FOUND_EXIT_CODES: Final = frozenset({1})
+_MACOS_ERR_SUCCESS: Final = 0
+_MACOS_ERR_ITEM_NOT_FOUND: Final = -25300
+_MACOS_ERR_DUPLICATE_ITEM: Final = -25299
+_WINDOWS_ERROR_NOT_FOUND: Final = 1168
+_WINDOWS_CRED_TYPE_GENERIC: Final = 1
+_WINDOWS_CRED_PERSIST_LOCAL_MACHINE: Final = 2
+_CF_STRING_ENCODING_UTF8: Final = 0x08000100
+
+
+class _WindowsFileTime(ctypes.Structure):
+    _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
+
+
+class _WindowsCredential(ctypes.Structure):
+    _fields_ = [
+        ("Flags", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+        ("TargetName", ctypes.c_wchar_p),
+        ("Comment", ctypes.c_wchar_p),
+        ("LastWritten", _WindowsFileTime),
+        ("CredentialBlobSize", ctypes.c_uint32),
+        ("CredentialBlob", ctypes.POINTER(ctypes.c_ubyte)),
+        ("Persist", ctypes.c_uint32),
+        ("AttributeCount", ctypes.c_uint32),
+        ("Attributes", ctypes.c_void_p),
+        ("TargetAlias", ctypes.c_wchar_p),
+        ("UserName", ctypes.c_wchar_p),
+    ]
 
 
 class _SecretInput(str):
@@ -150,17 +179,6 @@ def _stdout_text(completed: subprocess.CompletedProcess[str]) -> str:
     return ""
 
 
-def _prompt_secret_from_stdout(completed: subprocess.CompletedProcess[str]) -> str:
-    """Read output from a CLI that terminates its printed secret with a newline."""
-
-    text = _stdout_text(completed)
-    if text.endswith("\r\n"):
-        return text[:-2]
-    if text.endswith("\n"):
-        return text[:-1]
-    return text
-
-
 def _has_stderr(completed: subprocess.CompletedProcess[str]) -> bool:
     """Tell an operational error from an empty lookup without exposing details."""
 
@@ -208,68 +226,306 @@ class SecureStore(ABC):
         raise NotImplementedError
 
 
-class MacOSKeychainStore(SecureStore):
-    """Secure store backed by the macOS ``security`` command."""
+class _MacOSNativeKeychain:
+    """Small ctypes bridge to Security.framework with no CLI/TTY boundary."""
 
-    def _get(self, service: str, account: str) -> SecureStoreResult:
-        completed, run_status = _run_command(
+    _CORE_FOUNDATION = (
+        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+    )
+    _SECURITY = "/System/Library/Frameworks/Security.framework/Security"
+
+    def __init__(self) -> None:
+        self._cf = ctypes.CDLL(self._CORE_FOUNDATION)
+        self._security = ctypes.CDLL(self._SECURITY)
+        self._configure_functions()
+        self._key_callbacks = ctypes.c_void_p(
+            ctypes.addressof(
+                ctypes.c_byte.in_dll(self._cf, "kCFTypeDictionaryKeyCallBacks")
+            )
+        )
+        self._value_callbacks = ctypes.c_void_p(
+            ctypes.addressof(
+                ctypes.c_byte.in_dll(self._cf, "kCFTypeDictionaryValueCallBacks")
+            )
+        )
+        self._true = self._symbol(self._cf, "kCFBooleanTrue")
+        self._constants = {
+            name: self._symbol(self._security, name)
+            for name in (
+                "kSecClass",
+                "kSecClassGenericPassword",
+                "kSecAttrService",
+                "kSecAttrAccount",
+                "kSecValueData",
+                "kSecReturnData",
+                "kSecMatchLimit",
+                "kSecMatchLimitOne",
+                "kSecUseAuthenticationUI",
+                "kSecUseAuthenticationUIFail",
+            )
+        }
+
+    @staticmethod
+    def _symbol(library: ctypes.CDLL, name: str) -> int:
+        value = ctypes.c_void_p.in_dll(library, name).value
+        if not value:
+            raise OSError("Required secure-store symbol is unavailable.")
+        return value
+
+    def _configure_functions(self) -> None:
+        self._cf.CFStringCreateWithBytes.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_long,
+            ctypes.c_uint32,
+            ctypes.c_bool,
+        ]
+        self._cf.CFStringCreateWithBytes.restype = ctypes.c_void_p
+        self._cf.CFDataCreate.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_long,
+        ]
+        self._cf.CFDataCreate.restype = ctypes.c_void_p
+        self._cf.CFDataGetLength.argtypes = [ctypes.c_void_p]
+        self._cf.CFDataGetLength.restype = ctypes.c_long
+        self._cf.CFDataGetBytePtr.argtypes = [ctypes.c_void_p]
+        self._cf.CFDataGetBytePtr.restype = ctypes.POINTER(ctypes.c_ubyte)
+        self._cf.CFDictionaryCreate.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        self._cf.CFDictionaryCreate.restype = ctypes.c_void_p
+        self._cf.CFRelease.argtypes = [ctypes.c_void_p]
+        self._cf.CFRelease.restype = None
+        self._security.SecItemCopyMatching.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._security.SecItemCopyMatching.restype = ctypes.c_int32
+        self._security.SecItemUpdate.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        self._security.SecItemUpdate.restype = ctypes.c_int32
+        self._security.SecItemAdd.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        self._security.SecItemAdd.restype = ctypes.c_int32
+        self._security.SecItemDelete.argtypes = [ctypes.c_void_p]
+        self._security.SecItemDelete.restype = ctypes.c_int32
+
+    def _string(self, value: str) -> int:
+        encoded = value.encode("utf-8")
+        result = self._cf.CFStringCreateWithBytes(
+            None,
+            encoded,
+            len(encoded),
+            _CF_STRING_ENCODING_UTF8,
+            False,
+        )
+        if not result:
+            raise OSError("Secure-store string allocation failed.")
+        return result
+
+    def _data(self, value: bytes) -> int:
+        buffer = (ctypes.c_ubyte * len(value)).from_buffer_copy(value)
+        try:
+            result = self._cf.CFDataCreate(None, buffer, len(value))
+        finally:
+            ctypes.memset(buffer, 0, len(value))
+        if not result:
+            raise OSError("Secure-store data allocation failed.")
+        return result
+
+    def _dictionary(self, pairs: list[tuple[int, int]]) -> int:
+        keys = (ctypes.c_void_p * len(pairs))(*(pair[0] for pair in pairs))
+        values = (ctypes.c_void_p * len(pairs))(*(pair[1] for pair in pairs))
+        result = self._cf.CFDictionaryCreate(
+            None,
+            keys,
+            values,
+            len(pairs),
+            self._key_callbacks,
+            self._value_callbacks,
+        )
+        if not result:
+            raise OSError("Secure-store query allocation failed.")
+        return result
+
+    def _query(self, service_ref: int, account_ref: int) -> int:
+        c = self._constants
+        return self._dictionary(
             [
-                _MACOS_SECURITY,
-                "find-generic-password",
-                "-a",
-                account,
-                "-s",
-                service,
-                "-w",
+                (c["kSecClass"], c["kSecClassGenericPassword"]),
+                (c["kSecAttrService"], service_ref),
+                (c["kSecAttrAccount"], account_ref),
+                (
+                    c["kSecUseAuthenticationUI"],
+                    c["kSecUseAuthenticationUIFail"],
+                ),
             ]
         )
-        if completed is None:
-            return _run_failure(run_status)
-        if completed.returncode in _MACOS_NOT_FOUND_EXIT_CODES:
-            return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
-        if completed.returncode != 0:
+
+    def get(self, service: str, account: str) -> tuple[int, bytes | None]:
+        service_ref = self._string(service)
+        account_ref = self._string(account)
+        query = 0
+        try:
+            c = self._constants
+            query = self._dictionary(
+                [
+                    (c["kSecClass"], c["kSecClassGenericPassword"]),
+                    (c["kSecAttrService"], service_ref),
+                    (c["kSecAttrAccount"], account_ref),
+                    (c["kSecReturnData"], self._true),
+                    (c["kSecMatchLimit"], c["kSecMatchLimitOne"]),
+                    (
+                        c["kSecUseAuthenticationUI"],
+                        c["kSecUseAuthenticationUIFail"],
+                    ),
+                ]
+            )
+        finally:
+            self._cf.CFRelease(service_ref)
+            self._cf.CFRelease(account_ref)
+        result = ctypes.c_void_p()
+        try:
+            status = int(
+                self._security.SecItemCopyMatching(query, ctypes.byref(result))
+            )
+        finally:
+            self._cf.CFRelease(query)
+        if status != _MACOS_ERR_SUCCESS or not result.value:
+            if result.value:
+                self._cf.CFRelease(result)
+            return status, None
+        try:
+            length = int(self._cf.CFDataGetLength(result))
+            if length <= 0 or length > _SECRET_MAX_BYTES:
+                return -1, None
+            pointer = self._cf.CFDataGetBytePtr(result)
+            if not pointer:
+                return -1, None
+            return status, ctypes.string_at(pointer, length)
+        finally:
+            self._cf.CFRelease(result)
+
+    def set(self, service: str, account: str, secret: bytes) -> int:
+        service_ref = self._string(service)
+        account_ref = self._string(account)
+        secret_ref = self._data(secret)
+        query = attributes = addition = 0
+        try:
+            c = self._constants
+            query = self._query(service_ref, account_ref)
+            attributes = self._dictionary([(c["kSecValueData"], secret_ref)])
+            addition = self._dictionary(
+                [
+                    (c["kSecClass"], c["kSecClassGenericPassword"]),
+                    (c["kSecAttrService"], service_ref),
+                    (c["kSecAttrAccount"], account_ref),
+                    (c["kSecValueData"], secret_ref),
+                    (
+                        c["kSecUseAuthenticationUI"],
+                        c["kSecUseAuthenticationUIFail"],
+                    ),
+                ]
+            )
+        finally:
+            self._cf.CFRelease(service_ref)
+            self._cf.CFRelease(account_ref)
+            self._cf.CFRelease(secret_ref)
+        try:
+            status = int(self._security.SecItemUpdate(query, attributes))
+            if status == _MACOS_ERR_ITEM_NOT_FOUND:
+                status = int(self._security.SecItemAdd(addition, None))
+                if status == _MACOS_ERR_DUPLICATE_ITEM:
+                    status = int(self._security.SecItemUpdate(query, attributes))
+            return status
+        finally:
+            self._cf.CFRelease(query)
+            self._cf.CFRelease(attributes)
+            self._cf.CFRelease(addition)
+
+    def delete(self, service: str, account: str) -> int:
+        service_ref = self._string(service)
+        account_ref = self._string(account)
+        try:
+            query = self._query(service_ref, account_ref)
+        finally:
+            self._cf.CFRelease(service_ref)
+            self._cf.CFRelease(account_ref)
+        try:
+            return int(self._security.SecItemDelete(query))
+        finally:
+            self._cf.CFRelease(query)
+
+
+class MacOSKeychainStore(SecureStore):
+    """Secure store backed directly by macOS Security.framework."""
+
+    def __init__(self, native: object | None = None) -> None:
+        self._native = native
+        self._native_load_attempted = native is not None
+        self._native_load_lock = threading.Lock()
+
+    def _backend(self) -> object | None:
+        if not self._native_load_attempted:
+            with self._native_load_lock:
+                if not self._native_load_attempted:
+                    try:
+                        self._native = _MacOSNativeKeychain()
+                    except Exception:
+                        self._native = None
+                    self._native_load_attempted = True
+        return self._native
+
+    def _get(self, service: str, account: str) -> SecureStoreResult:
+        backend = self._backend()
+        if backend is None:
+            return _run_failure(STATUS_NOT_AVAILABLE)
+        try:
+            status, raw = backend.get(service, account)
+        except Exception:
             return _run_failure(STATUS_FAILED)
-        secret = _prompt_secret_from_stdout(completed)
-        if not secret:
-            return SecureStoreResult(STATUS_FAILED, message="Secure storage returned no secret.")
+        if status == _MACOS_ERR_ITEM_NOT_FOUND:
+            return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
+        if status != _MACOS_ERR_SUCCESS or raw is None:
+            return _run_failure(STATUS_FAILED)
+        try:
+            secret = raw.decode("utf-8")
+        except (UnicodeDecodeError, AttributeError):
+            return _run_failure(STATUS_FAILED)
+        if not _valid_secret(secret):
+            return _run_failure(STATUS_FAILED)
         return SecureStoreResult(STATUS_SUCCESS, value=secret, message="Secret retrieved.")
 
     def _set(self, service: str, account: str, secret: str) -> SecureStoreResult:
-        completed, run_status = _run_command(
-            [
-                _MACOS_SECURITY,
-                "add-generic-password",
-                "-a",
-                account,
-                "-s",
-                service,
-                "-U",
-                "-w",
-            ],
-            input_text=f"{secret}\n",
-        )
-        if completed is None:
-            return _run_failure(run_status)
-        if completed.returncode != 0:
+        backend = self._backend()
+        if backend is None:
+            return _run_failure(STATUS_NOT_AVAILABLE)
+        try:
+            status = backend.set(service, account, secret.encode("utf-8"))
+        except Exception:
+            return _run_failure(STATUS_FAILED)
+        if status != _MACOS_ERR_SUCCESS:
             return _run_failure(STATUS_FAILED)
         return SecureStoreResult(STATUS_SUCCESS, message="Secret stored.")
 
     def _delete(self, service: str, account: str) -> SecureStoreResult:
-        completed, run_status = _run_command(
-            [
-                _MACOS_SECURITY,
-                "delete-generic-password",
-                "-a",
-                account,
-                "-s",
-                service,
-            ]
-        )
-        if completed is None:
-            return _run_failure(run_status)
-        if completed.returncode in _MACOS_NOT_FOUND_EXIT_CODES:
+        backend = self._backend()
+        if backend is None:
+            return _run_failure(STATUS_NOT_AVAILABLE)
+        try:
+            status = backend.delete(service, account)
+        except Exception:
+            return _run_failure(STATUS_FAILED)
+        if status == _MACOS_ERR_ITEM_NOT_FOUND:
             return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
-        if completed.returncode != 0:
+        if status != _MACOS_ERR_SUCCESS:
             return _run_failure(STATUS_FAILED)
         return SecureStoreResult(STATUS_SUCCESS, message="Secret deleted.")
 
@@ -369,24 +625,154 @@ class LinuxSecretToolStore(SecureStore):
         return SecureStoreResult(STATUS_SUCCESS, message="Secret deleted.")
 
 
-class WindowsSecureStore(SecureStore):
-    """Honest placeholder until a verified Windows secure backend is added."""
+class _WindowsCredentialManager:
+    """Small ctypes bridge to the native Windows Credential Manager."""
+
+    def __init__(self) -> None:
+        self._advapi = ctypes.WinDLL("Advapi32", use_last_error=True)
+        credential_pointer = ctypes.POINTER(_WindowsCredential)
+        self._advapi.CredWriteW.argtypes = [credential_pointer, ctypes.c_uint32]
+        self._advapi.CredWriteW.restype = ctypes.c_int
+        self._advapi.CredReadW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.POINTER(credential_pointer),
+        ]
+        self._advapi.CredReadW.restype = ctypes.c_int
+        self._advapi.CredDeleteW.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+        ]
+        self._advapi.CredDeleteW.restype = ctypes.c_int
+        self._advapi.CredFree.argtypes = [ctypes.c_void_p]
+        self._advapi.CredFree.restype = None
 
     @staticmethod
-    def _not_available() -> SecureStoreResult:
-        return SecureStoreResult(
-            STATUS_NOT_AVAILABLE,
-            message="Windows secure storage is not available in this build.",
+    def _target(service: str, account: str) -> str:
+        return f"{service}:{account}"
+
+    def get(self, service: str, account: str) -> tuple[int, bytes | None]:
+        pointer = ctypes.POINTER(_WindowsCredential)()
+        ok = self._advapi.CredReadW(
+            self._target(service, account),
+            _WINDOWS_CRED_TYPE_GENERIC,
+            0,
+            ctypes.byref(pointer),
         )
+        if not ok:
+            return int(ctypes.get_last_error()), None
+        try:
+            credential = pointer.contents
+            size = int(credential.CredentialBlobSize)
+            if size <= 0 or size > _SECRET_MAX_BYTES:
+                return -1, None
+            if not credential.CredentialBlob:
+                return -1, None
+            return 0, ctypes.string_at(credential.CredentialBlob, size)
+        finally:
+            self._advapi.CredFree(pointer)
+
+    def set(self, service: str, account: str, secret: bytes) -> int:
+        buffer = (ctypes.c_ubyte * len(secret)).from_buffer_copy(secret)
+        credential = _WindowsCredential()
+        credential.Type = _WINDOWS_CRED_TYPE_GENERIC
+        credential.TargetName = self._target(service, account)
+        credential.CredentialBlobSize = len(secret)
+        credential.CredentialBlob = ctypes.cast(
+            buffer, ctypes.POINTER(ctypes.c_ubyte)
+        )
+        credential.Persist = _WINDOWS_CRED_PERSIST_LOCAL_MACHINE
+        credential.UserName = account
+        try:
+            ok = self._advapi.CredWriteW(ctypes.byref(credential), 0)
+            return 0 if ok else int(ctypes.get_last_error())
+        finally:
+            ctypes.memset(buffer, 0, len(secret))
+
+    def delete(self, service: str, account: str) -> int:
+        ok = self._advapi.CredDeleteW(
+            self._target(service, account),
+            _WINDOWS_CRED_TYPE_GENERIC,
+            0,
+        )
+        return 0 if ok else int(ctypes.get_last_error())
+
+
+class WindowsSecureStore(SecureStore):
+    """Secure store backed by the native Windows Credential Manager."""
+
+    def __init__(self, native: object | None = None) -> None:
+        self._native = native
+        self._native_load_attempted = native is not None
+        self._native_load_lock = threading.Lock()
+
+    def _backend(self) -> object | None:
+        if not self._native_load_attempted:
+            with self._native_load_lock:
+                if not self._native_load_attempted:
+                    try:
+                        self._native = _WindowsCredentialManager()
+                    except Exception:
+                        self._native = None
+                    self._native_load_attempted = True
+        return self._native
 
     def _get(self, service: str, account: str) -> SecureStoreResult:
-        return self._not_available()
+        backend = self._backend()
+        if backend is None:
+            return SecureStoreResult(
+                STATUS_NOT_AVAILABLE,
+                message="Windows Credential Manager is not available.",
+            )
+        try:
+            status, raw = backend.get(service, account)
+        except Exception:
+            return _run_failure(STATUS_FAILED)
+        if status == _WINDOWS_ERROR_NOT_FOUND:
+            return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
+        if status != 0 or raw is None:
+            return _run_failure(STATUS_FAILED)
+        try:
+            secret = raw.decode("utf-8")
+        except (UnicodeDecodeError, AttributeError):
+            return _run_failure(STATUS_FAILED)
+        if not _valid_secret(secret):
+            return _run_failure(STATUS_FAILED)
+        return SecureStoreResult(STATUS_SUCCESS, value=secret, message="Secret retrieved.")
 
     def _set(self, service: str, account: str, secret: str) -> SecureStoreResult:
-        return self._not_available()
+        backend = self._backend()
+        if backend is None:
+            return SecureStoreResult(
+                STATUS_NOT_AVAILABLE,
+                message="Windows Credential Manager is not available.",
+            )
+        try:
+            status = backend.set(service, account, secret.encode("utf-8"))
+        except Exception:
+            return _run_failure(STATUS_FAILED)
+        if status != 0:
+            return _run_failure(STATUS_FAILED)
+        return SecureStoreResult(STATUS_SUCCESS, message="Secret stored.")
 
     def _delete(self, service: str, account: str) -> SecureStoreResult:
-        return self._not_available()
+        backend = self._backend()
+        if backend is None:
+            return SecureStoreResult(
+                STATUS_NOT_AVAILABLE,
+                message="Windows Credential Manager is not available.",
+            )
+        try:
+            status = backend.delete(service, account)
+        except Exception:
+            return _run_failure(STATUS_FAILED)
+        if status == _WINDOWS_ERROR_NOT_FOUND:
+            return SecureStoreResult(STATUS_NOT_FOUND, message="Secret was not found.")
+        if status != 0:
+            return _run_failure(STATUS_FAILED)
+        return SecureStoreResult(STATUS_SUCCESS, message="Secret deleted.")
 
 
 class UnsupportedSecureStore(SecureStore):

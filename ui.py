@@ -43,11 +43,11 @@ from core.i18n import (
     t,
 )
 from core.capabilities import list_capabilities
-from core.credential_service import load_gemini_api_key, store_gemini_api_key
+from core.credential_service import load_gemini_api_key
+from core.gemini_credential_onboarding import validate_and_store_gemini_api_key
 from core.macros import load_macros, add_macro, remove_macro
 from core.app_settings import load_settings
 from core.app_paths import resolve_app_paths
-from core.gemini_credential_validator import validate_gemini_api_key
 
 def _base_dir() -> Path:
     return resolve_app_paths().resource_root
@@ -1029,6 +1029,10 @@ class SetupOverlay(QWidget):
                 f" QLineEdit {{ border: 1px solid {C.RED}; }}"
             )
             return
+        # Minimize how long the plaintext survives in Qt-owned widget memory.
+        # The emitted Python value lives only for the bounded validation/store
+        # worker and is never logged or persisted outside the secure store.
+        self._key_input.clear()
         self.done.emit(key, self._sel_os)
 
     def set_busy(self, busy: bool) -> None:
@@ -3197,14 +3201,10 @@ class MainWindow(QMainWindow):
             self._overlay.set_busy(True)
 
         def validate_and_store() -> None:
-            validation = validate_gemini_api_key(key)
-            if not validation.ok:
-                self._setup_result_sig.emit(False, validation.status, os_name)
-                return
-            stored = store_gemini_api_key(key)
+            outcome = validate_and_store_gemini_api_key(key)
             self._setup_result_sig.emit(
-                stored.ok,
-                "success" if stored.ok else stored.status,
+                outcome.ok,
+                outcome.status,
                 os_name,
             )
 
@@ -3222,8 +3222,10 @@ class MainWindow(QMainWindow):
             return
         self._ready = True
         if self._overlay:
-            self._overlay.hide()
+            overlay = self._overlay
+            overlay.hide()
             self._overlay = None
+            overlay.deleteLater()
         self._apply_state("LISTENING")
         self._log.append_log(t("log.initialised", os=os_name.upper()))
 
