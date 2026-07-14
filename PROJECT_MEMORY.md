@@ -236,6 +236,25 @@ artifact download. The current backend runtime is a single-process SQLite MVP;
 multi-instance production needs PostgreSQL/shared session-rate-limit-grant state
 and private streaming object storage.
 
+Fresh-purchase payment durability (BOSQICH 3): server idempotency is keyed on
+`(license_id, client_submission_id)` plus the evidence sha256, so a retry must
+reuse both the same idempotency key and the same sanitized bytes. Two invariants
+protect this. First, `product_backend/initial_purchase.py::InitialPurchaseAuthorizer`
+does not time-prune a grant while a request holds its reservation: grant expiry
+gates admission at `reserve_grant`, and `commit_grant` stays deterministic after
+the payment row is persisted, so a slow upload can never make an accepted payment
+return a spurious 503 (this matches `DeviceActionGrantManager`). Second, the
+client persists the payment request before the network call in
+`core/payment_request_store.py` (`DurablePaymentRequestStore`): envelope metadata
+lives as one secret in the OS `SecureStore`, and the sanitized screenshot is
+AES-256-GCM encrypted (associated-data-bound to the envelope identity) in a
+private `0o600` blob — never plain JSON. `ProductRuntimeService` resumes a pending
+request after a restart or lost response with the exact same idempotency key and
+bytes, clears it only after a confirmed submission, and returns an honest
+`not_available` when the secure store is unavailable. Durable update-payment
+envelopes are not yet implemented; the update path relies on the server's
+one-open-payment-per-license/release uniqueness for duplicate protection.
+
 The updater deliberately does not mutate a real installed app yet. macOS needs a
 signed/notarized atomic helper, persisted `.app` backup location and real
 post-launch health marker before install can be enabled or reported successful.

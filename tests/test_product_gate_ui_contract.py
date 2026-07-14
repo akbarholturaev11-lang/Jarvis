@@ -83,13 +83,28 @@ class ProductGateUiContractTests(unittest.TestCase):
         self.assertIn("_key_input.setMaxLength(256)", source)
         self.assertIn("with self._win._bootstrap_lock", source)
 
-    def test_purchase_entry_is_explicitly_honest_until_stage_three(self) -> None:
+    def test_purchase_flow_is_server_backed_sanitized_and_bounded(self) -> None:
         source = (ROOT / "ui.py").read_text(encoding="utf-8")
-        purchase = ast.unparse(
-            _function(source, "ProductGateOverlay", "_show_purchase_entry")
+        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+        select_payment = ast.unparse(
+            _function(source, "MainWindow", "_select_initial_payment")
         )
-        self.assertIn("product.gate.purchase_not_available", purchase)
-        self.assertNotIn("success", purchase.casefold())
+        schedule = ast.unparse(
+            _function(source, "MainWindow", "_schedule_payment_poll")
+        )
+        payment_result = ast.unparse(
+            _function(source, "ProductGateOverlay", "apply_payment_result")
+        )
+        self.assertIn("prepare_payment_evidence(selected)", select_payment)
+        self.assertIn("evidence.content", select_payment)
+        self.assertNotIn("read_bytes", select_payment)
+        self.assertIn("_payment_poll_delays", schedule)
+        self.assertNotIn("while", schedule)
+        self.assertIn("product.gate.payment_rejected", payment_result)
+        self.assertIn("setPlainText", source)
+        self.assertIn("product_runtime.prepare_initial_purchase", main_source)
+        self.assertIn("product_runtime.submit_initial_purchase", main_source)
+        self.assertIn("product_runtime.poll_initial_purchase", main_source)
 
 
 if __name__ == "__main__":

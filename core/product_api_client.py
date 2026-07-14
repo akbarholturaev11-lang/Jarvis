@@ -125,6 +125,7 @@ class _SafeRedirectHandler(HTTPRedirectHandler):
             "cookie",
             "x-csrf-token",
             "x-device-grant",
+            "x-purchase-grant",
         }
         supplied_headers = {
             str(name).casefold()

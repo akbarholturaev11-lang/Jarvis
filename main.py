@@ -2596,12 +2596,24 @@ class JarvisLive:
                 return {
                     "action": action,
                     "status": result.status if result is not None else "failed",
+                    "payment_id": (
+                        result.payment_id if result is not None else None
+                    ),
+                    "rejection_reason": (
+                        result.rejection_reason if result is not None else None
+                    ),
                 }
             if action == "check_update_payment":
                 result = self._product_runtime.poll_update_purchase()
                 return {
                     "action": action,
                     "status": result.status if result is not None else "failed",
+                    "payment_id": (
+                        result.payment_id if result is not None else None
+                    ),
+                    "rejection_reason": (
+                        result.rejection_reason if result is not None else None
+                    ),
                 }
             if action == "download_product_update":
                 result = self._product_runtime.download_update()
@@ -2888,7 +2900,27 @@ def main():
     license_gate = ProductLicenseGate(product_runtime)
     ui.on_product_gate_activate = license_gate.activate
     ui.on_product_gate_refresh = license_gate.evaluate
+    ui.on_product_gate_prepare_purchase = product_runtime.prepare_initial_purchase
+    ui.on_product_gate_submit_purchase = product_runtime.submit_initial_purchase
+    ui.on_product_gate_poll_purchase = product_runtime.poll_initial_purchase
     bootstrap = ProductBootstrapCoordinator(license_gate, ui)
+
+    def resume_pending_payment():
+        # A previous run may have submitted a payment whose response was lost,
+        # or been closed before the submission confirmed. Re-submit that exact
+        # request idempotently (same key + stored evidence) so the server is
+        # never asked to create a duplicate purchase. Best-effort and offline
+        # safe: any failure leaves the durable request pending for later.
+        try:
+            product_runtime.resume_pending_payment()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=resume_pending_payment,
+        daemon=True,
+        name="product-payment-resume",
+    ).start()
 
     def runner():
         prepared = bootstrap.prepare(

@@ -20,7 +20,9 @@ from core.product_purchase import (
     STATUS_ENTITLED,
     STATUS_INVALID,
     STATUS_PENDING,
+    STATUS_PURCHASE_REQUIRED,
     STATUS_SUBMITTED,
+    InitialPurchaseOffer,
     ProductPurchaseService,
 )
 from core.product_version import BUNDLE_ID, PRODUCT_ID
@@ -191,6 +193,8 @@ class ProductPurchaseServiceTests(unittest.TestCase):
             "rejection_reason": None,
             "active_device_bound": True,
             "entitlement_certificate": certificate,
+            "features": {"en": "Feature", "ru": "Функция"},
+            "fixes": {"en": "Fix", "ru": "Исправление"},
         }
 
     def test_payment_evidence_uses_device_grant_and_bounded_multipart(self):
@@ -293,6 +297,106 @@ class ProductPurchaseServiceTests(unittest.TestCase):
 
         self.assertEqual(result.status, STATUS_INVALID)
         self.assertFalse(result.entitled)
+
+    def test_fresh_device_offer_and_initial_payment_are_proof_bound(self):
+        purchase_id = "purchase_" + ("1" * 32)
+        nonce = _b64(b"i" * 32)
+        issue = {
+            "challenge_id": "pchl_purchase_001",
+            "challenge_nonce": nonce,
+            "purchase_id": purchase_id,
+            "release_id": RELEASE_ID,
+            "version": VERSION,
+            "issued_at": "2026-07-13T03:00:00Z",
+            "expires_at": "2026-07-13T03:02:00Z",
+        }
+        offer = {
+            "purchase_grant": "initial-purchase-grant-001",
+            "purchase_id": purchase_id,
+            "release_id": RELEASE_ID,
+            "expires_at": "2026-07-13T03:02:00Z",
+            "release_info": {
+                "version": VERSION,
+                "price_minor": 125000,
+                "currency": "UZS",
+                "supported_platforms": ["macos"],
+                "features": {"en": "Feature", "ru": "Функция"},
+                "fixes": {"en": "Fix", "ru": "Исправление"},
+            },
+            "payment_instructions": {
+                "status": "configured",
+                "method": {"en": "Transfer", "ru": "Перевод"},
+                "recipient": "Test recipient",
+                "instructions": {"en": "Pay exactly", "ru": "Оплатите точно"},
+            },
+        }
+        payment = {
+            "id": "pay_purchase_001",
+            "license_id": LICENSE_ID,
+            "purchase_id": purchase_id,
+            "release_id": RELEASE_ID,
+            "version": VERSION,
+            "amount_minor": 125000,
+            "currency": "UZS",
+            "paid_at": "2026-07-13T02:50:00Z",
+            "submitted_at": "2026-07-13T03:00:00Z",
+            "state": "pending",
+            "rejection_reason": None,
+            "idempotent": False,
+        }
+        service, transport = self._service(
+            [
+                Response(issue, "https://api.example.test/api/purchases/challenges"),
+                Response(
+                    offer,
+                    "https://api.example.test/api/purchases/challenges/"
+                    "pchl_purchase_001/verify",
+                ),
+                Response(
+                    payment,
+                    "https://api.example.test/api/purchases/"
+                    f"{purchase_id}/releases/{RELEASE_ID}/payments",
+                ),
+            ]
+        )
+
+        prepared = service.prepare_initial_purchase(
+            purchase_id=purchase_id,
+            version=VERSION,
+            platform="macos",
+            architecture="arm64",
+        )
+        self.assertEqual(prepared.status, STATUS_PURCHASE_REQUIRED)
+        self.assertTrue(prepared.ready)
+        self.assertIsInstance(prepared.offer, InitialPurchaseOffer)
+        assert prepared.offer is not None
+        proof = json.loads(transport.requests[1]["body"])
+        self.assertTrue(
+            verify_device_challenge(
+                public_key_base64=proof["public_key_base64"],
+                device_key_fingerprint=self.identity.fingerprint,
+                challenge_nonce=nonce,
+                signature_base64=proof["signature_base64"],
+            ).ok
+        )
+        submitted = service.submit_initial_payment(
+            prepared.offer,
+            paid_at="2026-07-13T02:50:00Z",
+            screenshot=b"sanitized-payment-image",
+            content_type="image/png",
+            submission_id="purchase_" + ("2" * 32),
+        )
+        self.assertEqual(submitted.status, STATUS_SUBMITTED)
+        self.assertEqual(submitted.license_id, LICENSE_ID)
+        self.assertEqual(
+            transport.requests[2]["headers"]["X-Purchase-Grant"],
+            "initial-purchase-grant-001",
+        )
+        self.assertIn(
+            'name="client_submission_id"',
+            transport.requests[2]["body"].decode("latin-1"),
+        )
+        self.assertNotIn("initial-purchase-grant-001", repr(prepared.offer))
 
 
 if __name__ == "__main__":

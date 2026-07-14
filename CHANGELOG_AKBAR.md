@@ -1,5 +1,65 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-14 - Durable payment and activation flow (BOSQICH 3)
+
+### Problem
+
+- Fresh-purchase evidence upload could return a spurious `503` after the
+  payment row was already durably persisted. The one-time upload grant was
+  reserved for the request but was still time-pruned on expiry, so a slow or
+  large upload that crossed the grant TTL made the closing `commit_grant` fail
+  as if the authorization were lost — turning an accepted payment into an error
+  and, on the client's retry, risking a duplicate. (P1-1)
+- The client held the payment idempotency key only in memory. A lost response
+  or an app restart discarded it, so a retry could mint a new key (and a new
+  purchase account/license), creating a duplicate payment. (P1-2)
+
+### Fix
+
+- `InitialPurchaseAuthorizer` no longer time-prunes a grant that an in-flight
+  request has reserved. Grant expiry now gates only admission at
+  `reserve_grant`; once reserved, `commit_grant` is deterministic after the
+  payment is persisted. This mirrors the already-correct
+  `DeviceActionGrantManager`.
+- Added `core/payment_request_store.py`: a durable, envelope-encrypted client
+  payment-request store. Metadata (idempotency key, release/device/customer
+  context, proof digest, state, timestamps, server ids, and the per-request
+  data key) is one small secret inside the OS `SecureStore`; the sanitized
+  screenshot is AES-256-GCM encrypted (AAD-bound to the envelope identity) in a
+  private `0o600` blob. No secret or screenshot byte is ever written as plain
+  JSON, and clearing the keychain secret cryptographically shreds the blob.
+- `ProductRuntimeService` now persists the request before submitting, resumes a
+  pending request after a restart or lost response with the exact same
+  idempotency key and evidence (`resume_pending_payment`), and clears the
+  request only after a confirmed submission. `main.py` best-effort resumes any
+  pending request at startup. If the secure store is unavailable the submit
+  returns an honest `not_available` instead of submitting without durability.
+- This finalizes the BOSQICH 3 fresh-purchase path built on top of the earlier
+  secure metadata-free screenshot sanitization, server idempotency by
+  `client_submission_id`, explicit reject/resubmit supersession, and the real
+  client↔backend end-to-end flow.
+
+### Constraints kept
+
+- One paid plan, per-exact-semantic-version entitlement, no subscription/kill
+  switch. Payment screenshots stay private evidence objects.
+- Every new capability is cross-platform through `SecureStore` and the
+  `cryptography` AEAD, or returns an explicit honest `not_available`; no new
+  visible UI string was introduced.
+
+### Verification
+
+- `.venv/bin/python -m pytest tests/ -q`: 519 passed, 367 subtests, 0 failures.
+- New tests: durable envelope save/load/clear, corrupt/tampered/unavailable
+  paths (`test_payment_request_store.py`); client restart, lost-response resume
+  with a reused idempotency key, retry ignoring a new pick, and secure-store
+  unavailable (`test_product_runtime.py`); grant-expiry commit determinism and
+  replay rejection (`test_initial_purchase.py`); and an API-level slow-upload
+  grant-expiry regression proving no spurious 503 and an idempotent retry
+  (`test_product_initial_purchase_grant_race.py`).
+- Temporarily reverting the P1-1 fix reproduced the 503 and failed the new
+  grant-expiry tests, confirming they catch the defect.
+
 ## 2026-07-14 - Product license gate before Gemini onboarding
 
 ### Fix

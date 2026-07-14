@@ -191,6 +191,7 @@ class PinnedReleaseArtifactVerifierTests(unittest.TestCase):
                 screenshot_byte_size=2048,
                 screenshot_mime_type="image/png",
                 paid_at="2026-07-13T02:59:00Z",
+                client_submission_id="submission:pinned",
             )
             repo.start_payment_review(payment.id, admin_subject="admin:operator-001")
             repo.approve_payment(payment.id, admin_subject="admin:operator-001")

@@ -24,12 +24,28 @@ from core.product_config import (
 from core.product_runtime import (
     LICENSE_ID_ACCOUNT,
     LICENSE_STATE_SERVICE,
+    PENDING_PURCHASE_ACCOUNT,
     STATUS_ENTITLED,
     STATUS_INVALID,
     STATUS_NOT_ACTIVATED,
     STATUS_NOT_AVAILABLE,
     STATUS_NOT_CONFIGURED,
     ProductRuntimeService,
+)
+from core.payment_request_store import (
+    DEFAULT_ENVELOPE_ACCOUNT,
+    DEFAULT_ENVELOPE_SERVICE,
+    PaymentRequestState,
+)
+from core.product_purchase import (
+    STATUS_PENDING,
+    STATUS_PURCHASE_REQUIRED,
+    STATUS_REJECTED,
+    STATUS_SERVER_UNAVAILABLE,
+    STATUS_SUBMITTED,
+    InitialPurchaseOffer,
+    InitialPurchaseOfferResult,
+    PurchaseResult,
 )
 from core.product_version import BUNDLE_ID, PRODUCT_ID, ProductVersion
 from core.runtime_product import RuntimeProductIdentity
@@ -118,6 +134,74 @@ class ReadbackUnavailableStore(MemoryStore):
         if (service, account) == (LICENSE_STATE_SERVICE, LICENSE_ID_ACCOUNT):
             return SecureStoreResult(STORE_NOT_AVAILABLE)
         return super()._get(service, account)
+
+
+class EnvelopeUnavailableStore(MemoryStore):
+    """A store where only the durable payment-request slot is unavailable."""
+
+    def _set(self, service: str, account: str, secret: str) -> SecureStoreResult:
+        if (service, account) == (DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT):
+            return SecureStoreResult(STORE_NOT_AVAILABLE)
+        return super()._set(service, account, secret)
+
+
+def _offer(purchase_id: str) -> InitialPurchaseOffer:
+    return InitialPurchaseOffer(
+        purchase_id,
+        "private-purchase-grant",
+        "rel_runtime_001",
+        "1.0.0",
+        125_000,
+        "UZS",
+        ("macos",),
+        "Feature",
+        "Функция",
+        "Fix",
+        "Исправление",
+        "configured",
+        "Transfer",
+        "Перевод",
+        "Recipient",
+        "Pay",
+        "Оплатите",
+        "2026-07-14T00:02:00Z",
+    )
+
+
+class _RecordingPurchase:
+    """Purchase-service stub that records the exact submission it received."""
+
+    def __init__(
+        self,
+        offer: InitialPurchaseOffer,
+        *,
+        results: list[PurchaseResult],
+    ) -> None:
+        self._offer = offer
+        self._results = list(results)
+        self.submissions: list[tuple[str, bytes, str | None]] = []
+
+    def prepare_initial_purchase(self, **_: object) -> InitialPurchaseOfferResult:
+        return InitialPurchaseOfferResult(
+            STATUS_PURCHASE_REQUIRED,
+            "offer",
+            self._offer,
+        )
+
+    def submit_initial_payment(
+        self,
+        offer: InitialPurchaseOffer,
+        *,
+        paid_at: str,
+        screenshot: bytes,
+        content_type: str,
+        submission_id: str,
+        supersedes_payment_id: str | None = None,
+    ) -> PurchaseResult:
+        self.submissions.append((submission_id, screenshot, supersedes_payment_id))
+        if len(self.submissions) <= len(self._results):
+            return self._results[len(self.submissions) - 1]
+        return self._results[-1]
 
 
 class ProductRuntimeTests(unittest.TestCase):
@@ -309,6 +393,297 @@ class ProductRuntimeTests(unittest.TestCase):
             outcome = service.activate("test-activation-key")
         self.assertEqual(outcome.status, STATUS_NOT_AVAILABLE)
         self.assertFalse(outcome.ok)
+
+    def test_initial_purchase_persists_pending_then_unlocks_offline_restart(self) -> None:
+        signing_key = Ed25519PrivateKey.generate()
+        public_key = signing_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            config = self._config(public_key)
+            service = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=config,
+                runtime_identity=runtime,
+            )
+            fingerprint = service.device_fingerprint()
+            self.assertIsNotNone(fingerprint)
+            offer = InitialPurchaseOffer(
+                "purchase_" + ("1" * 32),
+                "private-purchase-grant",
+                "rel_runtime_001",
+                "1.0.0",
+                125_000,
+                "UZS",
+                ("macos",),
+                "Feature",
+                "Функция",
+                "Fix",
+                "Исправление",
+                "configured",
+                "Transfer",
+                "Перевод",
+                "Recipient",
+                "Pay",
+                "Оплатите",
+                "2026-07-14T00:02:00Z",
+            )
+            purchase = SimpleNamespace(
+                prepare_initial_purchase=lambda **_: InitialPurchaseOfferResult(
+                    STATUS_PURCHASE_REQUIRED,
+                    "offer",
+                    offer,
+                ),
+                submit_initial_payment=lambda *args, **kwargs: PurchaseResult(
+                    STATUS_SUBMITTED,
+                    "submitted",
+                    release_id=offer.release_id,
+                    license_id=LICENSE_ID,
+                    purchase_id=offer.purchase_id,
+                    version="1.0.0",
+                    payment_id="pay_runtime_001",
+                    payment_state="pending",
+                    price_minor=125_000,
+                    currency="UZS",
+                ),
+            )
+            service._purchase = purchase
+            prepared = service.prepare_initial_purchase(
+                purchase_id=offer.purchase_id
+            )
+            self.assertTrue(prepared.ready)
+            submitted = service.submit_initial_purchase(
+                paid_at="2026-07-14T00:00:00Z",
+                screenshot=b"sanitized-image",
+                content_type="image/png",
+            )
+            self.assertEqual(submitted.status, STATUS_SUBMITTED)
+            self.assertEqual(
+                store.get(
+                    LICENSE_STATE_SERVICE,
+                    PENDING_PURCHASE_ACCOUNT,
+                ).value,
+                f"{offer.purchase_id}|{LICENSE_ID}|1.0.0",
+            )
+
+            purchase.poll_status = lambda **_: PurchaseResult(
+                STATUS_REJECTED,
+                "rejected",
+                release_id=offer.release_id,
+                version="1.0.0",
+                payment_id="pay_runtime_001",
+                payment_state="rejected",
+                price_minor=125_000,
+                currency="UZS",
+                rejection_reason="Receipt is unreadable",
+            )
+            rejected = service.poll_initial_purchase()
+            self.assertEqual(rejected.status, STATUS_REJECTED)
+            self.assertEqual(rejected.rejection_reason, "Receipt is unreadable")
+            self.assertIsNone(
+                store.get(LICENSE_STATE_SERVICE, LICENSE_ID_ACCOUNT).value
+            )
+
+            cached = service._cache.store_verified(
+                _certificate(
+                    signing_key,
+                    fingerprint=fingerprint,
+                    version="1.0.0",
+                ),
+                license_id=LICENSE_ID,
+                device_fingerprint=fingerprint,
+                version="1.0.0",
+            )
+            self.assertTrue(cached.ok)
+            purchase.poll_status = lambda **_: PurchaseResult(
+                "entitled",
+                "approved",
+                release_id=offer.release_id,
+                version="1.0.0",
+                payment_id="pay_runtime_002",
+                payment_state="approved",
+                price_minor=125_000,
+                currency="UZS",
+                certificate=cached.certificate,
+            )
+            approved = service.poll_initial_purchase()
+            self.assertTrue(approved.entitled)
+            self.assertEqual(service.local_state().status, STATUS_ENTITLED)
+            self.assertIsNone(
+                store.get(
+                    LICENSE_STATE_SERVICE,
+                    PENDING_PURCHASE_ACCOUNT,
+                ).value
+            )
+
+            restarted = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=config,
+                runtime_identity=runtime,
+            )
+            self.assertEqual(restarted.local_state().status, STATUS_ENTITLED)
+
+    def _submitted(self, offer: InitialPurchaseOffer) -> PurchaseResult:
+        return PurchaseResult(
+            STATUS_SUBMITTED,
+            "submitted",
+            release_id=offer.release_id,
+            license_id=LICENSE_ID,
+            purchase_id=offer.purchase_id,
+            version="1.0.0",
+            payment_id="pay_runtime_001",
+            payment_state="pending",
+            price_minor=125_000,
+            currency="UZS",
+        )
+
+    def test_response_loss_keeps_durable_request_and_restart_resumes_same_key(
+        self,
+    ) -> None:
+        public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            config = self._config(public_key)
+            offer = _offer("purchase_" + ("1" * 32))
+
+            first = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=config,
+                runtime_identity=runtime,
+            )
+            first_purchase = _RecordingPurchase(
+                offer,
+                results=[PurchaseResult(STATUS_SERVER_UNAVAILABLE, "lost")],
+            )
+            first._purchase = first_purchase
+            self.assertTrue(
+                first.prepare_initial_purchase(purchase_id=offer.purchase_id).ready
+            )
+            lost = first.submit_initial_purchase(
+                paid_at="2026-07-14T00:00:00Z",
+                screenshot=b"sanitized-image",
+                content_type="image/png",
+            )
+            self.assertEqual(lost.status, STATUS_SERVER_UNAVAILABLE)
+            self.assertEqual(len(first_purchase.submissions), 1)
+            original_key = first_purchase.submissions[0][0]
+            # The durable request survives; no pending purchase was recorded.
+            peek = first._payment_requests.peek()
+            assert peek.envelope is not None
+            self.assertIs(peek.envelope.state, PaymentRequestState.PENDING)
+            self.assertIsNone(
+                store.get(LICENSE_STATE_SERVICE, PENDING_PURCHASE_ACCOUNT).value
+            )
+
+            # Restart: a fresh service instance sharing the same durable stores.
+            restarted = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=config,
+                runtime_identity=runtime,
+            )
+            restart_purchase = _RecordingPurchase(
+                offer, results=[self._submitted(offer)]
+            )
+            restarted._purchase = restart_purchase
+            resumed = restarted.resume_pending_payment()
+            self.assertIsNotNone(resumed)
+            assert resumed is not None
+            self.assertEqual(resumed.status, STATUS_SUBMITTED)
+            # Exactly one submission, reusing the original key and bytes.
+            self.assertEqual(len(restart_purchase.submissions), 1)
+            self.assertEqual(restart_purchase.submissions[0][0], original_key)
+            self.assertEqual(restart_purchase.submissions[0][1], b"sanitized-image")
+            self.assertEqual(
+                store.get(LICENSE_STATE_SERVICE, PENDING_PURCHASE_ACCOUNT).value,
+                f"{offer.purchase_id}|{LICENSE_ID}|1.0.0",
+            )
+            self.assertIsNone(restarted._payment_requests.peek().envelope)
+
+    def test_retry_reuses_durable_request_ignoring_a_new_screenshot(self) -> None:
+        public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            config = self._config(public_key)
+            offer = _offer("purchase_" + ("1" * 32))
+            service = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=config,
+                runtime_identity=runtime,
+            )
+            purchase = _RecordingPurchase(
+                offer,
+                results=[
+                    PurchaseResult(STATUS_SERVER_UNAVAILABLE, "lost"),
+                    self._submitted(offer),
+                ],
+            )
+            service._purchase = purchase
+            service.prepare_initial_purchase(purchase_id=offer.purchase_id)
+            lost = service.submit_initial_purchase(
+                paid_at="2026-07-14T00:00:00Z",
+                screenshot=b"original-image",
+                content_type="image/png",
+            )
+            self.assertEqual(lost.status, STATUS_SERVER_UNAVAILABLE)
+            original_key = purchase.submissions[0][0]
+
+            # The user retries and picks a different file; the durable request
+            # (same key, same original bytes) is reused, not the new pick.
+            retried = service.submit_initial_purchase(
+                paid_at="2026-07-14T00:10:00Z",
+                screenshot=b"a-completely-different-pick",
+                content_type="image/png",
+            )
+            self.assertEqual(retried.status, STATUS_SUBMITTED)
+            self.assertEqual(len(purchase.submissions), 2)
+            self.assertEqual(purchase.submissions[1][0], original_key)
+            self.assertEqual(purchase.submissions[1][1], b"original-image")
+            self.assertIsNone(service._payment_requests.peek().envelope)
+
+    def test_secure_store_unavailable_blocks_durable_submit(self) -> None:
+        public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        store = EnvelopeUnavailableStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            config = self._config(public_key)
+            offer = _offer("purchase_" + ("1" * 32))
+            service = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=config,
+                runtime_identity=runtime,
+            )
+            purchase = _RecordingPurchase(offer, results=[self._submitted(offer)])
+            service._purchase = purchase
+            service.prepare_initial_purchase(purchase_id=offer.purchase_id)
+            result = service.submit_initial_purchase(
+                paid_at="2026-07-14T00:00:00Z",
+                screenshot=b"sanitized-image",
+                content_type="image/png",
+            )
+            self.assertEqual(result.status, STATUS_NOT_AVAILABLE)
+            # No network submission is attempted without a durable record.
+            self.assertEqual(len(purchase.submissions), 0)
 
 
 if __name__ == "__main__":

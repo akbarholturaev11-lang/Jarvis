@@ -53,6 +53,7 @@ from .api_auth import (
     BackendConfigurationError,
     BoundedAttemptLimiter,
     DeviceActionGrantManager,
+    ReservedDeviceGrant,
 )
 from .api_ports import (
     ClientActivationPort,
@@ -82,6 +83,10 @@ from .device_challenges import (
     DeviceChallengeAction,
     VerifiedDeviceChallenge,
 )
+from .initial_purchase import (
+    InitialPurchaseAuthorizer,
+    InitialPurchaseGrantReservation,
+)
 from .models import (
     MAX_PAYMENT_SCREENSHOT_BYTES,
     ArtifactVerificationError,
@@ -90,7 +95,10 @@ from .models import (
     InstallMode,
     InvalidTransitionError,
     NotFoundError,
+    ReleaseState,
     ValidationError,
+    normalize_target_architecture,
+    normalize_target_platform,
 )
 from .payment_instructions import (
     PaymentInstructionsLoadResult,
@@ -110,7 +118,10 @@ _UPLOAD_READ_CHUNK = 64 * 1024
 _ARTIFACT_RESPONSE_CHUNK_BYTES = 256 * 1024
 _ADMIN_LOGIN_CLIENT_MAX_ATTEMPTS = 20
 _ADMIN_LOGIN_WINDOW_SECONDS = 300
-_VERIFIED_PAYMENT_GRANT_STATE = "jarvis_verified_payment_grant"
+_RESERVED_PAYMENT_GRANT_STATE = "jarvis_reserved_payment_grant"
+_RESERVED_INITIAL_PURCHASE_GRANT_STATE = (
+    "jarvis_reserved_initial_purchase_grant"
+)
 
 
 class _StrictBody(BaseModel):
@@ -226,6 +237,23 @@ class UpdateCheckBody(_StrictBody):
     architecture: str = Field(min_length=2, max_length=32)
 
 
+class InitialPurchaseChallengeBody(_StrictBody):
+    product_id: str = Field(min_length=3, max_length=64)
+    purchase_id: str = Field(pattern=r"^purchase_[0-9a-f]{32}$")
+    version: str = Field(
+        pattern=r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+    )
+    device_key_fingerprint: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    platform: str = Field(min_length=2, max_length=32)
+    architecture: str = Field(min_length=2, max_length=32)
+
+
+class InitialPurchaseVerifyBody(_StrictBody):
+    challenge_nonce: str = Field(min_length=43, max_length=43)
+    public_key_base64: str = Field(min_length=43, max_length=43)
+    signature_base64: str = Field(min_length=86, max_length=86)
+
+
 class _RequestBodyTooLarge(Exception):
     pass
 
@@ -233,7 +261,7 @@ class _RequestBodyTooLarge(Exception):
 def _payment_upload_context(
     scope: dict[str, Any],
     headers: dict[bytes, bytes],
-) -> tuple[str, str, str] | None:
+) -> tuple[str, str, str, str] | None:
     path = scope.get("path")
     parts = path.split("/") if isinstance(path, str) else []
     opaque_characters = frozenset(
@@ -248,8 +276,17 @@ def _payment_upload_context(
         )
 
     content_type = headers.get(b"content-type", b"").lower()
-    grant = headers.get(b"x-device-grant", b"")
-    valid_shape = (
+    device_grant = headers.get(b"x-device-grant", b"")
+    purchase_grant = headers.get(b"x-purchase-grant", b"")
+
+    def grant_valid(grant: bytes) -> bool:
+        return 20 <= len(grant) <= 128 and all(
+            character
+            in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+            for character in grant
+        )
+
+    existing_shape = (
         scope.get("method") == "POST"
         and len(parts) == 8
         and parts[:4] == ["", "api", "customer", "licenses"]
@@ -258,15 +295,25 @@ def _payment_upload_context(
         and opaque(parts[6])
         and parts[7] == "payments"
         and content_type.startswith(b"multipart/form-data;")
-        and 20 <= len(grant) <= 128
-        and all(
-            character in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-            for character in grant
-        )
+        and grant_valid(device_grant)
     )
-    if not valid_shape:
-        return None
-    return parts[4], parts[6], grant.decode("ascii")
+    if existing_shape:
+        return "license", parts[4], parts[6], device_grant.decode("ascii")
+    initial_shape = (
+        scope.get("method") == "POST"
+        and len(parts) == 7
+        and parts[:3] == ["", "api", "purchases"]
+        and parts[3].startswith("purchase_")
+        and opaque(parts[3])
+        and parts[4] == "releases"
+        and opaque(parts[5])
+        and parts[6] == "payments"
+        and content_type.startswith(b"multipart/form-data;")
+        and grant_valid(purchase_grant)
+    )
+    if initial_shape:
+        return "purchase", parts[3], parts[5], purchase_grant.decode("ascii")
+    return None
 
 
 class _BoundedBodyMiddleware:
@@ -279,11 +326,13 @@ class _BoundedBodyMiddleware:
         default_maximum_bytes: int,
         payment_maximum_bytes: int,
         payment_grants: DeviceActionGrantManager,
+        initial_purchases: InitialPurchaseAuthorizer | None = None,
     ) -> None:
         self.app = app
         self.default_maximum_bytes = default_maximum_bytes
         self.payment_maximum_bytes = payment_maximum_bytes
         self.payment_grants = payment_grants
+        self.initial_purchases = initial_purchases
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope.get("type") != "http":
@@ -291,53 +340,82 @@ class _BoundedBodyMiddleware:
             return
         headers = dict(scope.get("headers", ()))
         maximum_bytes = self.default_maximum_bytes
+        reservation: ReservedDeviceGrant | InitialPurchaseGrantReservation | None = None
         payment_context = _payment_upload_context(scope, headers)
         if payment_context is not None:
-            license_id, release_id, device_grant = payment_context
-            verified = self.payment_grants.consume(
-                device_grant,
-                license_id=license_id,
-                action=DeviceChallengeAction.SUBMIT_PAYMENT,
-                resource_id=release_id,
-            )
+            kind, subject_id, release_id, grant = payment_context
+            if kind == "license":
+                reserved = self.payment_grants.reserve(
+                    grant,
+                    license_id=subject_id,
+                    action=DeviceChallengeAction.SUBMIT_PAYMENT,
+                    resource_id=release_id,
+                )
+            else:
+                reserved = (
+                    None
+                    if self.initial_purchases is None
+                    else self.initial_purchases.reserve_grant(
+                        grant,
+                        purchase_id=subject_id,
+                        release_id=release_id,
+                    )
+                )
             state = scope.setdefault("state", {})
-            if isinstance(verified, VerifiedDeviceChallenge) and isinstance(state, dict):
-                state[_VERIFIED_PAYMENT_GRANT_STATE] = verified
-                maximum_bytes = self.payment_maximum_bytes
-        raw_length = headers.get(b"content-length")
-        if raw_length is not None:
-            try:
-                declared_length = int(raw_length)
-                if declared_length < 0 or declared_length > maximum_bytes:
+            if isinstance(
+                reserved,
+                (ReservedDeviceGrant, InitialPurchaseGrantReservation),
+            ):
+                reservation = reserved
+                if isinstance(state, dict):
+                    reservation_key = (
+                        _RESERVED_PAYMENT_GRANT_STATE
+                        if isinstance(reserved, ReservedDeviceGrant)
+                        else _RESERVED_INITIAL_PURCHASE_GRANT_STATE
+                    )
+                    state[reservation_key] = reserved
+                    maximum_bytes = self.payment_maximum_bytes
+        try:
+            raw_length = headers.get(b"content-length")
+            if raw_length is not None:
+                try:
+                    declared_length = int(raw_length)
+                    if declared_length < 0 or declared_length > maximum_bytes:
+                        await self._reject(send)
+                        return
+                except ValueError:
                     await self._reject(send)
                     return
-            except ValueError:
-                await self._reject(send)
-                return
 
-        consumed = 0
-        response_started = False
+            consumed = 0
+            response_started = False
 
-        async def bounded_receive() -> dict[str, Any]:
-            nonlocal consumed
-            message = await receive()
-            if message.get("type") == "http.request":
-                consumed += len(message.get("body", b""))
-                if consumed > maximum_bytes:
-                    raise _RequestBodyTooLarge
-            return message
+            async def bounded_receive() -> dict[str, Any]:
+                nonlocal consumed
+                message = await receive()
+                if message.get("type") == "http.request":
+                    consumed += len(message.get("body", b""))
+                    if consumed > maximum_bytes:
+                        raise _RequestBodyTooLarge
+                return message
 
-        async def tracked_send(message: dict[str, Any]) -> None:
-            nonlocal response_started
-            if message.get("type") == "http.response.start":
-                response_started = True
-            await send(message)
+            async def tracked_send(message: dict[str, Any]) -> None:
+                nonlocal response_started
+                if message.get("type") == "http.response.start":
+                    response_started = True
+                await send(message)
 
-        try:
-            await self.app(scope, bounded_receive, tracked_send)
-        except _RequestBodyTooLarge:
-            if not response_started:
-                await self._reject(send)
+            try:
+                await self.app(scope, bounded_receive, tracked_send)
+            except _RequestBodyTooLarge:
+                if not response_started:
+                    await self._reject(send)
+        finally:
+            if isinstance(reservation, ReservedDeviceGrant):
+                self.payment_grants.release(reservation)
+            elif isinstance(reservation, InitialPurchaseGrantReservation):
+                if self.initial_purchases is not None:
+                    self.initial_purchases.release_grant(reservation)
 
     @staticmethod
     async def _reject(send: Any) -> None:
@@ -388,6 +466,22 @@ def _release_info_payload(release: Any, artifacts: Any) -> dict[str, Any]:
         "features": {"en": release.features_en, "ru": release.features_ru},
         "fixes": {"en": release.fixes_en, "ru": release.fixes_ru},
     }
+
+
+def _has_verified_initial_target(
+    artifacts: Any,
+    *,
+    platform: str,
+    architecture: str,
+) -> bool:
+    return any(
+        artifact.identity.platform == platform
+        and artifact.identity.architecture == architecture
+        and artifact.identity.artifact_kind is ArtifactKind.INITIAL_INSTALLER
+        and bool(artifact.signature_verified_at)
+        and artifact.verification_key_id == artifact.signing_key_id
+        for artifact in artifacts
+    )
 
 
 def _payment_instructions_payload(
@@ -556,6 +650,15 @@ def create_product_backend_app(
         hashlib.sha256,
     ).digest()
     grants = DeviceActionGrantManager(grant_secret, clock=now)
+    initial_purchase_secret = hmac.new(
+        settings.session_secret,
+        b"jarvis-initial-purchase-grants",
+        hashlib.sha256,
+    ).digest()
+    initial_purchases = InitialPurchaseAuthorizer(
+        initial_purchase_secret,
+        clock=now,
+    )
     artifact_grant_secret = hmac.new(
         settings.session_secret,
         b"jarvis-artifact-download-grants",
@@ -578,6 +681,12 @@ def create_product_backend_app(
         max_keys=2048,
         clock=now,
     )
+    initial_purchase_limiter = BoundedAttemptLimiter(
+        max_attempts=10,
+        window_seconds=300,
+        max_keys=2048,
+        clock=now,
+    )
 
     app = FastAPI(
         title="JARVIS Product Backend Foundation",
@@ -594,10 +703,12 @@ def create_product_backend_app(
         default_maximum_bytes=_MAX_JSON_HTTP_BODY_BYTES,
         payment_maximum_bytes=_MAX_PAYMENT_HTTP_BODY_BYTES,
         payment_grants=grants,
+        initial_purchases=initial_purchases,
     )
     app.state.product_backend_service = service
     app.state.admin_sessions = sessions
     app.state.device_grants = grants
+    app.state.initial_purchase_authorizer = initial_purchases
     app.state.artifact_download_grants = artifact_grants
     app.state.client_activation = activation
 
@@ -1183,6 +1294,198 @@ def create_product_backend_app(
             stream.close()
             raise
 
+    @app.post("/api/purchases/challenges", status_code=201)
+    def issue_initial_purchase_challenge(
+        body: InitialPurchaseChallengeBody,
+        request: Request,
+    ) -> dict[str, Any]:
+        if body.product_id != PRODUCT_ID:
+            raise HTTPException(status_code=400, detail="product is invalid")
+        limiter_key = _attempt_key(
+            request,
+            f"initial|{body.purchase_id}|{body.version}",
+        )
+        if not initial_purchase_limiter.consume(limiter_key):
+            raise HTTPException(status_code=429, detail="too many purchase requests")
+        try:
+            platform = normalize_target_platform(body.platform)
+            architecture = normalize_target_architecture(body.architecture)
+        except ValidationError:
+            raise HTTPException(
+                status_code=400,
+                detail="purchase target is invalid",
+            ) from None
+        release = reads.get_release_by_version(body.version)
+        if release is None or release.state is not ReleaseState.PUBLISHED:
+            raise HTTPException(status_code=404, detail="release is not available")
+        artifacts = tuple(reads.list_release_artifacts(release.id))
+        if not _has_verified_initial_target(
+            artifacts,
+            platform=platform,
+            architecture=architecture,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="initial purchase target is not available",
+            )
+        result = initial_purchases.issue_challenge(
+            purchase_id=body.purchase_id,
+            release_id=release.id,
+            device_key_fingerprint=body.device_key_fingerprint,
+            platform=platform,
+            architecture=architecture,
+        )
+        if not result.ok or result.challenge is None:
+            raise HTTPException(
+                status_code=_challenge_error_status(result.status),
+                detail="initial purchase challenge could not be issued",
+            )
+        issued = result.challenge
+        return {
+            "challenge_id": issued.id,
+            "challenge_nonce": issued.challenge_nonce,
+            "purchase_id": body.purchase_id,
+            "release_id": release.id,
+            "version": release.version,
+            "issued_at": issued.issued_at,
+            "expires_at": issued.expires_at,
+        }
+
+    @app.post("/api/purchases/challenges/{challenge_id}/verify")
+    def verify_initial_purchase_challenge(
+        challenge_id: str,
+        body: InitialPurchaseVerifyBody,
+    ) -> dict[str, Any]:
+        result = initial_purchases.verify_and_issue_grant(
+            challenge_id=challenge_id,
+            challenge_nonce=body.challenge_nonce,
+            public_key_base64=body.public_key_base64,
+            signature_base64=body.signature_base64,
+        )
+        if not result.ok or result.grant is None:
+            raise HTTPException(
+                status_code=_challenge_error_status(result.status),
+                detail="initial purchase proof could not be verified",
+            )
+        grant = result.grant
+        verified = grant.verified
+        release = reads.get_release(verified.release_id)
+        if release is None or release.state is not ReleaseState.PUBLISHED:
+            raise HTTPException(status_code=409, detail="release is not available")
+        artifacts = tuple(reads.list_release_artifacts(release.id))
+        if not _has_verified_initial_target(
+            artifacts,
+            platform=verified.device_principal.platform,
+            architecture=verified.device_principal.architecture,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="initial purchase target is not available",
+            )
+        return {
+            "purchase_grant": grant.token,
+            "purchase_id": verified.purchase_id,
+            "release_id": release.id,
+            "expires_at": grant.expires_at,
+            "release_info": _release_info_payload(release, artifacts),
+            "payment_instructions": _payment_instructions_payload(
+                payment_configuration
+            ),
+        }
+
+    @app.post(
+        "/api/purchases/{purchase_id}/releases/{release_id}/payments",
+        status_code=201,
+    )
+    async def submit_initial_purchase_payment(
+        request: Request,
+        purchase_id: str,
+        release_id: str,
+        purchase_grant: Annotated[str, Header(alias="X-Purchase-Grant")],
+        paid_at: Annotated[str, Form(min_length=20, max_length=40)],
+        client_submission_id: Annotated[
+            str,
+            Form(
+                min_length=3,
+                max_length=128,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+\-]{2,127}$",
+            ),
+        ],
+        file: Annotated[UploadFile, File()],
+        supersedes_payment_id: Annotated[
+            str | None,
+            Form(
+                min_length=3,
+                max_length=128,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+\-]{2,127}$",
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        reservation = getattr(
+            request.state,
+            _RESERVED_INITIAL_PURCHASE_GRANT_STATE,
+            None,
+        )
+        verified = (
+            reservation.verified
+            if isinstance(reservation, InitialPurchaseGrantReservation)
+            else None
+        )
+        if (
+            not isinstance(purchase_grant, str)
+            or verified is None
+            or verified.purchase_id != purchase_id
+            or verified.release_id != release_id
+            or not verified.device_principal.proof_verified
+        ):
+            await file.close()
+            raise HTTPException(
+                status_code=401,
+                detail="valid purchase grant required",
+            )
+        content_type = file.content_type
+        if content_type not in {"image/png", "image/jpeg", "image/webp"}:
+            await file.close()
+            raise HTTPException(
+                status_code=400,
+                detail="payment evidence type is invalid",
+            )
+        release = reads.get_release(release_id)
+        if release is None or release.state is not ReleaseState.PUBLISHED:
+            await file.close()
+            raise HTTPException(status_code=409, detail="release is not available")
+        content = await _read_bounded_upload(file)
+        try:
+            initial = service.submit_initial_purchase_evidence(
+                purchase_id=verified.purchase_id,
+                release_id=verified.release_id,
+                device_principal=verified.device_principal,
+                content=content,
+                content_type=content_type,
+                paid_at=paid_at,
+                client_submission_id=client_submission_id,
+                supersedes_payment_id=supersedes_payment_id,
+                now=now(),
+            )
+        except (ConflictError, InvalidTransitionError, NotFoundError):
+            if not initial_purchases.commit_grant(reservation):
+                raise BackendServiceNotAvailableError(
+                    "Initial purchase authorization finalization failed."
+                ) from None
+            raise
+        if not initial_purchases.commit_grant(reservation):
+            raise BackendServiceNotAvailableError(
+                "Initial purchase authorization finalization failed."
+            )
+        payment = _payment_payload(initial.payment, admin=False)
+        return {
+            **payment,
+            "license_id": initial.license.id,
+            "purchase_id": verified.purchase_id,
+            "version": release.version,
+            "idempotent": initial.idempotent,
+        }
+
     @app.post("/api/device-challenges", status_code=201)
     def issue_device_challenge(body: DeviceChallengeIssueBody, request: Request) -> dict[str, Any]:
         if body.action not in {
@@ -1253,9 +1556,30 @@ def create_product_backend_app(
         release_id: str,
         device_grant: Annotated[str, Header(alias="X-Device-Grant")],
         paid_at: Annotated[str, Form(min_length=20, max_length=40)],
+        client_submission_id: Annotated[
+            str,
+            Form(
+                min_length=3,
+                max_length=128,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+\-]{2,127}$",
+            ),
+        ],
         file: Annotated[UploadFile, File()],
+        supersedes_payment_id: Annotated[
+            str | None,
+            Form(
+                min_length=3,
+                max_length=128,
+                pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@+\-]{2,127}$",
+            ),
+        ] = None,
     ) -> dict[str, Any]:
-        verified = getattr(request.state, _VERIFIED_PAYMENT_GRANT_STATE, None)
+        reservation = getattr(request.state, _RESERVED_PAYMENT_GRANT_STATE, None)
+        verified = (
+            reservation.verified
+            if isinstance(reservation, ReservedDeviceGrant)
+            else None
+        )
         if (
             not isinstance(device_grant, str)
             or not isinstance(verified, VerifiedDeviceChallenge)
@@ -1271,14 +1595,27 @@ def create_product_backend_app(
             await file.close()
             raise HTTPException(status_code=400, detail="payment evidence type is invalid")
         content = await _read_bounded_upload(file)
-        payment = service.submit_payment_evidence(
-            license_id,
-            release_id,
-            content=content,
-            content_type=content_type,
-            paid_at=paid_at,
-            now=now(),
-        )
+        try:
+            payment = service.submit_payment_evidence(
+                license_id,
+                release_id,
+                content=content,
+                content_type=content_type,
+                paid_at=paid_at,
+                client_submission_id=client_submission_id,
+                supersedes_payment_id=supersedes_payment_id,
+                now=now(),
+            )
+        except (ConflictError, InvalidTransitionError, NotFoundError):
+            if not grants.commit(reservation):
+                raise BackendServiceNotAvailableError(
+                    "Payment authorization finalization failed."
+                ) from None
+            raise
+        if not grants.commit(reservation):
+            raise BackendServiceNotAvailableError(
+                "Payment authorization finalization failed."
+            )
         return _payment_payload(payment, admin=False)
 
     @app.get("/api/customer/licenses/{license_id}/versions/{version}/status")
@@ -1339,6 +1676,8 @@ __all__ = [
     "ArtifactCreateBody",
     "DeviceChallengeIssueBody",
     "DeviceChallengeVerifyBody",
+    "InitialPurchaseChallengeBody",
+    "InitialPurchaseVerifyBody",
     "PaymentRejectBody",
     "ReleaseCreateBody",
     "create_product_backend_app",

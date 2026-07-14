@@ -25,9 +25,11 @@ from .models import (
     AdminDecisionAudit,
     ApprovalResult,
     Entitlement,
+    InitialPurchaseResult,
     PaymentSubmission,
     Release,
     ReleaseArtifact,
+    VerifiedDevicePrincipal,
 )
 from .private_storage import PrivateObjectMetadata
 from .repository import CommerceRepository
@@ -172,6 +174,8 @@ class ProductBackendService:
         content: bytes,
         content_type: str,
         paid_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None = None,
         now: datetime | None = None,
     ) -> PaymentSubmission:
         timestamp = datetime.now(timezone.utc) if now is None else now
@@ -181,7 +185,7 @@ class ProductBackendService:
             now=timestamp,
         )
         try:
-            return self._commerce.submit_payment(
+            payment = self._commerce.submit_payment(
                 license_id,
                 release_id,
                 screenshot_storage_key=metadata.storage_key,
@@ -189,15 +193,71 @@ class ProductBackendService:
                 screenshot_byte_size=metadata.byte_size,
                 screenshot_mime_type=metadata.content_type,
                 paid_at=paid_at,
+                client_submission_id=client_submission_id,
+                supersedes_payment_id=supersedes_payment_id,
             )
         except Exception:
-            try:
-                self._evidence_store.discard_payment_screenshot(metadata)
-            except Exception as discard_error:
-                raise BackendServiceNotAvailableError(
-                    "Payment evidence compensation failed."
-                ) from discard_error
+            self._discard_payment_evidence(metadata)
             raise
+        if payment.screenshot_storage_key != metadata.storage_key:
+            # An exact idempotent retry returns the original row. The newly
+            # stored object is not authoritative and must not become an orphan.
+            self._discard_payment_evidence(metadata)
+        return payment
+
+    def submit_initial_purchase_evidence(
+        self,
+        *,
+        purchase_id: str,
+        release_id: str,
+        device_principal: VerifiedDevicePrincipal,
+        content: bytes,
+        content_type: str,
+        paid_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None = None,
+        now: datetime | None = None,
+    ) -> InitialPurchaseResult:
+        """Persist private evidence and atomically enroll a proved purchase.
+
+        Evidence is written first because the database stores only its private
+        reference. Any rejected transaction, or any idempotent retry that reuses
+        the original reference, compensates by deleting the newly written object.
+        """
+
+        timestamp = datetime.now(timezone.utc) if now is None else now
+        metadata = self._evidence_store.store_payment_screenshot(
+            content,
+            content_type=content_type,
+            now=timestamp,
+        )
+        try:
+            result = self._commerce.submit_initial_purchase(
+                purchase_id=purchase_id,
+                release_id=release_id,
+                device_principal=device_principal,
+                screenshot_storage_key=metadata.storage_key,
+                screenshot_sha256=metadata.sha256,
+                screenshot_byte_size=metadata.byte_size,
+                screenshot_mime_type=metadata.content_type,
+                paid_at=paid_at,
+                client_submission_id=client_submission_id,
+                supersedes_payment_id=supersedes_payment_id,
+            )
+        except Exception:
+            self._discard_payment_evidence(metadata)
+            raise
+        if result.payment.screenshot_storage_key != metadata.storage_key:
+            self._discard_payment_evidence(metadata)
+        return result
+
+    def _discard_payment_evidence(self, metadata: PrivateObjectMetadata) -> None:
+        try:
+            self._evidence_store.discard_payment_screenshot(metadata)
+        except Exception as discard_error:
+            raise BackendServiceNotAvailableError(
+                "Payment evidence compensation failed."
+            ) from discard_error
 
     def start_payment_review(
         self,

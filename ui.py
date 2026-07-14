@@ -5,7 +5,6 @@ import math
 import os
 import platform
 import random
-import stat
 import subprocess
 import sys
 import threading
@@ -36,12 +35,14 @@ from PyQt6.QtWidgets import (
 )
 
 from core.i18n import (
+    active_lang,
     file_dialog_filter,
     localize_content_title,
     localize_log_message,
     state_label,
     t,
 )
+from core.payment_evidence import prepare_payment_evidence
 from core.capabilities import list_capabilities
 from core.credential_service import load_gemini_api_key
 from core.gemini_credential_onboarding import validate_and_store_gemini_api_key
@@ -1063,10 +1064,16 @@ class ProductGateOverlay(QWidget):
 
     activation_requested = pyqtSignal(str)
     refresh_requested = pyqtSignal()
+    purchase_requested = pyqtSignal()
+    payment_requested = pyqtSignal()
+    payment_refresh_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._can_activate = False
+        self._purchase_available = False
+        self._offer_ready = False
+        self._payment_pending = False
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background: rgba(0, 4, 8, 250);")
 
@@ -1120,6 +1127,19 @@ class ProductGateOverlay(QWidget):
         layout.addWidget(self._status)
         self._device = label("", 7, color=C.TEXT_DIM)
         layout.addWidget(self._device)
+        self._purchase_details = QTextEdit()
+        self._purchase_details.setReadOnly(True)
+        self._purchase_details.setMaximumHeight(150)
+        self._purchase_details.setFont(QFont("Courier New", 8))
+        self._purchase_details.setStyleSheet(f"""
+            QTextEdit {{
+                background: #000d12; color: {C.TEXT_MED};
+                border: 1px solid {C.BORDER}; border-radius: 4px;
+                padding: 6px;
+            }}
+        """)
+        self._purchase_details.hide()
+        layout.addWidget(self._purchase_details)
 
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
@@ -1154,7 +1174,7 @@ class ProductGateOverlay(QWidget):
                 QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
             """)
         self._activate.clicked.connect(self._submit_activation)
-        self._purchase.clicked.connect(self._show_purchase_entry)
+        self._purchase.clicked.connect(self.purchase_requested.emit)
         self._refresh.clicked.connect(self.refresh_requested.emit)
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
@@ -1162,6 +1182,30 @@ class ProductGateOverlay(QWidget):
         buttons.addWidget(self._purchase)
         buttons.addWidget(self._refresh)
         layout.addLayout(buttons)
+        payment_buttons = QHBoxLayout()
+        payment_buttons.setSpacing(8)
+        self._upload_payment = QPushButton(t("product.gate.upload_payment"))
+        self._check_payment = QPushButton(t("product.gate.check_payment"))
+        for button in (self._upload_payment, self._check_payment):
+            button.setFixedHeight(34)
+            button.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.ACC2};
+                    border: 1px solid {C.BORDER_A}; border-radius: 4px;
+                    padding: 0 8px;
+                }}
+                QPushButton:hover {{ background: {C.PRI_GHO}; }}
+                QPushButton:disabled {{ color: {C.TEXT_DIM}; border-color: {C.BORDER}; }}
+            """)
+        self._upload_payment.clicked.connect(self.payment_requested.emit)
+        self._check_payment.clicked.connect(self.payment_refresh_requested.emit)
+        self._upload_payment.setEnabled(False)
+        self._check_payment.setEnabled(False)
+        payment_buttons.addWidget(self._upload_payment)
+        payment_buttons.addWidget(self._check_payment)
+        layout.addLayout(payment_buttons)
         layout.addWidget(
             label(t("product.gate.security_note"), 7, color=C.TEXT_DIM)
         )
@@ -1199,13 +1243,28 @@ class ProductGateOverlay(QWidget):
         self._activate.setEnabled(can_activate)
         self._key_input.setEnabled(can_activate)
         self._refresh.setEnabled(True)
-        self._purchase.setEnabled(True)
+        self._purchase_available = bool(
+            getattr(snapshot, "purchase_available", False)
+        )
+        self._payment_pending = bool(
+            getattr(snapshot, "purchase_pending", False)
+        )
+        self._purchase.setEnabled(
+            self._purchase_available and not self._payment_pending
+        )
+        self._check_payment.setEnabled(self._payment_pending)
+        if self._payment_pending:
+            self._status.setText(t("product.gate.payment_pending"))
 
     def set_busy(self, busy: bool) -> None:
         self._activate.setEnabled(not busy and self._can_activate)
         self._key_input.setEnabled(not busy and self._can_activate)
-        self._purchase.setEnabled(not busy)
+        self._purchase.setEnabled(
+            not busy and self._purchase_available and not self._payment_pending
+        )
         self._refresh.setEnabled(not busy)
+        self._upload_payment.setEnabled(not busy and self._offer_ready)
+        self._check_payment.setEnabled(not busy and self._payment_pending)
         if busy:
             self._status.setText(t("product.gate.working"))
 
@@ -1214,7 +1273,11 @@ class ProductGateOverlay(QWidget):
         self._activate.setEnabled(self._can_activate)
         self._key_input.setEnabled(self._can_activate)
         self._refresh.setEnabled(True)
-        self._purchase.setEnabled(True)
+        self._purchase.setEnabled(
+            self._purchase_available and not self._payment_pending
+        )
+        self._upload_payment.setEnabled(self._offer_ready)
+        self._check_payment.setEnabled(self._payment_pending)
 
     def _submit_activation(self) -> None:
         key = self._key_input.text().strip()
@@ -1225,10 +1288,121 @@ class ProductGateOverlay(QWidget):
         self.set_busy(True)
         self.activation_requested.emit(key)
 
-    def _show_purchase_entry(self) -> None:
-        # BOSQICH 3 supplies the server-backed initial purchase flow. This
-        # entry point is intentionally visible now but never reports success.
-        self._status.setText(t("product.gate.purchase_not_available"))
+    def apply_purchase_offer(self, result) -> None:
+        self.set_busy(False)
+        offer = getattr(result, "offer", None)
+        status = str(getattr(result, "status", "failed"))
+        if offer is None:
+            key = {
+                "not_configured": "product.gate.payment_not_configured",
+                "offline": "product.gate.payment_offline",
+                "server_unavailable": "product.gate.payment_server_unavailable",
+            }.get(status, "product.gate.payment_invalid")
+            self._status.setText(t(key))
+            self._offer_ready = False
+            self._upload_payment.setEnabled(False)
+            return
+        language = "ru" if active_lang().startswith("ru") else "en"
+        missing = t("product.gate.release_not_provided")
+        platforms = ", ".join(
+            {"macos": "macOS", "windows": "Windows", "linux": "Linux"}.get(
+                str(item), str(item)
+            )
+            for item in getattr(offer, "supported_platforms", ())
+        ) or "—"
+        features = getattr(offer, f"features_{language}", "") or missing
+        fixes = getattr(offer, f"fixes_{language}", "") or missing
+        lines = [
+            t(
+                "product.gate.offer",
+                version=str(getattr(offer, "version", "—")),
+                amount=str(getattr(offer, "price_minor", "—")),
+                currency=str(getattr(offer, "currency", "—")),
+                platforms=platforms,
+            ),
+            t("product.gate.features", text=str(features)),
+            t("product.gate.fixes", text=str(fixes)),
+        ]
+        configured = bool(getattr(offer, "configured", False))
+        if configured:
+            method = getattr(offer, f"method_{language}", None)
+            instructions = getattr(offer, f"instructions_{language}", None)
+            recipient = getattr(offer, "recipient", None)
+            if method and instructions and recipient:
+                lines.extend(
+                    [
+                        t(
+                            "product.gate.payment_destination",
+                            method=str(method),
+                            recipient=str(recipient),
+                        ),
+                        t("product.gate.payment_steps", text=str(instructions)),
+                    ]
+                )
+            else:
+                configured = False
+        self._purchase_details.setPlainText("\n\n".join(lines))
+        self._purchase_details.show()
+        self._purchase.setText(t("product.gate.purchase"))
+        self._offer_ready = configured
+        self._upload_payment.setEnabled(configured)
+        self._status.setText(
+            t(
+                "product.gate.offer_ready"
+                if configured
+                else "product.gate.payment_not_configured"
+            )
+        )
+
+    def apply_payment_result(self, result) -> str:
+        self.set_busy(False)
+        status = str(getattr(result, "status", "failed"))
+        payment_id = getattr(result, "payment_id", None)
+        self._payment_pending = status in {
+            "submitted",
+            "pending",
+            "under_review",
+            "offline",
+            "server_unavailable",
+        } and (
+            payment_id is not None
+            or getattr(result, "license_id", None) is not None
+        )
+        key = {
+            "submitted": "product.gate.payment_submitted",
+            "pending": "product.gate.payment_pending",
+            "under_review": "product.gate.payment_review",
+            "entitled": "product.gate.payment_approved",
+            "offline": "product.gate.payment_offline",
+            "server_unavailable": "product.gate.payment_server_unavailable",
+            "not_configured": "product.gate.payment_not_configured",
+        }.get(status, "product.gate.payment_invalid")
+        if status == "rejected":
+            reason = str(getattr(result, "rejection_reason", "") or "—")
+            self._status.setText(t("product.gate.payment_rejected", reason=reason))
+            self._purchase.setText(t("product.gate.resubmit"))
+            self._purchase.setEnabled(self._purchase_available)
+            self._offer_ready = False
+            self._upload_payment.setEnabled(False)
+        else:
+            self._status.setText(t(key))
+        if status in {"submitted", "pending", "under_review", "entitled"}:
+            self._offer_ready = False
+            self._upload_payment.setEnabled(False)
+        self._check_payment.setEnabled(self._payment_pending)
+        return status
+
+    def show_evidence_error(self, status: str) -> None:
+        key = {
+            "invalid": "product.gate.evidence_invalid",
+            "too_large": "product.gate.evidence_too_large",
+            "not_available": "product.gate.evidence_not_available",
+        }.get(status, "product.gate.evidence_failed")
+        self.set_busy(False)
+        self._status.setText(t(key))
+
+    def show_polling_stopped(self) -> None:
+        self._status.setText(t("product.gate.polling_stopped"))
 
 
 class RemoteKeyOverlay(QWidget):
@@ -2057,49 +2231,19 @@ class SettingsOverlay(QWidget):
         )
         if not selected:
             return
-        path = Path(selected)
-        mime = {
-            ".png": "image/png",
-            ".jpg": "image/jpeg",
-            ".jpeg": "image/jpeg",
-            ".webp": "image/webp",
-        }.get(path.suffix.casefold())
-        try:
-            if mime is None or not hasattr(os, "O_NOFOLLOW"):
-                raise ValueError("invalid evidence path")
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-            try:
-                opened = os.fstat(descriptor)
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or opened.st_nlink != 1
-                    or not 1 <= opened.st_size <= 10 * 1024 * 1024
-                ):
-                    raise ValueError("invalid evidence file")
-                chunks = []
-                remaining = opened.st_size
-                while remaining:
-                    chunk = os.read(descriptor, min(remaining, 64 * 1024))
-                    if not chunk:
-                        raise ValueError("incomplete evidence read")
-                    chunks.append(chunk)
-                    remaining -= len(chunk)
-                if os.read(descriptor, 1):
-                    raise ValueError("evidence changed during read")
-                content = b"".join(chunks)
-            finally:
-                os.close(descriptor)
-        except (OSError, ValueError):
+        evidence_result = prepare_payment_evidence(selected)
+        if not evidence_result.ok or evidence_result.evidence is None:
             self._product_lbl.setText(t("settings.payment_invalid"))
             return
+        evidence = evidence_result.evidence
         paid_at = datetime.now(timezone.utc).isoformat(
             timespec="seconds"
         ).replace("+00:00", "Z")
         self._run_product_action(
             "submit_update_payment",
             paid_at=paid_at,
-            content=content,
-            content_type=mime,
+            content=evidence.content,
+            content_type=evidence.content_type,
         )
 
     def _check_update_payment(self) -> None:
@@ -2152,6 +2296,11 @@ class SettingsOverlay(QWidget):
                 "rejected": "settings.payment_rejected",
                 "entitled": "settings.update_entitled",
             }.get(status, "settings.payment_invalid")
+            if status == "rejected":
+                reason = str(result.get("rejection_reason") or "—")
+                key = "settings.payment_rejected_reason"
+                self._payment_ready = True
+                self._payment_btn.setEnabled(True)
             if action == "submit_update_payment" and status in {
                 "submitted",
                 "pending",
@@ -2159,7 +2308,9 @@ class SettingsOverlay(QWidget):
             }:
                 self._payment_ready = False
                 self._payment_btn.setEnabled(False)
-        self._product_lbl.setText(t(key))
+        self._product_lbl.setText(
+            t(key, reason=reason) if key == "settings.payment_rejected_reason" else t(key)
+        )
         if action == "activate_product" and status == "entitled":
             QTimer.singleShot(250, self._refresh_state)
 
@@ -2261,6 +2412,8 @@ class MainWindow(QMainWindow):
     _setup_result_sig = pyqtSignal(bool, str, str)
     _product_gate_sig = pyqtSignal(object)
     _product_gate_result_sig = pyqtSignal(object)
+    _product_purchase_offer_sig = pyqtSignal(object)
+    _product_purchase_result_sig = pyqtSignal(object)
     _begin_gemini_sig = pyqtSignal()
     _camera_sig     = pyqtSignal(bytes)   # show camera frame preview (small overlay)
     _cam_stream_sig = pyqtSignal(bool)   # True=start live stream, False=stop
@@ -2285,6 +2438,9 @@ class MainWindow(QMainWindow):
         self.on_settings_action = None  # callable: (action, **kwargs) -> result
         self.on_product_gate_activate = None
         self.on_product_gate_refresh = None
+        self.on_product_gate_prepare_purchase = None
+        self.on_product_gate_submit_purchase = None
+        self.on_product_gate_poll_purchase = None
         self._muted            = False
         self._current_file: str | None = None
         self._remote_overlay: RemoteKeyOverlay | None = None
@@ -2296,6 +2452,10 @@ class MainWindow(QMainWindow):
         self._api_ready_event = threading.Event()
         self._bootstrap_cancelled = False
         self._gemini_onboarding_started = False
+        self._product_purchase_inflight = False
+        self._last_rejected_payment_id: str | None = None
+        self._payment_poll_delays = (2000, 5000, 10000, 30000)
+        self._payment_poll_index = 0
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -2412,11 +2572,16 @@ class MainWindow(QMainWindow):
         self._setup_result_sig.connect(self._finish_setup)
         self._product_gate_sig.connect(self._present_product_gate)
         self._product_gate_result_sig.connect(self._finish_product_gate_action)
+        self._product_purchase_offer_sig.connect(self._finish_purchase_offer)
+        self._product_purchase_result_sig.connect(self._finish_purchase_action)
         self._begin_gemini_sig.connect(self._begin_gemini_onboarding)
         self._camera_sig.connect(self._show_camera_frame)
         self._cam_stream_sig.connect(self._on_cam_stream)
         self._cam_frame_sig.connect(self._on_cam_frame)
         self._cam_stop = threading.Event()
+        self._payment_poll_timer = QTimer(self)
+        self._payment_poll_timer.setSingleShot(True)
+        self._payment_poll_timer.timeout.connect(self._poll_initial_purchase)
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
         self._cam_preview = _CameraPreview(self.centralWidget())
@@ -2824,6 +2989,7 @@ class MainWindow(QMainWindow):
             self._product_gate_overlay.raise_()
 
     def closeEvent(self, event):
+        self._payment_poll_timer.stop()
         with self._bootstrap_lock:
             self._bootstrap_cancelled = True
             self._product_gate_event.set()
@@ -3412,12 +3578,22 @@ class MainWindow(QMainWindow):
             overlay = ProductGateOverlay(self)
             overlay.activation_requested.connect(self._activate_product_gate)
             overlay.refresh_requested.connect(self._refresh_product_gate)
+            overlay.purchase_requested.connect(self._prepare_initial_purchase)
+            overlay.payment_requested.connect(self._select_initial_payment)
+            overlay.payment_refresh_requested.connect(self._poll_initial_purchase)
             self._product_gate_overlay = overlay
         self._product_gate_overlay.apply_snapshot(snapshot)
         self._product_gate_overlay.setGeometry(self.rect())
         self._product_gate_overlay.show()
         self._product_gate_overlay.raise_()
         self._apply_state("SLEEPING")
+        if (
+            bool(getattr(snapshot, "purchase_pending", False))
+            and not self._payment_poll_timer.isActive()
+            and not self._product_purchase_inflight
+        ):
+            self._payment_poll_index = 0
+            self._payment_poll_timer.start(0)
 
     def _activate_product_gate(self, license_key: str) -> None:
         callback = self.on_product_gate_activate
@@ -3469,6 +3645,162 @@ class MainWindow(QMainWindow):
                 self._product_gate_overlay.show_failure()
             return
         self._present_product_gate(snapshot)
+
+    def _prepare_initial_purchase(self) -> None:
+        callback = self.on_product_gate_prepare_purchase
+        if callback is None or self._product_purchase_inflight:
+            if self._product_gate_overlay:
+                self._product_gate_overlay.show_failure()
+            return
+        self._product_purchase_inflight = True
+        if self._product_gate_overlay:
+            self._product_gate_overlay.set_busy(True)
+
+        def worker() -> None:
+            try:
+                with self._product_action_lock:
+                    result = callback()
+            except Exception:
+                result = None
+            self._product_purchase_offer_sig.emit(result)
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="product-initial-offer",
+        ).start()
+
+    def _finish_purchase_offer(self, result) -> None:
+        self._product_purchase_inflight = False
+        if self._product_gate_overlay is None or result is None:
+            if self._product_gate_overlay:
+                self._product_gate_overlay.show_failure()
+            return
+        self._product_gate_overlay.apply_purchase_offer(result)
+
+    def _select_initial_payment(self) -> None:
+        callback = self.on_product_gate_submit_purchase
+        if callback is None or self._product_purchase_inflight:
+            return
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            t("settings.payment_file_title"),
+            str(Path.home()),
+            t("settings.payment_file_filter"),
+        )
+        if not selected:
+            return
+        self._product_purchase_inflight = True
+        if self._product_gate_overlay:
+            self._product_gate_overlay.set_busy(True)
+        supersedes = self._last_rejected_payment_id
+
+        def worker() -> None:
+            evidence_result = prepare_payment_evidence(selected)
+            if not evidence_result.ok or evidence_result.evidence is None:
+                self._product_purchase_result_sig.emit(
+                    ("evidence_error", evidence_result.status.value)
+                )
+                return
+            evidence = evidence_result.evidence
+            paid_at = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            ).replace("+00:00", "Z")
+            try:
+                with self._product_action_lock:
+                    result = callback(
+                        paid_at=paid_at,
+                        screenshot=evidence.content,
+                        content_type=evidence.content_type,
+                        supersedes_payment_id=supersedes,
+                    )
+            except Exception:
+                result = None
+            self._product_purchase_result_sig.emit(("payment", result))
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="product-initial-payment",
+        ).start()
+
+    def _poll_initial_purchase(self) -> None:
+        callback = self.on_product_gate_poll_purchase
+        if callback is None or self._product_purchase_inflight:
+            return
+        self._product_purchase_inflight = True
+        if self._product_gate_overlay:
+            self._product_gate_overlay.set_busy(True)
+
+        def worker() -> None:
+            try:
+                with self._product_action_lock:
+                    result = callback()
+            except Exception:
+                result = None
+            self._product_purchase_result_sig.emit(("payment", result))
+
+        threading.Thread(
+            target=worker,
+            daemon=True,
+            name="product-payment-status",
+        ).start()
+
+    def _schedule_payment_poll(self) -> None:
+        if self._payment_poll_index >= len(self._payment_poll_delays):
+            if self._product_gate_overlay:
+                self._product_gate_overlay.show_polling_stopped()
+            return
+        delay = self._payment_poll_delays[self._payment_poll_index]
+        self._payment_poll_index += 1
+        self._payment_poll_timer.start(delay)
+
+    def _finish_purchase_action(self, payload) -> None:
+        self._product_purchase_inflight = False
+        if self._product_gate_overlay is None:
+            return
+        if (
+            not isinstance(payload, tuple)
+            or len(payload) != 2
+            or payload[0] not in {"evidence_error", "payment"}
+        ):
+            self._product_gate_overlay.show_failure()
+            return
+        kind, result = payload
+        if kind == "evidence_error":
+            self._product_gate_overlay.show_evidence_error(str(result))
+            return
+        if result is None:
+            self._product_gate_overlay.show_failure()
+            return
+        status = self._product_gate_overlay.apply_payment_result(result)
+        if status == "rejected":
+            payment_id = getattr(result, "payment_id", None)
+            self._last_rejected_payment_id = (
+                payment_id if isinstance(payment_id, str) else None
+            )
+            self._payment_poll_timer.stop()
+            self._payment_poll_index = 0
+            return
+        if status == "entitled":
+            self._last_rejected_payment_id = None
+            self._payment_poll_timer.stop()
+            self._payment_poll_index = 0
+            self._refresh_product_gate()
+            return
+        if status in {
+            "submitted",
+            "pending",
+            "under_review",
+            "offline",
+            "server_unavailable",
+        } and (
+            getattr(result, "payment_id", None) is not None
+            or getattr(result, "license_id", None) is not None
+        ):
+            if status == "submitted":
+                self._payment_poll_index = 0
+            self._schedule_payment_poll()
 
     def _begin_gemini_onboarding(self) -> None:
         with self._bootstrap_lock:
@@ -3625,6 +3957,30 @@ class JarvisUI:
     @on_product_gate_refresh.setter
     def on_product_gate_refresh(self, cb):
         self._win.on_product_gate_refresh = cb
+
+    @property
+    def on_product_gate_prepare_purchase(self):
+        return self._win.on_product_gate_prepare_purchase
+
+    @on_product_gate_prepare_purchase.setter
+    def on_product_gate_prepare_purchase(self, cb):
+        self._win.on_product_gate_prepare_purchase = cb
+
+    @property
+    def on_product_gate_submit_purchase(self):
+        return self._win.on_product_gate_submit_purchase
+
+    @on_product_gate_submit_purchase.setter
+    def on_product_gate_submit_purchase(self, cb):
+        self._win.on_product_gate_submit_purchase = cb
+
+    @property
+    def on_product_gate_poll_purchase(self):
+        return self._win.on_product_gate_poll_purchase
+
+    @on_product_gate_poll_purchase.setter
+    def on_product_gate_poll_purchase(self, cb):
+        self._win.on_product_gate_poll_purchase = cb
 
     def notify_phone_connected(self) -> None:
         self._win.notify_phone_connected()

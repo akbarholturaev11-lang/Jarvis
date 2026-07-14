@@ -638,7 +638,10 @@ class ProductBackendMvpTests(unittest.TestCase):
         response = client.post(
             f"/api/customer/licenses/{license_id}/releases/{release_id}/payments",
             headers={"X-Device-Grant": grant},
-            data={"paid_at": "2026-07-13T03:00:00Z"},
+            data={
+                "paid_at": "2026-07-13T03:00:00Z",
+                "client_submission_id": f"submission:{release_id}",
+            },
             files={"file": ("payment.png", b"private-proof", "image/png")},
         )
         self.assertEqual(response.status_code, 201, response.text)

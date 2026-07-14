@@ -423,14 +423,40 @@ class IssuedDeviceGrant:
 
 
 @dataclass(frozen=True, slots=True)
+class ReservedDeviceGrant:
+    """Opaque request-scoped hold on one single-use device grant."""
+
+    reservation_token: str = field(repr=False)
+    verified: VerifiedDeviceChallenge = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "ReservedDeviceGrant(authorization=<private>)"
+
+
+@dataclass(frozen=True, slots=True)
 class _DeviceGrantRecord:
     token_digest: bytes = field(repr=False)
     verified: VerifiedDeviceChallenge = field(repr=False)
     expires_at: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class _ReservedDeviceGrantRecord:
+    reservation_digest: bytes = field(repr=False)
+    grant_digest: bytes = field(repr=False)
+    grant: _DeviceGrantRecord = field(repr=False)
+
+
 class DeviceActionGrantManager:
-    """Bounded, short-lived, single-use grants from verified challenge results."""
+    """Bounded single-use grants with an atomic request reservation phase.
+
+    A reservation removes a grant from the replayable pool while an upload is
+    parsed and validated.  The request owner must then either ``commit`` it
+    after an accepted operation or ``release`` it on invalid/retriable input.
+    Reserved records remain bounded by ``max_grants`` and are deliberately not
+    time-pruned behind an active request; the ASGI middleware finalizes every
+    reservation in a ``finally`` block.
+    """
 
     def __init__(
         self,
@@ -449,12 +475,23 @@ class DeviceActionGrantManager:
         self._max_grants = max_grants
         self._clock = clock
         self._grants: OrderedDict[bytes, _DeviceGrantRecord] = OrderedDict()
+        self._reservations: OrderedDict[
+            bytes, _ReservedDeviceGrantRecord
+        ] = OrderedDict()
         self._lock = threading.RLock()
 
     def _digest(self, token: str) -> bytes:
         return hmac.new(
             self._secret,
             b"device-grant\x00" + token.encode("ascii", errors="ignore"),
+            hashlib.sha256,
+        ).digest()
+
+    def _reservation_digest(self, token: str) -> bytes:
+        return hmac.new(
+            self._secret,
+            b"device-grant-reservation\x00"
+            + token.encode("ascii", errors="ignore"),
             hashlib.sha256,
         ).digest()
 
@@ -471,10 +508,91 @@ class DeviceActionGrantManager:
         )
         with self._lock:
             self._prune_locked(now)
-            if len(self._grants) >= self._max_grants:
+            if len(self._grants) + len(self._reservations) >= self._max_grants:
                 raise AuthenticationCapacityError("device grant capacity reached")
             self._grants[digest] = record
         return IssuedDeviceGrant(token, format_utc_timestamp(record.expires_at))
+
+    def reserve(
+        self,
+        token: object,
+        *,
+        license_id: str,
+        action: DeviceChallengeAction,
+        resource_id: str,
+    ) -> ReservedDeviceGrant | None:
+        """Atomically hold a matching grant without consuming invalid context."""
+
+        if not isinstance(token, str) or not 20 <= len(token) <= 128:
+            return None
+        digest = self._digest(token)
+        now = _aware_utc(self._clock)
+        with self._lock:
+            self._prune_locked(now)
+            record = self._grants.get(digest)
+            if record is None or not secrets.compare_digest(
+                digest, record.token_digest
+            ):
+                return None
+            verified = record.verified
+            if (
+                verified.license_id != license_id
+                or verified.action is not action
+                or verified.resource_id != resource_id
+                or not verified.device_principal.proof_verified
+            ):
+                return None
+
+            reservation_token = _base64url(secrets.token_bytes(32))
+            reservation_digest = self._reservation_digest(reservation_token)
+            if reservation_digest in self._reservations:
+                raise AuthenticationCapacityError(
+                    "device grant reservation could not be created"
+                )
+            self._grants.pop(digest)
+            self._reservations[reservation_digest] = _ReservedDeviceGrantRecord(
+                reservation_digest,
+                digest,
+                record,
+            )
+        return ReservedDeviceGrant(reservation_token, verified)
+
+    def commit(self, reservation: object) -> bool:
+        """Permanently consume one request reservation."""
+
+        if type(reservation) is not ReservedDeviceGrant:
+            return False
+        digest = self._reservation_digest(reservation.reservation_token)
+        with self._lock:
+            record = self._reservations.get(digest)
+            if (
+                record is None
+                or not secrets.compare_digest(digest, record.reservation_digest)
+                or reservation.verified != record.grant.verified
+            ):
+                return False
+            self._reservations.pop(digest)
+        return True
+
+    def release(self, reservation: object) -> bool:
+        """Return a request reservation only while the original grant is valid."""
+
+        if type(reservation) is not ReservedDeviceGrant:
+            return False
+        digest = self._reservation_digest(reservation.reservation_token)
+        with self._lock:
+            record = self._reservations.get(digest)
+            if (
+                record is None
+                or not secrets.compare_digest(digest, record.reservation_digest)
+                or reservation.verified != record.grant.verified
+            ):
+                return False
+            now = _aware_utc(self._clock)
+            self._reservations.pop(digest)
+            if now < record.grant.expires_at:
+                self._grants[record.grant_digest] = record.grant
+        return True
 
     def consume(
         self,
@@ -484,26 +602,15 @@ class DeviceActionGrantManager:
         action: DeviceChallengeAction,
         resource_id: str,
     ) -> VerifiedDeviceChallenge | None:
-        if not isinstance(token, str) or not 20 <= len(token) <= 128:
+        reservation = self.reserve(
+            token,
+            license_id=license_id,
+            action=action,
+            resource_id=resource_id,
+        )
+        if reservation is None or not self.commit(reservation):
             return None
-        digest = self._digest(token)
-        now = _aware_utc(self._clock)
-        with self._lock:
-            self._prune_locked(now)
-            record = self._grants.pop(digest, None)
-        if record is None or not secrets.compare_digest(
-            digest, record.token_digest
-        ):
-            return None
-        verified = record.verified
-        if (
-            verified.license_id != license_id
-            or verified.action is not action
-            or verified.resource_id != resource_id
-            or not verified.device_principal.proof_verified
-        ):
-            return None
-        return verified
+        return reservation.verified
 
     def _prune_locked(self, now: datetime) -> None:
         expired = [
@@ -526,4 +633,5 @@ __all__ = [
     "DeviceActionGrantManager",
     "IssuedAdminSession",
     "IssuedDeviceGrant",
+    "ReservedDeviceGrant",
 ]

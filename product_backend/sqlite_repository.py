@@ -7,6 +7,7 @@ object-storage implementation.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 import uuid
@@ -42,6 +43,7 @@ from .models import (
     InstallAuthorization,
     InstallDecisionReason,
     InstallMode,
+    InitialPurchaseResult,
     InvalidTransitionError,
     License,
     NotFoundError,
@@ -202,6 +204,11 @@ CREATE TABLE IF NOT EXISTS payment_submissions (
     ),
     paid_at TEXT NOT NULL CHECK (substr(paid_at, -1) = 'Z'),
     submitted_at TEXT NOT NULL CHECK (substr(submitted_at, -1) = 'Z'),
+    client_submission_id TEXT NOT NULL CHECK (
+        length(client_submission_id) BETWEEN 3 AND 128
+    ),
+    supersedes_payment_id TEXT REFERENCES payment_submissions(id)
+        ON DELETE RESTRICT,
     state TEXT NOT NULL CHECK (
         state IN ('pending', 'under_review', 'approved', 'rejected')
     ),
@@ -211,6 +218,9 @@ CREATE TABLE IF NOT EXISTS payment_submissions (
     decided_by TEXT,
     rejection_reason TEXT,
     UNIQUE (id, license_id, release_id),
+    CHECK (
+        supersedes_payment_id IS NULL OR supersedes_payment_id != id
+    ),
     CHECK (
         (state = 'pending'
             AND review_started_at IS NULL AND review_started_by IS NULL
@@ -330,28 +340,105 @@ class SQLiteCommerceRepository:
         self._migrate_schema()
 
     def _migrate_schema(self) -> None:
-        """Add bounded bilingual release copy without invalidating v2 databases."""
+        """Apply additive, fail-closed migrations through commerce schema v4."""
 
         current = int(self._connection.execute("PRAGMA user_version").fetchone()[0])
-        if current > 3:
+        if current > 4:
             raise PersistenceInvariantError("SQLite schema is newer than this runtime")
-        columns = {
+        release_columns = {
             str(row["name"])
             for row in self._connection.execute("PRAGMA table_info(releases)").fetchall()
         }
-        additions = {
+        release_additions = {
             "features_en": "TEXT NOT NULL DEFAULT '' CHECK (length(features_en) <= 4000)",
             "features_ru": "TEXT NOT NULL DEFAULT '' CHECK (length(features_ru) <= 4000)",
             "fixes_en": "TEXT NOT NULL DEFAULT '' CHECK (length(fixes_en) <= 4000)",
             "fixes_ru": "TEXT NOT NULL DEFAULT '' CHECK (length(fixes_ru) <= 4000)",
         }
         with self._transaction():
-            for name, definition in additions.items():
-                if name not in columns:
+            for name, definition in release_additions.items():
+                if name not in release_columns:
                     self._connection.execute(
                         f"ALTER TABLE releases ADD COLUMN {name} {definition}"
                     )
-            self._connection.execute("PRAGMA user_version = 3")
+
+            payment_columns = {
+                str(row["name"])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(payment_submissions)"
+                ).fetchall()
+            }
+            if "client_submission_id" not in payment_columns:
+                # SQLite cannot add a non-constant per-row default. Backfill each
+                # historical row with its already-unique opaque payment id, then
+                # enforce non-null writes with triggers below.
+                self._connection.execute(
+                    "ALTER TABLE payment_submissions "
+                    "ADD COLUMN client_submission_id TEXT"
+                )
+            self._connection.execute(
+                "UPDATE payment_submissions SET client_submission_id = "
+                "'legacy:' || id WHERE client_submission_id IS NULL"
+            )
+            if "supersedes_payment_id" not in payment_columns:
+                self._connection.execute(
+                    "ALTER TABLE payment_submissions ADD COLUMN "
+                    "supersedes_payment_id TEXT REFERENCES payment_submissions(id) "
+                    "ON DELETE RESTRICT CHECK ("
+                    "supersedes_payment_id IS NULL OR supersedes_payment_id != id)"
+                )
+
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "payment_client_submission_identity "
+                "ON payment_submissions(license_id, client_submission_id)"
+            )
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS "
+                "payment_single_successor "
+                "ON payment_submissions(supersedes_payment_id) "
+                "WHERE supersedes_payment_id IS NOT NULL"
+            )
+            triggers = (
+                "CREATE TRIGGER IF NOT EXISTS "
+                "payment_submission_identity_required_insert "
+                "BEFORE INSERT ON payment_submissions "
+                "WHEN NEW.client_submission_id IS NULL "
+                "OR length(NEW.client_submission_id) NOT BETWEEN 3 AND 128 "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'payment submission identity is required'); END",
+                "CREATE TRIGGER IF NOT EXISTS "
+                "payment_submission_identity_required_update "
+                "BEFORE UPDATE OF client_submission_id ON payment_submissions "
+                "WHEN NEW.client_submission_id IS NULL "
+                "OR length(NEW.client_submission_id) NOT BETWEEN 3 AND 128 "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'payment submission identity is required'); END",
+                "CREATE TRIGGER IF NOT EXISTS payment_supersession_is_rejected_insert "
+                "BEFORE INSERT ON payment_submissions "
+                "WHEN NEW.supersedes_payment_id IS NOT NULL AND NOT EXISTS ("
+                "SELECT 1 FROM payment_submissions previous "
+                "WHERE previous.id = NEW.supersedes_payment_id "
+                "AND previous.license_id = NEW.license_id "
+                "AND previous.release_id = NEW.release_id "
+                "AND previous.state = 'rejected') "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'payment supersession requires rejected payment'); END",
+                "CREATE TRIGGER IF NOT EXISTS payment_supersession_is_rejected_update "
+                "BEFORE UPDATE OF supersedes_payment_id, license_id, release_id "
+                "ON payment_submissions "
+                "WHEN NEW.supersedes_payment_id IS NOT NULL AND NOT EXISTS ("
+                "SELECT 1 FROM payment_submissions previous "
+                "WHERE previous.id = NEW.supersedes_payment_id "
+                "AND previous.license_id = NEW.license_id "
+                "AND previous.release_id = NEW.release_id "
+                "AND previous.state = 'rejected') "
+                "BEGIN SELECT RAISE(ABORT, "
+                "'payment supersession requires rejected payment'); END",
+            )
+            for statement in triggers:
+                self._connection.execute(statement)
+            self._connection.execute("PRAGMA user_version = 4")
 
     def close(self) -> None:
         with self._lock:
@@ -837,9 +924,18 @@ class SQLiteCommerceRepository:
         screenshot_byte_size: int,
         screenshot_mime_type: str,
         paid_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None = None,
     ) -> PaymentSubmission:
         license_id = validate_opaque_identifier(license_id, field="license_id")
         release_id = validate_opaque_identifier(release_id, field="release_id")
+        client_submission_id = validate_opaque_identifier(
+            client_submission_id, field="client_submission_id"
+        )
+        if supersedes_payment_id is not None:
+            supersedes_payment_id = validate_opaque_identifier(
+                supersedes_payment_id, field="supersedes_payment_id"
+            )
         storage_key = validate_storage_key(
             screenshot_storage_key, field="screenshot_storage_key"
         )
@@ -858,42 +954,304 @@ class SQLiteCommerceRepository:
             with self._transaction():
                 self._require_exists("licenses", license_id, "license")
                 release = self._require_row("releases", release_id, "release")
-                if release["state"] != ReleaseState.PUBLISHED.value:
-                    raise InvalidTransitionError(
-                        "payment can target only a published release"
-                    )
-                if self._entitlement_row(license_id, release_id) is not None:
-                    raise ConflictError("license already owns this exact version")
-                self._connection.execute(
-                    "INSERT INTO payment_submissions("
-                    "id, license_id, release_id, amount_minor, currency, "
-                    "screenshot_storage_key, screenshot_sha256, "
-                    "screenshot_byte_size, screenshot_mime_type, paid_at, "
-                    "submitted_at, state"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        payment_id,
-                        license_id,
-                        release_id,
-                        release["price_minor"],
-                        release["currency"],
-                        storage_key,
-                        screenshot_sha256,
-                        screenshot_byte_size,
-                        screenshot_mime_type,
-                        paid_at,
-                        submitted_at,
-                        PaymentState.PENDING.value,
-                    ),
-                )
-                row = self._require_row(
-                    "payment_submissions", payment_id, "payment"
+                row, _idempotent = self._submit_payment_locked(
+                    payment_id=payment_id,
+                    license_id=license_id,
+                    release=release,
+                    screenshot_storage_key=storage_key,
+                    screenshot_sha256=screenshot_sha256,
+                    screenshot_byte_size=screenshot_byte_size,
+                    screenshot_mime_type=screenshot_mime_type,
+                    paid_at=paid_at,
+                    submitted_at=submitted_at,
+                    client_submission_id=client_submission_id,
+                    supersedes_payment_id=supersedes_payment_id,
                 )
         except sqlite3.IntegrityError as exc:
             raise ConflictError(
                 "an open payment or screenshot reference already exists"
             ) from exc
         return self._payment_from_row(row)
+
+    def submit_initial_purchase(
+        self,
+        *,
+        purchase_id: str,
+        release_id: str,
+        device_principal: VerifiedDevicePrincipal,
+        screenshot_storage_key: str,
+        screenshot_sha256: str,
+        screenshot_byte_size: int,
+        screenshot_mime_type: str,
+        paid_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None = None,
+    ) -> InitialPurchaseResult:
+        """Atomically enroll one proved device and submit non-entitled evidence.
+
+        The caller must cryptographically prove the device before constructing
+        ``device_principal``.  The opaque purchase identity is never stored raw;
+        its digest deterministically reuses the same account/license on retries.
+        No branch in this transaction creates an entitlement.
+        """
+
+        purchase_id = validate_opaque_identifier(purchase_id, field="purchase_id")
+        release_id = validate_opaque_identifier(release_id, field="release_id")
+        if (
+            not isinstance(device_principal, VerifiedDevicePrincipal)
+            or not device_principal.proof_verified
+        ):
+            raise ValidationError("verified device proof is required")
+        client_submission_id = validate_opaque_identifier(
+            client_submission_id, field="client_submission_id"
+        )
+        if supersedes_payment_id is not None:
+            supersedes_payment_id = validate_opaque_identifier(
+                supersedes_payment_id, field="supersedes_payment_id"
+            )
+        storage_key = validate_storage_key(
+            screenshot_storage_key, field="screenshot_storage_key"
+        )
+        screenshot_sha256 = validate_sha256(screenshot_sha256)
+        screenshot_byte_size = validate_payment_screenshot_size(
+            screenshot_byte_size
+        )
+        screenshot_mime_type = validate_payment_screenshot_mime_type(
+            screenshot_mime_type
+        )
+        paid_at = normalize_utc_timestamp(paid_at, field="paid_at")
+        external_subject = "purchase:" + hashlib.sha256(
+            purchase_id.encode("utf-8")
+        ).hexdigest()
+        account_id = self._new_id("acct")
+        license_id = self._new_id("lic")
+        binding_id = self._new_id("dev")
+        payment_id = self._new_id("pay")
+        created_at = self._now()
+
+        try:
+            with self._transaction():
+                release = self._require_row("releases", release_id, "release")
+                if release["state"] != ReleaseState.PUBLISHED.value:
+                    raise InvalidTransitionError(
+                        "initial purchase requires a published release"
+                    )
+                target_artifact = self._connection.execute(
+                    "SELECT id FROM release_artifacts WHERE release_id = ? "
+                    "AND platform = ? AND architecture = ? "
+                    "AND artifact_kind = ? AND signature_verified_at IS NOT NULL "
+                    "AND verification_key_id = signing_key_id LIMIT 1",
+                    (
+                        release_id,
+                        device_principal.platform,
+                        device_principal.architecture,
+                        ArtifactKind.INITIAL_INSTALLER.value,
+                    ),
+                ).fetchone()
+                if target_artifact is None:
+                    raise InvalidTransitionError(
+                        "initial purchase target is not available"
+                    )
+
+                account_row = self._connection.execute(
+                    "SELECT * FROM accounts WHERE external_subject = ?",
+                    (external_subject,),
+                ).fetchone()
+                if account_row is None:
+                    self._connection.execute(
+                        "INSERT INTO accounts(id, external_subject, created_at) "
+                        "VALUES (?, ?, ?)",
+                        (account_id, external_subject, created_at),
+                    )
+                    account_row = self._require_row(
+                        "accounts", account_id, "purchase account"
+                    )
+
+                license_rows = self._connection.execute(
+                    "SELECT * FROM licenses WHERE account_id = ? "
+                    "ORDER BY created_at, rowid",
+                    (account_row["id"],),
+                ).fetchall()
+                if len(license_rows) > 1:
+                    raise PersistenceInvariantError(
+                        "purchase account has multiple licenses"
+                    )
+                if license_rows:
+                    license_row = license_rows[0]
+                else:
+                    self._connection.execute(
+                        "INSERT INTO licenses(id, account_id, plan_code, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            license_id,
+                            account_row["id"],
+                            SINGLE_PAID_PLAN_CODE,
+                            created_at,
+                        ),
+                    )
+                    license_row = self._require_row(
+                        "licenses", license_id, "purchase license"
+                    )
+
+                active = self._active_device_row(license_row["id"])
+                if active is None:
+                    self._connection.execute(
+                        "INSERT INTO device_bindings("
+                        "id, license_id, device_key_fingerprint, platform, "
+                        "architecture, activated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            binding_id,
+                            license_row["id"],
+                            device_principal.device_key_fingerprint,
+                            device_principal.platform,
+                            device_principal.architecture,
+                            created_at,
+                        ),
+                    )
+                    active = self._connection.execute(
+                        "SELECT * FROM device_bindings WHERE id = ?",
+                        (binding_id,),
+                    ).fetchone()
+                elif (
+                    active["device_key_fingerprint"]
+                    != device_principal.device_key_fingerprint
+                    or active["platform"] != device_principal.platform
+                    or active["architecture"] != device_principal.architecture
+                ):
+                    raise ConflictError(
+                        "purchase identity is bound to another device"
+                    )
+                if active is None:
+                    raise PersistenceInvariantError(
+                        "initial purchase device insert was not persisted"
+                    )
+
+                payment_row, idempotent = self._submit_payment_locked(
+                    payment_id=payment_id,
+                    license_id=license_row["id"],
+                    release=release,
+                    screenshot_storage_key=storage_key,
+                    screenshot_sha256=screenshot_sha256,
+                    screenshot_byte_size=screenshot_byte_size,
+                    screenshot_mime_type=screenshot_mime_type,
+                    paid_at=paid_at,
+                    submitted_at=created_at,
+                    client_submission_id=client_submission_id,
+                    supersedes_payment_id=supersedes_payment_id,
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(
+                "initial purchase conflicts with current state"
+            ) from exc
+
+        return InitialPurchaseResult(
+            self._account_from_row(account_row),
+            self._license_from_row(license_row),
+            self._device_from_row(active),
+            self._payment_from_row(payment_row),
+            idempotent,
+        )
+
+    def _submit_payment_locked(
+        self,
+        *,
+        payment_id: str,
+        license_id: str,
+        release: sqlite3.Row,
+        screenshot_storage_key: str,
+        screenshot_sha256: str,
+        screenshot_byte_size: int,
+        screenshot_mime_type: str,
+        paid_at: str,
+        submitted_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None,
+    ) -> tuple[sqlite3.Row, bool]:
+        """Insert under an existing transaction or return an exact retry."""
+
+        release_id = str(release["id"])
+        existing = self._connection.execute(
+            "SELECT * FROM payment_submissions WHERE license_id = ? "
+            "AND client_submission_id = ?",
+            (license_id, client_submission_id),
+        ).fetchone()
+        if existing is not None:
+            same_request = (
+                existing["release_id"] == release_id
+                and existing["screenshot_sha256"] == screenshot_sha256
+                and existing["screenshot_byte_size"] == screenshot_byte_size
+                and existing["screenshot_mime_type"] == screenshot_mime_type
+                and existing["paid_at"] == paid_at
+                and existing["supersedes_payment_id"] == supersedes_payment_id
+            )
+            if not same_request:
+                raise ConflictError(
+                    "client submission identity was reused for another request"
+                )
+            return existing, True
+
+        if release["state"] != ReleaseState.PUBLISHED.value:
+            raise InvalidTransitionError(
+                "payment can target only a published release"
+            )
+        if self._entitlement_row(license_id, release_id) is not None:
+            raise ConflictError("license already owns this exact version")
+
+        if supersedes_payment_id is None:
+            rejected = self._connection.execute(
+                "SELECT id FROM payment_submissions WHERE license_id = ? "
+                "AND release_id = ? AND state = ? LIMIT 1",
+                (license_id, release_id, PaymentState.REJECTED.value),
+            ).fetchone()
+            if rejected is not None:
+                raise InvalidTransitionError(
+                    "rejected payment must be resubmitted explicitly"
+                )
+        else:
+            previous = self._require_row(
+                "payment_submissions", supersedes_payment_id, "rejected payment"
+            )
+            if (
+                previous["license_id"] != license_id
+                or previous["release_id"] != release_id
+                or previous["state"] != PaymentState.REJECTED.value
+            ):
+                raise InvalidTransitionError(
+                    "resubmission must supersede a rejected payment for this purchase"
+                )
+            successor = self._connection.execute(
+                "SELECT id FROM payment_submissions "
+                "WHERE supersedes_payment_id = ? LIMIT 1",
+                (supersedes_payment_id,),
+            ).fetchone()
+            if successor is not None:
+                raise ConflictError("rejected payment was already resubmitted")
+
+        self._connection.execute(
+            "INSERT INTO payment_submissions("
+            "id, license_id, release_id, amount_minor, currency, "
+            "screenshot_storage_key, screenshot_sha256, "
+            "screenshot_byte_size, screenshot_mime_type, paid_at, "
+            "submitted_at, client_submission_id, supersedes_payment_id, state"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                payment_id,
+                license_id,
+                release_id,
+                release["price_minor"],
+                release["currency"],
+                screenshot_storage_key,
+                screenshot_sha256,
+                screenshot_byte_size,
+                screenshot_mime_type,
+                paid_at,
+                submitted_at,
+                client_submission_id,
+                supersedes_payment_id,
+                PaymentState.PENDING.value,
+            ),
+        )
+        return self._require_row("payment_submissions", payment_id, "payment"), False
 
     def start_payment_review(
         self,
@@ -1408,6 +1766,23 @@ class SQLiteCommerceRepository:
         return sanitize_human_text(value, field=field, max_length=4000)
 
     @staticmethod
+    def _account_from_row(row: sqlite3.Row) -> Account:
+        return Account(
+            row["id"],
+            row["external_subject"],
+            row["created_at"],
+        )
+
+    @staticmethod
+    def _license_from_row(row: sqlite3.Row) -> License:
+        return License(
+            row["id"],
+            row["account_id"],
+            row["plan_code"],
+            row["created_at"],
+        )
+
+    @staticmethod
     def _device_from_row(row: sqlite3.Row) -> DeviceBinding:
         return DeviceBinding(
             row["id"],
@@ -1458,6 +1833,8 @@ class SQLiteCommerceRepository:
             row["decided_at"],
             row["decided_by"],
             row["rejection_reason"],
+            row["client_submission_id"],
+            row["supersedes_payment_id"],
         )
 
     @staticmethod

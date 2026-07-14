@@ -176,7 +176,7 @@ class SQLiteProductReadStore:
                 rows = connection.execute(
                     "SELECT p.*, r.version FROM payment_submissions p "
                     "JOIN releases r ON r.id = p.release_id "
-                    f"{where} ORDER BY p.submitted_at DESC, p.id DESC LIMIT ?",
+                    f"{where} ORDER BY p.submitted_at DESC, p.rowid DESC LIMIT ?",
                     (*parameters, limit),
                 ).fetchall()
             return tuple(self._payment_record(row) for row in rows)
@@ -224,7 +224,7 @@ class SQLiteProductReadStore:
                     "SELECT p.*, r.version FROM payment_submissions p "
                     "JOIN releases r ON r.id = p.release_id "
                     "WHERE p.license_id = ? AND p.release_id = ? "
-                    "ORDER BY p.submitted_at DESC, p.id DESC LIMIT 1",
+                    "ORDER BY p.submitted_at DESC, p.rowid DESC LIMIT 1",
                     (license_id, release_id),
                 ).fetchone()
             return None if row is None else self._payment_record(row)

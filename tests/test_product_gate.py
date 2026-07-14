@@ -32,6 +32,8 @@ class FakeProductRuntime:
         self.packaged_runtime_expected = packaged_expected
         self.activation_status = STATUS_ENTITLED
         self.activation_changes_state = True
+        self.purchase_available = True
+        self.pending_purchase = None
         self.local_state_calls = 0
         self.keys: list[str] = []
 
@@ -51,6 +53,9 @@ class FakeProductRuntime:
 
     def device_fingerprint(self) -> str | None:
         return "sha256:" + ("a" * 64)
+
+    def pending_initial_purchase(self):
+        return self.pending_purchase
 
 
 def _runtime(*, packaged: bool) -> RuntimeProductIdentity:
@@ -74,6 +79,8 @@ class ProductLicenseGateTests(unittest.TestCase):
         self.assertFalse(missing.allowed)
         self.assertEqual(missing.version, "1.2.3")
         self.assertEqual(missing.build, 7)
+        self.assertTrue(missing.purchase_available)
+        self.assertFalse(missing.purchase_pending)
 
         runtime.state = LocalProductState(
             STATUS_ENTITLED,
@@ -83,6 +90,7 @@ class ProductLicenseGateTests(unittest.TestCase):
         entitled = gate.evaluate()
         self.assertEqual(entitled.status, STATUS_ALLOWED)
         self.assertTrue(entitled.allowed)
+        self.assertFalse(entitled.purchase_available)
 
     def test_packaged_runtime_ignores_explicit_development_override(self) -> None:
         runtime = FakeProductRuntime(

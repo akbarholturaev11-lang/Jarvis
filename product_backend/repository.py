@@ -20,6 +20,7 @@ from .models import (
     Entitlement,
     InstallAuthorization,
     InstallMode,
+    InitialPurchaseResult,
     License,
     PaymentSubmission,
     Release,
@@ -100,7 +101,24 @@ class CommerceRepository(Protocol):
         screenshot_byte_size: int,
         screenshot_mime_type: str,
         paid_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None = None,
     ) -> PaymentSubmission: ...
+
+    def submit_initial_purchase(
+        self,
+        *,
+        purchase_id: str,
+        release_id: str,
+        device_principal: VerifiedDevicePrincipal,
+        screenshot_storage_key: str,
+        screenshot_sha256: str,
+        screenshot_byte_size: int,
+        screenshot_mime_type: str,
+        paid_at: str,
+        client_submission_id: str,
+        supersedes_payment_id: str | None = None,
+    ) -> InitialPurchaseResult: ...
 
     def start_payment_review(
         self,

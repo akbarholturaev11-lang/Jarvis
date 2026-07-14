@@ -12,7 +12,7 @@ import base64
 import binascii
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Final, Protocol, runtime_checkable
@@ -252,6 +252,24 @@ class PaymentSubmission:
     decided_at: str | None
     decided_by: str | None
     rejection_reason: str | None
+    client_submission_id: str | None = field(default=None, repr=False)
+    supersedes_payment_id: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class InitialPurchaseResult:
+    """Atomic initial-purchase enrollment without entitlement authority.
+
+    ``idempotent`` means an earlier request with the same client submission
+    identity and immutable evidence metadata was returned.  The result never
+    carries or implies an entitlement; only later admin approval can create one.
+    """
+
+    account: Account
+    license: License
+    device: DeviceBinding
+    payment: PaymentSubmission
+    idempotent: bool
 
 
 @dataclass(frozen=True, slots=True)

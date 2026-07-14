@@ -142,6 +142,7 @@ class CommerceRepositoryTests(unittest.TestCase):
             screenshot_byte_size=2048,
             screenshot_mime_type="image/png",
             paid_at="2026-07-13T00:59:00Z",
+            client_submission_id=f"submission:{suffix}",
         )
 
     def _approve(self, release_id: str, *, suffix: str):
@@ -498,6 +499,7 @@ class CommerceRepositoryTests(unittest.TestCase):
             "screenshot_byte_size": 1024,
             "screenshot_mime_type": "image/png",
             "paid_at": "2026-07-13T00:00:00Z",
+            "client_submission_id": "submission:metadata",
         }
         for overrides in invalid_cases:
             with self.subTest(overrides=overrides), self.assertRaises(
@@ -619,6 +621,7 @@ class CommercePersistenceTests(unittest.TestCase):
                 screenshot_byte_size=1024,
                 screenshot_mime_type="image/png",
                 paid_at="2026-07-13T00:00:00Z",
+                client_submission_id="submission:concurrent",
             )
             first.start_payment_review(payment.id, admin_subject=ADMIN_ONE)
             second = SQLiteCommerceRepository(
@@ -680,6 +683,8 @@ class CommercePersistenceTests(unittest.TestCase):
                         "screenshot_sha256",
                         "screenshot_byte_size",
                         "screenshot_mime_type",
+                        "client_submission_id",
+                        "supersedes_payment_id",
                     }.issubset(payment_columns)
                 )
                 self.assertNotIn("screenshot_bytes", payment_columns)
@@ -696,7 +701,7 @@ class CommercePersistenceTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     connection.execute("PRAGMA user_version").fetchone()[0],
-                    3,
+                    4,
                 )
                 self.assertGreater(
                     len(

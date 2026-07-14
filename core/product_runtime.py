@@ -7,9 +7,11 @@ network calls happen only for explicit activation or update checks.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Final
 
 from core.app_paths import AppPaths, resolve_app_paths
@@ -21,7 +23,26 @@ from core.product_config import (
     ProductConfigResult,
     load_product_client_config,
 )
-from core.product_purchase import ProductPurchaseService, PurchaseResult
+from core.product_purchase import (
+    STATUS_ENTITLED as PURCHASE_ENTITLED,
+    STATUS_NOT_AVAILABLE as PURCHASE_NOT_AVAILABLE,
+    STATUS_PURCHASE_REQUIRED,
+    InitialPurchaseOffer,
+    InitialPurchaseOfferResult,
+    ProductPurchaseService,
+    PurchaseResult,
+    new_initial_purchase_id,
+)
+from core.payment_request_store import (
+    STATUS_CORRUPT as PAYMENT_REQUEST_CORRUPT,
+    STATUS_NOT_AVAILABLE as PAYMENT_REQUEST_NOT_AVAILABLE,
+    STATUS_NOT_FOUND as PAYMENT_REQUEST_NOT_FOUND,
+    DurablePaymentRequestStore,
+    PaymentRequestEnvelope,
+    PaymentRequestKind,
+    PaymentRequestState,
+)
+from core.product_version import SemanticVersion
 from core.product_updates import (
     ProductUpdateService,
     UpdateCheckResult,
@@ -45,6 +66,7 @@ STATUS_FAILED: Final = "failed"
 
 LICENSE_STATE_SERVICE: Final = "com.jarvis.assistant.product"
 LICENSE_ID_ACCOUNT: Final = "active-license-id-v1"
+PENDING_PURCHASE_ACCOUNT: Final = "pending-purchase-v1"
 _LICENSE_ID_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9._-]{1,126}[a-z0-9])")
 
 
@@ -82,12 +104,18 @@ class ProductRuntimeService:
         "_identity",
         "_paths",
         "_packaged_runtime_expected",
+        "_payment_requests",
         "_purchase",
         "_runtime",
         "_store",
         "_updates",
         "_last_update_candidate",
         "_last_staged_update",
+        "_last_initial_offer",
+        "_last_initial_purchase_id",
+        "_last_initial_submission_id",
+        "_last_update_submission_id",
+        "_last_update_rejected_payment_id",
     )
 
     def __init__(
@@ -134,8 +162,17 @@ class ProductRuntimeService:
         self._cache: SignedEntitlementCache | None = None
         self._purchase: ProductPurchaseService | None = None
         self._updates: ProductUpdateService | None = None
+        self._payment_requests = DurablePaymentRequestStore(
+            self._store,
+            self._paths.data_dir / "payments",
+        )
         self._last_update_candidate = None
         self._last_staged_update = None
+        self._last_initial_offer: InitialPurchaseOffer | None = None
+        self._last_initial_purchase_id: str | None = None
+        self._last_initial_submission_id: str | None = None
+        self._last_update_submission_id: str | None = None
+        self._last_update_rejected_payment_id: str | None = None
         if self._config_result.status == CONFIG_SUCCESS and self._config_result.config:
             config = self._config_result.config
             cache = SignedEntitlementCache(
@@ -287,6 +324,319 @@ class ProductRuntimeService:
             STATUS_ENTITLED, result, "Exact version activated."
         )
 
+    @property
+    def purchase_available(self) -> bool:
+        return self._runtime is not None and self._purchase is not None
+
+    def pending_initial_purchase(self) -> tuple[str, str, str] | None:
+        stored = self._store.get(LICENSE_STATE_SERVICE, PENDING_PURCHASE_ACCOUNT)
+        if stored.status != STATUS_SUCCESS or not stored.value:
+            return None
+        parts = stored.value.split("|")
+        if len(parts) != 3:
+            return None
+        purchase_id, license_id, version = parts
+        if (
+            re.fullmatch(r"purchase_[0-9a-f]{32}", purchase_id) is None
+            or _LICENSE_ID_RE.fullmatch(license_id) is None
+        ):
+            return None
+        try:
+            normalized = str(SemanticVersion.parse(version))
+        except (TypeError, ValueError):
+            return None
+        return purchase_id, license_id, normalized
+
+    def prepare_initial_purchase(
+        self,
+        *,
+        purchase_id: str | None = None,
+    ) -> InitialPurchaseOfferResult:
+        if self._runtime is None or self._purchase is None:
+            return InitialPurchaseOfferResult(
+                STATUS_NOT_CONFIGURED,
+                "Initial purchase service is not configured.",
+            )
+        if self.local_state().entitled:
+            return InitialPurchaseOfferResult(
+                PURCHASE_ENTITLED,
+                "This exact version is already entitled.",
+            )
+        pending = self.pending_initial_purchase()
+        selected_id = (
+            purchase_id
+            or (pending[0] if pending is not None else None)
+            or new_initial_purchase_id()
+        )
+        result = self._purchase.prepare_initial_purchase(
+            purchase_id=selected_id,
+            version=self._runtime.product_version.version,
+            platform=self._runtime.platform,
+            architecture=self._runtime.architecture,
+        )
+        if result.offer is not None:
+            self._last_initial_offer = result.offer
+            self._last_initial_purchase_id = selected_id
+            self._last_initial_submission_id = new_initial_purchase_id()
+        return result
+
+    @staticmethod
+    def _utc_now_text() -> str:
+        return (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
+
+    def submit_initial_purchase(
+        self,
+        *,
+        paid_at: str,
+        screenshot: bytes,
+        content_type: str,
+        supersedes_payment_id: str | None = None,
+    ) -> PurchaseResult:
+        offer = self._last_initial_offer
+        submission_id = self._last_initial_submission_id
+        if self._purchase is None:
+            return PurchaseResult(
+                STATUS_NOT_CONFIGURED,
+                "Initial purchase offer is not prepared.",
+            )
+        # If a durable request already exists, retry that exact submission
+        # instead of creating a second payment.  The server matches an
+        # idempotent retry on the stored idempotency key and evidence digest,
+        # so a lost response can never turn into a duplicate purchase.
+        existing = self._payment_requests.load()
+        if existing.status == PAYMENT_REQUEST_NOT_AVAILABLE:
+            return PurchaseResult(
+                PURCHASE_NOT_AVAILABLE,
+                "Secure payment storage is not available.",
+            )
+        if existing.status == PAYMENT_REQUEST_CORRUPT:
+            return PurchaseResult(
+                STATUS_INVALID,
+                "A pending payment request is unreadable.",
+            )
+        if (
+            existing.pending
+            and existing.envelope is not None
+            and existing.envelope.kind is PaymentRequestKind.INITIAL
+            and existing.screenshot is not None
+        ):
+            return self._resume_initial(existing.envelope, existing.screenshot)
+        if offer is None or submission_id is None:
+            return PurchaseResult(
+                STATUS_NOT_CONFIGURED,
+                "Initial purchase offer is not prepared.",
+            )
+        try:
+            if type(screenshot) is not bytes or not screenshot:
+                raise ValueError("payment evidence is invalid")
+            now = self._utc_now_text()
+            envelope = PaymentRequestEnvelope(
+                idempotency_key=submission_id,
+                kind=PaymentRequestKind.INITIAL,
+                release_id=offer.release_id,
+                device_fingerprint=self.device_fingerprint() or "unknown",
+                proof_sha256=hashlib.sha256(screenshot).hexdigest(),
+                content_type=content_type,
+                paid_at=paid_at,
+                version=offer.version,
+                state=PaymentRequestState.PENDING,
+                created_at=now,
+                updated_at=now,
+                purchase_id=offer.purchase_id,
+                supersedes_payment_id=supersedes_payment_id,
+            )
+        except (TypeError, ValueError):
+            return PurchaseResult(
+                STATUS_INVALID,
+                "Initial payment request is invalid.",
+            )
+        # Persist the request durably before the network call so a restart or a
+        # lost response can resume the exact submission.
+        saved = self._payment_requests.save(envelope, screenshot)
+        if not saved.ok:
+            if saved.status == PAYMENT_REQUEST_NOT_AVAILABLE:
+                return PurchaseResult(
+                    PURCHASE_NOT_AVAILABLE,
+                    "Secure payment storage is not available.",
+                )
+            return PurchaseResult(
+                STATUS_FAILED,
+                "Payment request could not be stored securely.",
+            )
+        return self._submit_and_finalize_initial(offer, envelope, screenshot)
+
+    def resume_pending_payment(self) -> PurchaseResult | None:
+        """Re-submit a payment that a restart or lost response left in flight."""
+
+        if self._purchase is None:
+            return None
+        loaded = self._payment_requests.load()
+        if loaded.status in {
+            PAYMENT_REQUEST_NOT_FOUND,
+            PAYMENT_REQUEST_NOT_AVAILABLE,
+        }:
+            return None
+        if loaded.status == PAYMENT_REQUEST_CORRUPT:
+            return PurchaseResult(
+                STATUS_INVALID,
+                "A pending payment request is unreadable.",
+            )
+        if (
+            not loaded.pending
+            or loaded.envelope is None
+            or loaded.screenshot is None
+            or loaded.envelope.kind is not PaymentRequestKind.INITIAL
+        ):
+            return None
+        return self._resume_initial(loaded.envelope, loaded.screenshot)
+
+    def _resume_initial(
+        self,
+        envelope: PaymentRequestEnvelope,
+        screenshot: bytes,
+    ) -> PurchaseResult:
+        offer_result = self.prepare_initial_purchase(
+            purchase_id=envelope.purchase_id
+        )
+        offer = offer_result.offer
+        if offer is not None:
+            if (
+                offer.release_id != envelope.release_id
+                or offer.version != envelope.version
+            ):
+                return PurchaseResult(
+                    STATUS_INVALID,
+                    "The pending payment no longer matches the current offer.",
+                )
+            # Reuse the exact idempotency key and sanitized bytes.
+            self._last_initial_submission_id = envelope.idempotency_key
+            return self._submit_and_finalize_initial(offer, envelope, screenshot)
+        if offer_result.status == PURCHASE_ENTITLED:
+            # The version was activated meanwhile; the request is obsolete.
+            self._payment_requests.clear()
+            return PurchaseResult(
+                STATUS_NOT_CONFIGURED,
+                "This exact version is already entitled.",
+            )
+        return PurchaseResult(offer_result.status, offer_result.message)
+
+    def _submit_and_finalize_initial(
+        self,
+        offer: InitialPurchaseOffer,
+        envelope: PaymentRequestEnvelope,
+        screenshot: bytes,
+    ) -> PurchaseResult:
+        result = self._purchase.submit_initial_payment(
+            offer,
+            paid_at=envelope.paid_at,
+            screenshot=screenshot,
+            content_type=envelope.content_type,
+            submission_id=envelope.idempotency_key,
+            supersedes_payment_id=envelope.supersedes_payment_id,
+        )
+        if result.status != "submitted" or result.license_id is None:
+            # Keep the durable request pending so a later retry stays idempotent.
+            return result
+        stored = self._store.set(
+            LICENSE_STATE_SERVICE,
+            PENDING_PURCHASE_ACCOUNT,
+            f"{offer.purchase_id}|{result.license_id}|{offer.version}",
+        )
+        if stored.status != STATUS_SUCCESS:
+            return PurchaseResult(
+                PURCHASE_NOT_AVAILABLE,
+                "Pending purchase could not be stored securely.",
+                release_id=result.release_id,
+                license_id=result.license_id,
+                purchase_id=result.purchase_id,
+                version=result.version,
+                payment_id=result.payment_id,
+                payment_state=result.payment_state,
+                price_minor=result.price_minor,
+                currency=result.currency,
+            )
+        # The submission is durably confirmed; drop the sensitive evidence.
+        self._payment_requests.clear()
+        return result
+
+    def poll_initial_purchase(self) -> PurchaseResult:
+        if self._purchase is None:
+            return PurchaseResult(
+                STATUS_NOT_CONFIGURED,
+                "Initial purchase service is not configured.",
+            )
+        pending = self.pending_initial_purchase()
+        if pending is None:
+            return PurchaseResult(
+                STATUS_PURCHASE_REQUIRED,
+                "No pending initial purchase was found.",
+            )
+        _purchase_id, license_id, version = pending
+        result = self._purchase.poll_status(
+            license_id=license_id,
+            version=version,
+        )
+        if not result.entitled:
+            return PurchaseResult(
+                result.status,
+                result.message,
+                release_id=result.release_id,
+                license_id=license_id,
+                version=result.version,
+                payment_id=result.payment_id,
+                payment_state=result.payment_state,
+                price_minor=result.price_minor,
+                currency=result.currency,
+                rejection_reason=result.rejection_reason,
+            )
+        persisted = self._store.set(
+            LICENSE_STATE_SERVICE,
+            LICENSE_ID_ACCOUNT,
+            license_id,
+        )
+        if persisted.status != STATUS_SUCCESS:
+            return PurchaseResult(
+                PURCHASE_NOT_AVAILABLE,
+                "Approved license could not be stored securely.",
+                release_id=result.release_id,
+                license_id=license_id,
+                version=result.version,
+                payment_id=result.payment_id,
+                payment_state=result.payment_state,
+                price_minor=result.price_minor,
+                currency=result.currency,
+            )
+        verified = self.local_state()
+        if not verified.entitled:
+            return PurchaseResult(
+                STATUS_INVALID,
+                "Approved exact-version entitlement failed local verification.",
+                release_id=result.release_id,
+                license_id=license_id,
+                version=result.version,
+                payment_id=result.payment_id,
+                payment_state=result.payment_state,
+                price_minor=result.price_minor,
+                currency=result.currency,
+            )
+        self._store.delete(LICENSE_STATE_SERVICE, PENDING_PURCHASE_ACCOUNT)
+        return PurchaseResult(
+            PURCHASE_ENTITLED,
+            "Approved exact-version entitlement is active.",
+            release_id=result.release_id,
+            license_id=license_id,
+            version=result.version,
+            payment_id=result.payment_id,
+            payment_state=result.payment_state,
+            price_minor=result.price_minor,
+            currency=result.currency,
+            certificate=result.certificate,
+        )
+
     def check_updates(self) -> UpdateCheckResult | None:
         state = self.local_state()
         if (
@@ -299,6 +649,7 @@ class ProductRuntimeService:
         identity = self._identity.load()
         if not identity.ok or identity.identity is None:
             return None
+        previous_release_id = getattr(self._last_update_candidate, "release_id", None)
         result = self._updates.check(
             license_id=state.license_id,
             device_fingerprint=identity.identity.fingerprint,
@@ -307,6 +658,12 @@ class ProductRuntimeService:
             architecture=state.runtime.architecture,
         )
         self._last_update_candidate = result.candidate
+        next_release_id = getattr(result.candidate, "release_id", None)
+        if next_release_id != previous_release_id:
+            self._last_update_submission_id = (
+                new_initial_purchase_id() if next_release_id is not None else None
+            )
+            self._last_update_rejected_payment_id = None
         return result
 
     def submit_update_payment(
@@ -325,13 +682,20 @@ class ProductRuntimeService:
             or self._purchase is None
         ):
             return None
-        return self._purchase.submit_payment(
+        if self._last_update_submission_id is None:
+            self._last_update_submission_id = new_initial_purchase_id()
+        result = self._purchase.submit_payment(
             license_id=state.license_id,
             release_id=candidate.release_id,
             paid_at=paid_at,
             screenshot=screenshot,
             content_type=content_type,
+            submission_id=self._last_update_submission_id,
+            supersedes_payment_id=self._last_update_rejected_payment_id,
         )
+        if result.status == "submitted":
+            self._last_update_rejected_payment_id = None
+        return result
 
     def poll_update_purchase(self) -> PurchaseResult | None:
         state = self.local_state()
@@ -347,7 +711,11 @@ class ProductRuntimeService:
             license_id=state.license_id,
             version=candidate.target.version,
         )
+        if result.status == "rejected" and result.payment_id is not None:
+            self._last_update_rejected_payment_id = result.payment_id
+            self._last_update_submission_id = new_initial_purchase_id()
         if result.entitled:
+            self._last_update_rejected_payment_id = None
             self.check_updates()
         return result
 
@@ -387,6 +755,7 @@ class ProductRuntimeService:
 __all__ = [
     "LICENSE_ID_ACCOUNT",
     "LICENSE_STATE_SERVICE",
+    "PENDING_PURCHASE_ACCOUNT",
     "STATUS_ENTITLED",
     "STATUS_FAILED",
     "STATUS_INVALID",

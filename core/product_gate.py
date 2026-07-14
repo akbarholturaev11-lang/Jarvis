@@ -66,6 +66,11 @@ class ProductRuntimePort(Protocol):
 
     def device_fingerprint(self) -> str | None: ...
 
+    @property
+    def purchase_available(self) -> bool: ...
+
+    def pending_initial_purchase(self) -> tuple[str, str, str] | None: ...
+
 
 @dataclass(frozen=True, slots=True)
 class ProductGateSnapshot:
@@ -77,6 +82,7 @@ class ProductGateSnapshot:
     device_fingerprint: str | None = field(default=None, repr=False)
     can_activate: bool = False
     purchase_available: bool = False
+    purchase_pending: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -89,7 +95,8 @@ class ProductGateSnapshot:
             f"product_status={self.product_status!r}, packaged={self.packaged!r}, "
             f"version={self.version!r}, build={self.build!r}, "
             f"device_fingerprint={device!r}, can_activate={self.can_activate!r}, "
-            f"purchase_available={self.purchase_available!r})"
+            f"purchase_available={self.purchase_available!r}, "
+            f"purchase_pending={self.purchase_pending!r})"
         )
 
 
@@ -257,6 +264,20 @@ class ProductLicenseGate:
                 device = self._runtime.device_fingerprint()
             except Exception:
                 device = None
+        try:
+            purchase_available = (
+                status not in _ALLOWED_STATUSES
+                and bool(self._runtime.purchase_available)
+            )
+        except Exception:
+            purchase_available = False
+        try:
+            purchase_pending = (
+                purchase_available
+                and self._runtime.pending_initial_purchase() is not None
+            )
+        except Exception:
+            purchase_pending = False
         return ProductGateSnapshot(
             status,
             state.status,
@@ -265,7 +286,8 @@ class ProductLicenseGate:
             build,
             device,
             can_activate,
-            False,
+            purchase_available,
+            purchase_pending,
         )
 
     def __repr__(self) -> str:
