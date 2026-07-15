@@ -1,8 +1,9 @@
 """Fail-closed updater transaction and honest platform adapter contracts.
 
-No adapter in this foundation build mutates an installed application.  Real
-platform installers must implement the same contract and may report success
-only after the coordinator's separate exact-version health verification.
+The default platform factory never selects a mutating adapter in this
+foundation build.  An explicitly constructed development-only macOS adapter
+lives in :mod:`core.macos_update` for real temporary-filesystem integration;
+it cannot be selected by a frozen production runtime.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import os
 import platform as stdlib_platform
 import secrets
 import stat
+import sys
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -121,8 +123,8 @@ class PrivateUpdateJournal:
             raise OSError("journal parent is not a directory")
         if hasattr(os, "getuid") and opened.st_uid != os.getuid():
             raise OSError("journal parent owner mismatch")
-        if os.name != "nt":
-            parent.chmod(0o700)
+        if os.name != "nt" and stat.S_IMODE(opened.st_mode) & 0o077:
+            raise OSError("journal parent permissions are unsafe")
 
     def load_locked(self) -> UpdateRollbackCheckpoint | None:
         self._ensure_parent()
@@ -498,6 +500,15 @@ class UpdaterPlatformAdapter(ABC):
 
     platform_key = "unknown"
 
+    def validate_journal_path(self, journal_path: Path) -> bool:
+        """Confirm a durable journal cannot be moved by adapter mutation."""
+
+        return (
+            isinstance(journal_path, Path)
+            and journal_path.is_absolute()
+            and not journal_path.is_symlink()
+        )
+
     def capability(self) -> UpdaterCapability:
         return UpdaterCapability(
             self.platform_key,
@@ -594,10 +605,86 @@ class _UnavailableUpdaterAdapter(UpdaterPlatformAdapter):
 
 
 class MacOSUpdaterAdapter(_UnavailableUpdaterAdapter):
-    """Honest placeholder until signed/notarized atomic replacement exists."""
+    """Read-only production helper assessment; mutation stays fail-closed.
+
+    Even a trusted helper remains unavailable until its privileged request,
+    shutdown and atomic-swap protocol is implemented and independently audited.
+    The fixed helper path cannot be redirected by client configuration.
+    """
 
     platform_key = "macos"
     blocker = "signed_notarized_atomic_helper_not_configured"
+
+    def __init__(
+        self,
+        *,
+        expected_team_id: str | None = None,
+        designated_requirement: str | None = None,
+        frozen: bool | None = None,
+        _validation_runner: object | None = None,
+    ) -> None:
+        self._expected_team_id = expected_team_id
+        self._designated_requirement = designated_requirement
+        self._frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
+        self._validation_runner = _validation_runner
+
+    def capability(self) -> UpdaterCapability:
+        from core.macos_update import (
+            PRODUCTION_MACOS_HELPER_PATH,
+            assess_production_macos_helper,
+        )
+
+        assessment = assess_production_macos_helper(
+            PRODUCTION_MACOS_HELPER_PATH,
+            expected_team_id=self._expected_team_id,
+            designated_requirement=self._designated_requirement,
+            frozen=self._frozen,
+            runner=self._validation_runner,  # type: ignore[arg-type]
+            required_uid=0,
+        )
+        return UpdaterCapability(
+            self.platform_key,
+            AdapterStatus.NOT_AVAILABLE,
+            False,
+            assessment.blocker or "privileged_helper_update_protocol_not_enabled",
+        )
+
+    def prepare_persisted_backup(
+        self,
+        *,
+        source: ProductVersion,
+        target: ProductVersion,
+    ) -> AdapterBackupResult:
+        self.capability()
+        return AdapterBackupResult(AdapterStatus.NOT_AVAILABLE)
+
+    def install(
+        self,
+        staged_artifact: VerifiedArtifactHandle,
+        *,
+        backup_reference: str,
+        source: ProductVersion,
+        target: ProductVersion,
+    ) -> AdapterMutationResult:
+        self.capability()
+        return AdapterMutationResult(AdapterStatus.NOT_AVAILABLE, False)
+
+    def verify_installed(
+        self,
+        expected: ProductVersion,
+        *,
+        timeout_seconds: float,
+    ) -> AdapterVerificationResult:
+        self.capability()
+        return AdapterVerificationResult(AdapterStatus.NOT_AVAILABLE)
+
+    def rollback(
+        self,
+        backup_reference: str,
+        expected_previous: ProductVersion,
+    ) -> AdapterMutationResult:
+        self.capability()
+        return AdapterMutationResult(AdapterStatus.NOT_AVAILABLE, False)
 
 
 class WindowsUpdaterAdapter(_UnavailableUpdaterAdapter):
@@ -786,6 +873,10 @@ class UpdateTransactionCoordinator:
         self._journal = (
             None if journal_path is None else PrivateUpdateJournal(journal_path)
         )
+        if self._journal is not None and not adapter.validate_journal_path(
+            self._journal.path
+        ):
+            raise ValueError("update journal overlaps an adapter mutation path")
         self._journal_invalid = False
         self._pending_backup_reference: str | None = None
         self._pending_source: ProductVersion | None = None
