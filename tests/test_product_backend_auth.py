@@ -90,6 +90,7 @@ def _login_test_app(*, commerce=None, evidence_store=None):
         activation=Mock(spec=ClientActivationPort),
         release_artifact_store=Mock(spec=ReleaseArtifactStore),
         auth_settings=settings,
+        allow_password_only_admin=True,
         clock=lambda: NOW,
     )
 
@@ -184,6 +185,32 @@ class DeviceActionGrantReservationTests(unittest.TestCase):
 
 
 class AdminLoginRateLimitTests(unittest.TestCase):
+    def test_password_budget_is_account_global_across_source_ips(self):
+        app = _login_test_app()
+        statuses = []
+        with patch.object(
+            AdminPasswordCredential,
+            "verify",
+            autospec=True,
+            return_value=False,
+        ) as verify:
+            for index in range(6):
+                with TestClient(
+                    app,
+                    client=(f"198.51.100.{index + 1}", 50_000 + index),
+                ) as client:
+                    statuses.append(
+                        client.post(
+                            "/api/admin/session",
+                            json={
+                                "subject": "admin:test",
+                                "password": "incorrect",
+                            },
+                        ).status_code
+                    )
+        self.assertEqual(statuses, [401, 401, 401, 401, 401, 429])
+        self.assertEqual(verify.call_count, 5)
+
     def test_subject_rotation_and_forwarded_for_cannot_bypass_client_budget(self):
         app = _login_test_app()
         with TestClient(app) as client, patch.object(

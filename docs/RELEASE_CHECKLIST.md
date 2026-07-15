@@ -18,6 +18,19 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 - [ ] Secret scan covers source, PyInstaller analysis, `.app`, DMG and generated logs.
 - [ ] Writable config/data/cache/log/update paths resolve outside `JARVIS.app` through `AppPaths`.
 
+## Admin security gate
+
+- [ ] Production starts fail-closed with owner-only MFA and session key material;
+      the password-only development override is absent.
+- [ ] Each operator enrolls RFC 6238 TOTP and stores one-time recovery codes
+      offline; invalid, replayed and exhausted factors are rejected.
+- [ ] Password rotation persists after restart, is audited and revokes every
+      active session; current and new passwords never appear in logs/responses.
+- [ ] CSRF, Secure/HttpOnly/SameSite=Strict cookies, idle/absolute expiry and
+      recent step-up are verified on payment, release, license and device actions.
+- [ ] Trusted proxies and optional admin/VPN CIDR allowlists match the deployed
+      network; spoofed forwarding headers and excluded clients are rejected.
+
 ## Build verification
 
 - [ ] Foundation and full regression tests pass on Python 3.12.

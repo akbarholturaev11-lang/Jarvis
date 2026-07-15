@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from fastapi.testclient import TestClient
@@ -11,11 +15,15 @@ from product_backend.admin_mfa import (
     MfaSecretCipher,
     SQLiteAdminMfaManager,
 )
+from product_backend.admin_credentials import SQLiteAdminCredentialStore
 from product_backend.api_app import create_product_backend_app
 from product_backend.api_auth import (
     AdminAuthSettings,
+    AdminIpAllowlist,
     AdminPasswordCredential,
     AdminSessionManager,
+    BackendConfigurationError,
+    PasswordChangeResult,
     SessionAssurance,
     TrustedProxyConfig,
 )
@@ -43,7 +51,7 @@ def _auth_settings(**overrides) -> AdminAuthSettings:
         (credential,),
         b"session-secret-for-mfa-session-tests",
         ("testserver",),
-        secure_cookie=False,
+        secure_cookie=overrides.pop("secure_cookie", False),
         **overrides,
     )
 
@@ -144,26 +152,94 @@ class TrustedProxyTests(unittest.TestCase):
             TrustedProxyConfig.from_spec("not-a-network")
 
 
+class AdminIpAllowlistTests(unittest.TestCase):
+    def test_disabled_allowlist_accepts_any_peer(self) -> None:
+        self.assertTrue(AdminIpAllowlist.from_spec(None).allows("not-an-ip"))
+
+    def test_configured_allowlist_fails_closed(self) -> None:
+        policy = AdminIpAllowlist.from_spec("10.0.0.0/8,2001:db8::/32")
+        self.assertTrue(policy.allows("10.4.5.6"))
+        self.assertTrue(policy.allows("2001:db8::1"))
+        self.assertFalse(policy.allows("198.51.100.2"))
+        self.assertFalse(policy.allows("unknown"))
+
+    def test_invalid_or_blank_spec_is_rejected(self) -> None:
+        for value in ("   ", "not-a-network"):
+            with self.subTest(value=value), self.assertRaises(
+                BackendConfigurationError
+            ):
+                AdminIpAllowlist.from_spec(value)
+
+
+class PersistentAdminCredentialTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX mode semantics")
+    def test_unsafe_existing_credential_file_is_rejected_before_sqlite_opens(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            path = root / "admin-credentials.sqlite3"
+            marker = b"must-not-be-overwritten"
+            path.write_bytes(marker)
+            path.chmod(0o644)
+            with self.assertRaises(BackendConfigurationError):
+                SQLiteAdminCredentialStore(path, _auth_settings().credentials)
+            self.assertEqual(path.read_bytes(), marker)
+
+    def test_password_change_survives_restart_without_plaintext_storage(self) -> None:
+        new_password = "a-new-strong-admin-password"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            root.chmod(0o700)
+            path = root / "admin-credentials.sqlite3"
+            settings = _auth_settings()
+            store = SQLiteAdminCredentialStore(path, settings.credentials)
+            manager = AdminSessionManager(settings, credential_store=store)
+            self.assertEqual(
+                manager.change_password(SUBJECT, PASSWORD, new_password),
+                PasswordChangeResult.CHANGED,
+            )
+            store.close()
+
+            reopened = SQLiteAdminCredentialStore(path, settings.credentials)
+            restarted = AdminSessionManager(settings, credential_store=reopened)
+            self.assertIsNone(restarted.verify_password(SUBJECT, PASSWORD))
+            self.assertEqual(
+                restarted.verify_password(SUBJECT, new_password), SUBJECT
+            )
+            self.assertNotIn(new_password.encode("utf-8"), path.read_bytes())
+            reopened.close()
+
+
 class _MfaAppHarness:
     def __init__(self, **mfa_kwargs) -> None:
         self.clock = {"t": datetime(2026, 7, 15, 11, 0, tzinfo=timezone.utc)}
         settings_kwargs = mfa_kwargs.pop("settings_kwargs", {})
         auth_overrides = mfa_kwargs.pop("auth_overrides", {})
+        trusted_proxy = mfa_kwargs.pop("trusted_proxy", None)
+        admin_ip_allowlist = mfa_kwargs.pop("admin_ip_allowlist", None)
         self.mfa = SQLiteAdminMfaManager(
             MfaSecretCipher(b"m" * 32),
             ":memory:",
             settings=AdminMfaSettings(mandatory=True, **settings_kwargs),
             clock=lambda: self.clock["t"],
         )
+        auth_settings = _auth_settings(**auth_overrides)
+        self.credentials = SQLiteAdminCredentialStore(
+            ":memory:", auth_settings.credentials, clock=lambda: self.clock["t"]
+        )
+        self.commerce = Mock(spec=CommerceRepository)
         self.app = create_product_backend_app(
-            commerce=Mock(spec=CommerceRepository),
+            commerce=self.commerce,
             reads=Mock(spec=ProductReadStore),
             evidence_store=Mock(spec=PrivatePaymentEvidenceStore),
             challenges=Mock(spec=DeviceChallengePort),
             activation=Mock(spec=ClientActivationPort),
             release_artifact_store=Mock(spec=ReleaseArtifactStore),
-            auth_settings=_auth_settings(**auth_overrides),
+            auth_settings=auth_settings,
             mfa=self.mfa,
+            trusted_proxy=trusted_proxy,
+            admin_ip_allowlist=admin_ip_allowlist,
+            admin_credential_store=self.credentials,
             clock=lambda: self.clock["t"],
         )
         self.client = TestClient(self.app)
@@ -201,6 +277,15 @@ class MfaLoginFlowTests(unittest.TestCase):
         self.assertEqual(harness.client.get("/api/admin/sessions").status_code, 403)
         # But it can reach enrollment status.
         self.assertEqual(harness.client.get("/api/admin/mfa").status_code, 200)
+
+    def test_production_cookie_flags_are_secure_http_only_and_strict(self) -> None:
+        harness = _MfaAppHarness(auth_overrides={"secure_cookie": True})
+        response = harness.login()
+        cookie = response.headers["set-cookie"].lower()
+        self.assertIn("secure", cookie)
+        self.assertIn("httponly", cookie)
+        self.assertIn("samesite=strict", cookie)
+        self.assertIn("path=/api/admin", cookie)
 
     def test_enrollment_completion_activates_and_rotates_session(self) -> None:
         harness = _MfaAppHarness()
@@ -276,6 +361,34 @@ class MfaLoginFlowTests(unittest.TestCase):
         statuses = [harness.login(totp="000000").status_code for _ in range(6)]
         self.assertEqual(statuses, [401, 401, 401, 401, 401, 429])
 
+    def test_factor_rate_limit_is_account_global_across_client_ips(self) -> None:
+        harness = _MfaAppHarness()
+        secret, activated, _ = harness.enroll_and_activate()
+        harness.client.delete(
+            "/api/admin/session",
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.clock_advance(harness, 60)
+        correct = totp_code(secret, harness.clock["t"].timestamp())
+        wrong = "999999" if correct == "000000" else "000000"
+        statuses = []
+        for index in range(6):
+            with TestClient(
+                harness.app,
+                client=(f"198.51.100.{index + 1}", 50_000 + index),
+            ) as client:
+                statuses.append(
+                    client.post(
+                        "/api/admin/session",
+                        json={
+                            "subject": SUBJECT,
+                            "password": PASSWORD,
+                            "totp": wrong,
+                        },
+                    ).status_code
+                )
+        self.assertEqual(statuses, [401, 401, 401, 401, 401, 429])
+
     def test_enrollment_rate_limit(self) -> None:
         harness = _MfaAppHarness()
         csrf = harness.login().json()["csrf_token"]
@@ -297,6 +410,154 @@ class MfaLoginFlowTests(unittest.TestCase):
             "/api/admin/sessions/revoke-all", headers={"X-CSRF-Token": csrf}
         )
         self.assertEqual(harness.client.get("/api/admin/sessions").status_code, 401)
+
+    def test_password_change_is_durable_revokes_sessions_and_is_audited(self) -> None:
+        harness = _MfaAppHarness()
+        secret, activated, _ = harness.enroll_and_activate()
+        new_password = "a-new-strong-admin-password"
+        changed = harness.client.post(
+            "/api/admin/password",
+            json={
+                "current_password": PASSWORD,
+                "new_password": new_password,
+            },
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.assertEqual(changed.status_code, 200)
+        self.assertNotIn(PASSWORD, changed.text)
+        self.assertNotIn(new_password, changed.text)
+        self.assertEqual(harness.client.get("/api/admin/sessions").status_code, 401)
+        self.assertIn(
+            "password_changed",
+            {item.event.value for item in harness.mfa.list_audit(subject=SUBJECT)},
+        )
+
+        self.clock_advance(harness, 60)
+        code = totp_code(secret, harness.clock["t"].timestamp())
+        self.assertEqual(harness.login(totp=code).status_code, 401)
+        accepted = harness.client.post(
+            "/api/admin/session",
+            json={
+                "subject": SUBJECT,
+                "password": new_password,
+                "totp": code,
+            },
+        )
+        self.assertEqual(accepted.status_code, 200)
+
+    def test_invalid_current_password_does_not_revoke_live_session_or_echo_secrets(self) -> None:
+        harness = _MfaAppHarness()
+        _, activated, _ = harness.enroll_and_activate()
+        wrong = "wrong-current-password-marker"
+        new = "unused-new-password-marker"
+        response = harness.client.post(
+            "/api/admin/password",
+            json={"current_password": wrong, "new_password": new},
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn(wrong, response.text)
+        self.assertNotIn(new, response.text)
+        self.assertEqual(harness.client.get("/api/admin/sessions").status_code, 200)
+
+    def test_http_named_session_revoke_leaves_current_session_active(self) -> None:
+        harness = _MfaAppHarness()
+        _, activated, _ = harness.enroll_and_activate()
+        other = harness.app.state.admin_sessions.issue_session(SUBJECT)
+        response = harness.client.delete(
+            f"/api/admin/sessions/{other.session_id}",
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(
+            harness.app.state.admin_sessions.resolve(other.session_token)
+        )
+        self.assertEqual(harness.client.get("/api/admin/sessions").status_code, 200)
+
+    def test_mfa_reset_is_audited_and_revokes_session(self) -> None:
+        harness = _MfaAppHarness()
+        _, activated, _ = harness.enroll_and_activate()
+        reset = harness.client.post(
+            "/api/admin/mfa/disable",
+            json={"reset": True},
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.assertEqual(reset.status_code, 200)
+        self.assertEqual(harness.mfa.state(SUBJECT).value, "not_enrolled")
+        self.assertIn(
+            "mfa_reset",
+            {item.event.value for item in harness.mfa.list_audit(subject=SUBJECT)},
+        )
+        self.assertEqual(harness.client.get("/api/admin/sessions").status_code, 401)
+
+    def test_sensitive_core_mutation_requires_recent_step_up(self) -> None:
+        harness = _MfaAppHarness(auth_overrides={"reauth_window_seconds": 60})
+        secret, activated, _ = harness.enroll_and_activate()
+        harness.commerce.create_account.return_value = SimpleNamespace(
+            id="acct_recent_001",
+            external_subject="customer:recent",
+            created_at="2026-07-15T11:02:00.000000Z",
+        )
+        self.clock_advance(harness, 61)
+        stale = harness.client.post(
+            "/api/admin/accounts",
+            json={"external_subject": "customer:recent"},
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.assertEqual(stale.status_code, 403)
+        self.assertEqual(harness.commerce.create_account.call_count, 0)
+
+        code = totp_code(secret, harness.clock["t"].timestamp())
+        stepped_up = harness.client.post(
+            "/api/admin/session/reauth",
+            json={"totp": code},
+            headers={"X-CSRF-Token": activated["csrf_token"]},
+        )
+        self.assertEqual(stepped_up.status_code, 200)
+        accepted = harness.client.post(
+            "/api/admin/accounts",
+            json={"external_subject": "customer:recent"},
+            headers={"X-CSRF-Token": stepped_up.json()["csrf_token"]},
+        )
+        self.assertEqual(accepted.status_code, 201)
+        self.assertEqual(harness.commerce.create_account.call_count, 1)
+
+    def test_configured_admin_network_blocks_other_peers(self) -> None:
+        harness = _MfaAppHarness(
+            admin_ip_allowlist=AdminIpAllowlist.from_spec("127.0.0.0/8")
+        )
+        self.assertEqual(harness.login().status_code, 403)
+        with TestClient(harness.app, client=("127.0.0.8", 50000)) as client:
+            allowed = client.post(
+                "/api/admin/session",
+                json={"subject": SUBJECT, "password": PASSWORD},
+            )
+        self.assertEqual(allowed.status_code, 200)
+
+    def test_admin_allowlist_uses_forwarded_client_only_from_trusted_proxy(self) -> None:
+        harness = _MfaAppHarness(
+            trusted_proxy=TrustedProxyConfig.from_spec("10.0.0.0/8"),
+            admin_ip_allowlist=AdminIpAllowlist.from_spec("203.0.113.0/24"),
+        )
+        headers = {"X-Forwarded-For": "203.0.113.7"}
+        with TestClient(harness.app, client=("10.0.0.5", 50000)) as trusted:
+            self.assertEqual(
+                trusted.post(
+                    "/api/admin/session",
+                    json={"subject": SUBJECT, "password": PASSWORD},
+                    headers=headers,
+                ).status_code,
+                200,
+            )
+        with TestClient(harness.app, client=("198.51.100.9", 50001)) as direct:
+            self.assertEqual(
+                direct.post(
+                    "/api/admin/session",
+                    json={"subject": SUBJECT, "password": PASSWORD},
+                    headers=headers,
+                ).status_code,
+                403,
+            )
 
     def test_idle_timeout_over_http(self) -> None:
         harness = _MfaAppHarness()
@@ -327,7 +588,19 @@ class MfaLoginFlowTests(unittest.TestCase):
 
 
 class MfaDisabledManagerTests(unittest.TestCase):
-    def test_app_without_mfa_keeps_single_factor_login(self) -> None:
+    def test_app_without_mfa_fails_closed_by_default(self) -> None:
+        with self.assertRaises(BackendConfigurationError):
+            create_product_backend_app(
+                commerce=Mock(spec=CommerceRepository),
+                reads=Mock(spec=ProductReadStore),
+                evidence_store=Mock(spec=PrivatePaymentEvidenceStore),
+                challenges=Mock(spec=DeviceChallengePort),
+                activation=Mock(spec=ClientActivationPort),
+                release_artifact_store=Mock(spec=ReleaseArtifactStore),
+                auth_settings=_auth_settings(),
+            )
+
+    def test_explicit_password_only_override_keeps_single_factor_login(self) -> None:
         clock = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
         app = create_product_backend_app(
             commerce=Mock(spec=CommerceRepository),
@@ -337,6 +610,7 @@ class MfaDisabledManagerTests(unittest.TestCase):
             activation=Mock(spec=ClientActivationPort),
             release_artifact_store=Mock(spec=ReleaseArtifactStore),
             auth_settings=_auth_settings(),
+            allow_password_only_admin=True,
             clock=lambda: clock,
         )
         with TestClient(app) as client:

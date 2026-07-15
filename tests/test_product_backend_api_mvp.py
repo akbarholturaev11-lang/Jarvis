@@ -220,6 +220,7 @@ class ProductBackendMvpTests(unittest.TestCase):
                     maximum_artifact_bytes=1024,
                 ),
                 auth_settings=settings,
+                allow_password_only_admin=True,
                 payment_instructions=load_payment_instructions(
                     payment_config_path
                 ),

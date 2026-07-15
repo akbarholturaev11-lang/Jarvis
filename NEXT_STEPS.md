@@ -17,9 +17,11 @@ The following external gates must be cleared before any customer release:
 3. Supply production HTTPS origin, release public keys, entitlement signing key,
    activation pepper, admin auth material, the owner-only admin MFA master key
    (`JARVIS_ADMIN_MFA_KEY_FILE`, fail-closed and mandatory by default), any
-   `JARVIS_TRUSTED_PROXIES` in front of the API, and owner-only payment
-   instructions. Enroll each admin operator's authenticator before go-live and
-   store their recovery codes offline.
+   `JARVIS_TRUSTED_PROXIES` in front of the API, optional
+   `JARVIS_ADMIN_ALLOWED_NETWORKS` CIDRs/VPN boundary, and owner-only payment
+   instructions. Enroll each admin operator's authenticator before go-live,
+   store recovery codes offline, and rotate the bootstrap password through the
+   authenticated admin password-change flow.
 4. Provide Apple Developer ID signing, hardened-runtime entitlements,
    notarization/stapling and Gatekeeper verification.
 5. Implement and audit a signed privileged macOS updater helper; the current app
@@ -63,9 +65,9 @@ The following external gates must be cleared before any customer release:
    password-only login lands on the enrollment screen, the QR activates a real
    authenticator app, recovery-code login works once, an idle session expires,
    `revoke-all` signs the operator out everywhere, and starting the backend
-   without the MFA key file fails closed. Then decide whether admin credentials
-   should move from env-only to a rotatable store so a true password-change +
-   session-revoke endpoint can exist.
+   without the MFA key file fails closed. Confirm password change survives a
+   process restart, revokes every existing session, and an excluded client IP
+   cannot reach any admin API when a CIDR allowlist is configured.
 
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.

@@ -241,6 +241,7 @@ class InitialPurchaseGrantRaceTests(unittest.TestCase):
                     maximum_artifact_bytes=2048,
                 ),
                 auth_settings=settings,
+                allow_password_only_admin=True,
                 payment_instructions=load_payment_instructions(payment_path),
                 clock=clock,
             )

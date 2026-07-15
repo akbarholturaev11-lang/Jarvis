@@ -207,6 +207,11 @@ main.py
 - `product_backend/` owns the one-plan account/license/device/release/payment/
   entitlement model, private evidence/artifact storage, one-time device proof,
   bilingual admin panel and deployment factory.
+- `product_backend/admin_mfa.py`, `admin_credentials.py`, `admin_mfa_api.py` and
+  `api_auth.py` own encrypted TOTP/recovery state, persistent salted password
+  hashes, MFA enrollment/step-up/password rotation, bounded sessions, CSRF,
+  account-global authentication limits, trusted-proxy resolution and optional
+  admin CIDR allowlisting.
 - Payment destinations are loaded only from an external owner-only JSON file;
   they are never committed and are returned only after verified device proof.
 - `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.

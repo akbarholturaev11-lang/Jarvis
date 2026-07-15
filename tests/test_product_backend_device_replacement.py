@@ -58,6 +58,7 @@ class AdminDeviceReplacementApiTests(unittest.TestCase):
                     ("testserver",),
                     secure_cookie=False,
                 ),
+                allow_password_only_admin=True,
                 clock=lambda: NOW,
             )
             route = (

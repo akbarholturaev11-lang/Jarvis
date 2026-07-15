@@ -122,6 +122,38 @@ class AdminWebStaticTests(unittest.TestCase):
         self.assertIn("evidence_type_invalid", self.javascript)
         self.assertIn('payment.state === "under_review"', self.javascript)
 
+    def test_step_up_and_password_rotation_have_bilingual_safe_ui(self):
+        for required in (
+            'id="reauth-form"',
+            'id="reauth-totp"',
+            'id="reauth-recovery"',
+            'id="password-change-form"',
+            'id="current-password"',
+            'id="new-password"',
+            'id="confirm-new-password"',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.html)
+        for required in (
+            'apiJson("/api/admin/session/reauth"',
+            'apiJson("/api/admin/password"',
+            "handleReauth",
+            "handlePasswordChange",
+            'body.current_password = ""',
+            'body.new_password = ""',
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, self.javascript)
+        for language in ("en", "ru"):
+            with self.subTest(language=language):
+                for key in (
+                    "reauth_title",
+                    "reauth_required",
+                    "password_change_title",
+                    "password_changed_sign_in",
+                ):
+                    self.assertIn(key, self.catalog[language])
+
     def test_provisioning_uses_exact_admin_routes_and_csrf_mutations(self):
         for required in (
             'apiJson("/api/admin/accounts"',

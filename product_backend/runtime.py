@@ -22,11 +22,13 @@ from .admin_mfa import (
     MfaSecretCipher,
     SQLiteAdminMfaManager,
 )
+from .admin_credentials import SQLiteAdminCredentialStore
 from .api_activation import SQLiteClientActivationService
 from .api_app import create_product_backend_app
 from .api_artifact_storage import LocalReadOnlyReleaseArtifactStore
 from .api_auth import (
     AdminAuthSettings,
+    AdminIpAllowlist,
     BackendConfigurationError,
     TrustedProxyConfig,
 )
@@ -102,6 +104,9 @@ def create_app_from_environment(
     trusted_proxy = TrustedProxyConfig.from_spec(
         source.get("JARVIS_TRUSTED_PROXIES")
     )
+    admin_ip_allowlist = AdminIpAllowlist.from_spec(
+        source.get("JARVIS_ADMIN_ALLOWED_NETWORKS")
+    )
     mfa_cipher = MfaSecretCipher(mfa_master_key)
     clock = lambda: datetime.now(timezone.utc)
     commerce_path = data_dir / "commerce.sqlite3"
@@ -116,7 +121,13 @@ def create_app_from_environment(
     challenges = None
     activation = None
     mfa = None
+    credential_store = None
     try:
+        credential_store = SQLiteAdminCredentialStore(
+            data_dir / "admin-credentials.sqlite3",
+            admin_settings.credentials,
+            clock=clock,
+        )
         challenges = SQLiteDeviceChallengeService(
             commerce,
             data_dir / "device-challenges.sqlite3",
@@ -156,11 +167,15 @@ def create_app_from_environment(
             payment_instructions=payment_instructions,
             mfa=mfa,
             trusted_proxy=trusted_proxy,
+            admin_ip_allowlist=admin_ip_allowlist,
+            admin_credential_store=credential_store,
             clock=clock,
         )
     except BaseException:
         if mfa is not None:
             mfa.close()
+        if credential_store is not None:
+            credential_store.close()
         if activation is not None:
             activation.close()
         if challenges is not None:
@@ -176,6 +191,7 @@ def create_app_from_environment(
             return
         closed = True
         mfa.close()
+        credential_store.close()
         activation.close()
         challenges.close()
         commerce.close()

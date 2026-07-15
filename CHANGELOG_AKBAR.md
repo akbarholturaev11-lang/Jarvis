@@ -25,6 +25,34 @@
   bypass, response-loss/restart update retry, secure-store failure/ambiguity,
   legacy blob migration and unsafe filesystem objects.
 
+## 2026-07-15 - Admin security requirement closure (BOSQICH 4 review)
+
+### Fixed and enforced
+
+- Added `SQLiteAdminCredentialStore`: the configured PBKDF2 credential is a
+  one-time bootstrap, password rotations persist across restarts in an
+  owner-private database, and plaintext passwords are never stored.
+- Added recent-MFA + current-password rotation, all-session revocation, audit
+  and bilingual password/step-up UI.
+- Added optional admin CIDR/VPN allowlisting after explicit trusted-proxy
+  resolution. Malformed configuration fails startup; excluded clients cannot
+  reach admin APIs.
+- Payment approval/rejection, release creation/artifact/publish, account/license
+  creation, device bind/replacement and activation-key issuance now require
+  CSRF plus recent authentication.
+- Password and MFA brute-force limits are account-global as well as client
+  bounded. The lower-level backend factory now fails closed without MFA unless
+  its explicit password-only test/development override is supplied.
+
+### Verification
+
+- Added persistent password restart, invalid-current-password, revoke-all,
+  named-session revoke, reset audit, secure-cookie, trusted proxy + allowlist,
+  cross-IP password/TOTP brute-force and HTTP recent-step-up tests.
+- Added static EN/RU parity and no-browser-storage checks for the new security
+  forms. A real local browser smoke covers enrollment, recovery step-up,
+  password rotation and re-login; production secrets are not used.
+
 ## 2026-07-15 - Admin TOTP MFA and hardened sessions (BOSQICH 4)
 
 ### Added

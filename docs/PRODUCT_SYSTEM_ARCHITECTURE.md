@@ -17,7 +17,7 @@ Desktop app
              │
              ▼
 FastAPI product backend
-  ├─ admin session + CSRF + bounded login/challenge attempts
+  ├─ TOTP MFA + durable password hashes + hardened session/CSRF boundary
   ├─ account/license/device provisioning + explicit replacement history
   ├─ release price, EN/RU features/fixes and artifact publishing
   ├─ private payment evidence + manual approval audit
@@ -62,7 +62,14 @@ FastAPI product backend
 - `product_backend/device_challenges.py` stores nonce digests and consumes every
   proof attempt atomically.
 - `product_backend/api_auth.py` keeps bounded admin sessions and device action
-  grants in process memory. Restart invalidates them safely.
+  grants in process memory. Restart invalidates them safely; password/TOTP
+  attempt budgets are account-global plus client bounded, and trusted-proxy
+  resolution feeds an optional admin CIDR allowlist.
+- `product_backend/admin_mfa.py` encrypts TOTP secrets, hashes one-time recovery
+  codes and persists replay/audit state. `admin_credentials.py` persists only
+  salted PBKDF2 password hashes so authenticated rotation survives restart.
+- `product_backend/admin_mfa_api.py` exposes enrollment QR, activation,
+  TOTP/recovery step-up, password change, session list/revoke and MFA reset.
 - `product_backend/private_storage.py` stores sanitized, pixel-bounded payment
   images privately without duplicate full-frame copies.
 - `product_backend/payment_instructions.py` loads optional owner-only bilingual

@@ -28,6 +28,7 @@ from .api_auth import (
     AdminSessionRecord,
     BoundedAttemptLimiter,
     IssuedAdminSession,
+    PasswordChangeResult,
     SessionAssurance,
 )
 
@@ -47,6 +48,11 @@ class MfaDisableBody(_StrictBody):
 class MfaStepUpBody(_StrictBody):
     totp: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
     recovery_code: str | None = Field(default=None, min_length=8, max_length=32)
+
+
+class PasswordChangeBody(_StrictBody):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str = Field(min_length=12, max_length=1024)
 
 
 def render_qr_png(data: str) -> bytes:
@@ -170,6 +176,7 @@ def register_admin_security_routes(
     attempt_key: Callable[[Request, str], str],
     enrollment_limiter: BoundedAttemptLimiter,
     stepup_limiter: BoundedAttemptLimiter,
+    password_limiter: BoundedAttemptLimiter,
 ) -> None:
     """Register MFA and session-management routes bound to injected managers."""
 
@@ -429,11 +436,47 @@ def register_admin_security_routes(
             "assurance": issued.assurance.value,
         }
 
+    @app.post("/api/admin/password")
+    def change_password(
+        body: PasswordChangeBody,
+        response: Response,
+        record: AdminSessionRecord = Depends(require_recent_admin),
+    ) -> dict[str, Any]:
+        if not sessions.password_change_available:
+            raise HTTPException(
+                status_code=503,
+                detail="password change is not available",
+            )
+        limiter_key = f"password-change|{record.subject}"
+        if not password_limiter.consume(limiter_key):
+            raise HTTPException(status_code=429, detail="too many attempts")
+        result = sessions.change_password(
+            record.subject,
+            body.current_password,
+            body.new_password,
+        )
+        if result is PasswordChangeResult.INVALID_CURRENT_PASSWORD:
+            raise HTTPException(status_code=401, detail="invalid admin credentials")
+        if result is not PasswordChangeResult.CHANGED:
+            raise HTTPException(
+                status_code=503,
+                detail="password change is not available",
+            )
+        password_limiter.clear(limiter_key)
+        revoked = sessions.revoke_all_for_subject(record.subject)
+        mfa.record_event(record.subject, MfaAuditEvent.PASSWORD_CHANGED)
+        _clear_cookie(response)
+        return {
+            "status": "changed",
+            "sessions_revoked": revoked,
+        }
+
 
 __all__ = [
     "MfaActivateBody",
     "MfaDisableBody",
     "MfaStepUpBody",
+    "PasswordChangeBody",
     "complete_admin_login",
     "register_admin_security_routes",
     "render_qr_png",

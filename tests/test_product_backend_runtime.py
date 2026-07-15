@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,6 +78,9 @@ class ProductBackendRuntimeTests(unittest.TestCase):
             paths = {getattr(route, "path", "") for route in app.routes}
             self.assertIn("/admin", paths)
             self.assertIn("/v1/client/activation/challenge", paths)
+            credential_path = root / "data" / "admin-credentials.sqlite3"
+            self.assertTrue(credential_path.is_file())
+            self.assertEqual(stat.S_IMODE(credential_path.stat().st_mode), 0o600)
             app.state.close_backend_resources()
             app.state.close_backend_resources()
 
@@ -87,6 +91,14 @@ class ProductBackendRuntimeTests(unittest.TestCase):
             root = Path(temp).resolve()
             environment = self._environment(root)
             Path(environment["JARVIS_ENTITLEMENT_PRIVATE_KEY_FILE"]).chmod(0o644)
+            with self.assertRaises(BackendConfigurationError):
+                create_app_from_environment(environment)
+
+    def test_invalid_admin_network_allowlist_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            environment = self._environment(root)
+            environment["JARVIS_ADMIN_ALLOWED_NETWORKS"] = "not-a-network"
             with self.assertRaises(BackendConfigurationError):
                 create_app_from_environment(environment)
 

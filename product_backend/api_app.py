@@ -52,6 +52,8 @@ from .admin_mfa_api import (
 from .api_artifact_storage import ReleaseArtifactStorageError
 from .api_auth import (
     AdminAuthSettings,
+    AdminCredentialStore,
+    AdminIpAllowlist,
     AdminSessionManager,
     AdminSessionRecord,
     AuthenticationCapacityError,
@@ -629,6 +631,9 @@ def create_product_backend_app(
     payment_instructions: PaymentInstructionsLoadResult | None = None,
     mfa: SQLiteAdminMfaManager | None = None,
     trusted_proxy: TrustedProxyConfig | None = None,
+    admin_ip_allowlist: AdminIpAllowlist | None = None,
+    admin_credential_store: AdminCredentialStore | None = None,
+    allow_password_only_admin: bool = False,
     clock: Any = None,
 ) -> FastAPI:
     """Create an API process from explicit dependencies and security config.
@@ -645,11 +650,24 @@ def create_product_backend_app(
 
     if mfa is not None and not isinstance(mfa, SQLiteAdminMfaManager):
         raise BackendConfigurationError("MFA manager is invalid")
+    if type(allow_password_only_admin) is not bool:
+        raise BackendConfigurationError("password-only admin override is invalid")
+    if mfa is None and not allow_password_only_admin:
+        raise BackendConfigurationError(
+            "admin MFA is required unless password-only mode is explicitly enabled"
+        )
     proxy_config = (
         TrustedProxyConfig(()) if trusted_proxy is None else trusted_proxy
     )
     if not isinstance(proxy_config, TrustedProxyConfig):
         raise BackendConfigurationError("trusted proxy configuration is invalid")
+    ip_allowlist = (
+        AdminIpAllowlist(())
+        if admin_ip_allowlist is None
+        else admin_ip_allowlist
+    )
+    if not isinstance(ip_allowlist, AdminIpAllowlist):
+        raise BackendConfigurationError("admin IP allowlist is invalid")
 
     if not isinstance(activation, ClientActivationPort):
         raise BackendConfigurationError(
@@ -667,7 +685,11 @@ def create_product_backend_app(
         raise BackendConfigurationError("payment instructions configuration is invalid")
     now = (lambda: datetime.now(timezone.utc)) if clock is None else clock
     service = ProductBackendService(commerce, reads, evidence_store, challenges)
-    sessions = AdminSessionManager(settings, clock=now)
+    sessions = AdminSessionManager(
+        settings,
+        credential_store=admin_credential_store,
+        clock=now,
+    )
     grant_secret = hmac.new(
         settings.session_secret,
         b"jarvis-device-action-grants",
@@ -732,6 +754,12 @@ def create_product_backend_app(
     mfa_stepup_limiter = BoundedAttemptLimiter(
         max_attempts=5,
         window_seconds=300,
+        max_keys=1024,
+        clock=now,
+    )
+    admin_password_limiter = BoundedAttemptLimiter(
+        max_attempts=5,
+        window_seconds=900,
         max_keys=1024,
         clock=now,
     )
@@ -830,12 +858,15 @@ def create_product_backend_app(
             },
         )
 
-    def _client_attempt_key(request: Request) -> str:
+    def _resolved_client_ip(request: Request) -> str:
         peer = None if request.client is None else request.client.host
-        host = proxy_config.client_ip(
+        return proxy_config.client_ip(
             peer,
             request.headers.get("x-forwarded-for"),
         )
+
+    def _client_attempt_key(request: Request) -> str:
+        host = _resolved_client_ip(request)
         return hashlib.sha256(f"client|{host}".encode("utf-8")).hexdigest()
 
     def _attempt_key(request: Request, subject: str) -> str:
@@ -843,9 +874,20 @@ def create_product_backend_app(
             f"{_client_attempt_key(request)}|{subject}".encode("utf-8")
         ).hexdigest()
 
+    def _subject_attempt_key(subject: object) -> str:
+        normalized = subject if isinstance(subject, str) else "invalid"
+        return hashlib.sha256(
+            f"admin-subject|{normalized}".encode("utf-8")
+        ).hexdigest()
+
+    def _enforce_admin_network(request: Request) -> None:
+        if not ip_allowlist.allows(_resolved_client_ip(request)):
+            raise HTTPException(status_code=403, detail="admin network is not allowed")
+
     def require_admin_any(request: Request) -> AdminSessionRecord:
         """Any live admin session, including a restricted enrollment session."""
 
+        _enforce_admin_network(request)
         token = request.cookies.get(settings.cookie_name)
         record = sessions.resolve(token)
         if record is None:
@@ -880,18 +922,30 @@ def create_product_backend_app(
             raise HTTPException(status_code=403, detail="CSRF verification failed")
         return record
 
+    def require_recent_admin_csrf(
+        record: AdminSessionRecord = Depends(require_admin_csrf),
+    ) -> AdminSessionRecord:
+        if sessions.requires_reauth(record):
+            raise HTTPException(
+                status_code=403,
+                detail="recent authentication is required",
+            )
+        return record
+
     @app.post("/api/admin/session")
     def admin_login(body: AdminLoginBody, request: Request, response: Response) -> dict[str, Any]:
-        attempt_key = _attempt_key(request, body.subject)
+        _enforce_admin_network(request)
+        attempt_key = _subject_attempt_key(body.subject)
+        client_key = _client_attempt_key(request)
         if not login_client_limiter.consume(
-            _client_attempt_key(request)
+            client_key
         ) or not login_subject_limiter.consume(attempt_key):
             raise HTTPException(status_code=429, detail="too many authentication attempts")
         subject = sessions.verify_password(body.subject, body.password)
         if subject is None:
             raise HTTPException(status_code=401, detail="invalid admin credentials")
         login_subject_limiter.clear(attempt_key)
-        return complete_admin_login(
+        result = complete_admin_login(
             sessions=sessions,
             mfa=mfa,
             subject=subject,
@@ -904,6 +958,8 @@ def create_product_backend_app(
             factor_limiter=login_factor_limiter,
             factor_key=attempt_key,
         )
+        login_client_limiter.clear(client_key)
+        return result
 
     @app.get("/api/admin/session")
     def admin_session(
@@ -960,7 +1016,7 @@ def create_product_backend_app(
     @app.post("/api/admin/accounts", status_code=201)
     def admin_create_account(
         body: AdminAccountCreateBody,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, str]:
         account = commerce.create_account(body.external_subject)
         return {
@@ -972,7 +1028,7 @@ def create_product_backend_app(
     @app.post("/api/admin/accounts/{account_id}/licenses", status_code=201)
     def admin_issue_license(
         account_id: str,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, str]:
         license_record = commerce.issue_license(account_id)
         return {
@@ -986,7 +1042,7 @@ def create_product_backend_app(
     def admin_bind_initial_device(
         license_id: str,
         body: AdminDeviceBindBody,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         binding = commerce.activate_device(
             license_id,
@@ -1012,7 +1068,7 @@ def create_product_backend_app(
     def admin_replace_device(
         license_id: str,
         body: AdminDeviceReplaceBody,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         binding = commerce.replace_device(
             license_id,
@@ -1039,7 +1095,7 @@ def create_product_backend_app(
     @app.post("/api/admin/releases", status_code=201)
     def create_release(
         body: ReleaseCreateBody,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         return _release_payload(
             service.create_release(
@@ -1072,7 +1128,7 @@ def create_product_backend_app(
     def add_artifact(
         release_id: str,
         body: ArtifactCreateBody,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         artifact = service.add_release_artifact(
             release_id,
@@ -1092,7 +1148,7 @@ def create_product_backend_app(
     @app.post("/api/admin/releases/{release_id}/publish")
     def publish_release(
         release_id: str,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         return _release_payload(service.publish_release(release_id))
 
@@ -1118,7 +1174,7 @@ def create_product_backend_app(
     @app.post("/api/admin/payments/{payment_id}/approve")
     def approve_payment(
         payment_id: str,
-        admin: AdminSessionRecord = Depends(require_admin_csrf),
+        admin: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         result = service.approve_payment(payment_id, admin_subject=admin.subject)
         return {
@@ -1135,7 +1191,7 @@ def create_product_backend_app(
     def reject_payment(
         payment_id: str,
         body: PaymentRejectBody,
-        admin: AdminSessionRecord = Depends(require_admin_csrf),
+        admin: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         payment = service.reject_payment(
             payment_id,
@@ -1188,7 +1244,7 @@ def create_product_backend_app(
     def issue_activation_credential(
         license_id: str,
         version: str,
-        admin_session_record: AdminSessionRecord = Depends(require_admin_csrf),
+        admin_session_record: AdminSessionRecord = Depends(require_recent_admin_csrf),
     ) -> dict[str, Any]:
         issued = activation.issue_activation_credential(
             license_id=license_id,
@@ -1759,6 +1815,7 @@ def create_product_backend_app(
             attempt_key=_attempt_key,
             enrollment_limiter=mfa_enrollment_limiter,
             stepup_limiter=mfa_stepup_limiter,
+            password_limiter=admin_password_limiter,
         )
 
     mount_admin_web(app)

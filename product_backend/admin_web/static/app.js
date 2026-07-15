@@ -124,7 +124,19 @@ async function apiJson(path, options = {}) {
   } catch (_error) {
     throw new ApiError(0, "service_unavailable");
   }
-  if (!response.ok) throw new ApiError(response.status);
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const payload = await response.json();
+      detail = typeof payload?.detail === "string" ? payload.detail : "";
+    } catch (_error) {
+      detail = "";
+    }
+    const key = detail === "recent authentication is required"
+      ? "reauth_required"
+      : "action_failed";
+    throw new ApiError(response.status, key);
+  }
   if (response.status === 204) return null;
   try {
     return await response.json();
@@ -1097,6 +1109,92 @@ function revokeMfaQrUrl() {
   element("mfa-qr-image").removeAttribute("src");
 }
 
+async function handleReauth(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const { submit, error } = provisioningFormParts(form);
+  const totpInput = element("reauth-totp");
+  const recoveryInput = element("reauth-recovery");
+  const totp = totpInput.value.trim();
+  const recovery = recoveryInput.value.trim();
+  if (!csrfToken || (!totp && !recovery) || !form.reportValidity()) {
+    error.textContent = t("reauth_code_required");
+    error.hidden = false;
+    return;
+  }
+  const body = totp ? { totp } : { recovery_code: recovery };
+  totpInput.value = "";
+  recoveryInput.value = "";
+  error.hidden = true;
+  setBusy(submit, true);
+  try {
+    const issued = await apiJson("/api/admin/session/reauth", {
+      method: "POST",
+      mutate: true,
+      body,
+    });
+    csrfToken = issued.csrf_token;
+    state.session = { subject: issued.subject, expires_at: issued.expires_at };
+    setWriteAccess(true);
+    await loadSessions();
+    showToast(t("reauth_complete"));
+  } catch (caught) {
+    error.textContent = caught instanceof ApiError && caught.status === 401
+      ? t("mfa_code_invalid")
+      : errorText(caught);
+    error.hidden = false;
+  } finally {
+    body.totp = "";
+    body.recovery_code = "";
+    setBusy(submit, false);
+  }
+}
+
+async function handlePasswordChange(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const { submit, error } = provisioningFormParts(form);
+  if (!csrfToken || !form.reportValidity()) return;
+  const currentInput = element("current-password");
+  const newInput = element("new-password");
+  const confirmInput = element("confirm-new-password");
+  if (newInput.value !== confirmInput.value) {
+    error.textContent = t("passwords_do_not_match");
+    error.hidden = false;
+    return;
+  }
+  const body = {
+    current_password: currentInput.value,
+    new_password: newInput.value,
+  };
+  currentInput.value = "";
+  newInput.value = "";
+  confirmInput.value = "";
+  error.hidden = true;
+  setBusy(submit, true);
+  try {
+    await apiJson("/api/admin/password", {
+      method: "POST",
+      mutate: true,
+      body,
+    });
+    csrfToken = "";
+    state.session = null;
+    state.security = { mfa: null, sessions: [], enrolling: false };
+    showAuth({ message: t("password_changed_sign_in") });
+    showToast(t("password_changed_sign_in"));
+  } catch (caught) {
+    error.textContent = caught instanceof ApiError && caught.status === 401
+      ? t("current_password_invalid")
+      : errorText(caught);
+    error.hidden = false;
+  } finally {
+    body.current_password = "";
+    body.new_password = "";
+    setBusy(submit, false);
+  }
+}
+
 async function beginEnrollment() {
   if (!csrfToken) {
     showToast(t("changes_locked"), true);
@@ -1366,6 +1464,8 @@ function attachEvents() {
   element("mfa-enroll-button").addEventListener("click", beginEnrollment);
   element("mfa-enroll-cancel").addEventListener("click", cancelEnrollment);
   element("mfa-activate-form").addEventListener("submit", handleActivateMfa);
+  element("reauth-form").addEventListener("submit", handleReauth);
+  element("password-change-form").addEventListener("submit", handlePasswordChange);
   element("mfa-regenerate-button").addEventListener("click", regenerateRecovery);
   element("mfa-disable-button").addEventListener("click", disableMfa);
   element("revoke-all-sessions").addEventListener("click", revokeAllSessions);

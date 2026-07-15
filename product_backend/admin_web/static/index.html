@@ -42,7 +42,7 @@
           <details class="login-recovery">
             <summary data-i18n="use_recovery_code">Use a recovery code instead</summary>
             <label for="recovery-code" data-i18n="recovery_code">Recovery code</label>
-            <input id="recovery-code" name="recovery_code" type="text" autocomplete="off" maxlength="32" spellcheck="false">
+            <input id="recovery-code" name="recovery_code" type="password" autocomplete="one-time-code" maxlength="32" spellcheck="false">
           </details>
 
           <p id="login-error" class="form-error" role="alert" hidden></p>
@@ -434,6 +434,44 @@
                 </form>
               </li>
             </ol>
+          </section>
+
+          <section class="form-card" aria-labelledby="reauth-title">
+            <div class="form-card-heading">
+              <div>
+                <p class="eyebrow" data-i18n="sensitive_actions">Sensitive actions</p>
+                <h2 id="reauth-title" data-i18n="reauth_title">Refresh authentication</h2>
+              </div>
+            </div>
+            <p data-i18n="reauth_intro">Enter a current authenticator or recovery code before approving payments, publishing releases, or changing device and license access.</p>
+            <form id="reauth-form" class="stack-form" novalidate>
+              <label for="reauth-totp" data-i18n="totp_code">Authentication code</label>
+              <input id="reauth-totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6">
+              <label for="reauth-recovery" data-i18n="recovery_code">Recovery code</label>
+              <input id="reauth-recovery" name="recovery" type="password" autocomplete="one-time-code" minlength="8" maxlength="32">
+              <p class="form-error" data-form-error hidden></p>
+              <button class="button button-secondary" type="submit" data-i18n="reauth_action">Refresh authentication</button>
+            </form>
+          </section>
+
+          <section class="form-card" aria-labelledby="password-change-title">
+            <div class="form-card-heading">
+              <div>
+                <p class="eyebrow" data-i18n="password_security">Password security</p>
+                <h2 id="password-change-title" data-i18n="password_change_title">Change admin password</h2>
+              </div>
+            </div>
+            <p data-i18n="password_change_intro">Changing the password signs out every active admin session. Use at least 12 characters.</p>
+            <form id="password-change-form" class="stack-form" novalidate>
+              <label for="current-password" data-i18n="current_password">Current password</label>
+              <input id="current-password" name="current_password" type="password" autocomplete="current-password" maxlength="1024" required>
+              <label for="new-password" data-i18n="new_password">New password</label>
+              <input id="new-password" name="new_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required>
+              <label for="confirm-new-password" data-i18n="confirm_new_password">Confirm new password</label>
+              <input id="confirm-new-password" name="confirm_new_password" type="password" autocomplete="new-password" minlength="12" maxlength="1024" required>
+              <p class="form-error" data-form-error hidden></p>
+              <button class="button button-primary" type="submit" data-i18n="change_password">Change password</button>
+            </form>
           </section>
 
           <section class="form-card" aria-labelledby="sessions-title">

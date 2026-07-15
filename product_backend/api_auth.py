@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import Final
+from typing import Final, Protocol
 
 from .device_challenges import DeviceChallengeAction, VerifiedDeviceChallenge
 from .models import format_utc_timestamp, validate_opaque_identifier
@@ -38,6 +38,14 @@ class SessionAssurance(StrEnum):
 
     MFA_PENDING = "mfa_pending"
     MFA_SATISFIED = "mfa_satisfied"
+
+
+class PasswordChangeResult(StrEnum):
+    """Outcome of a password rotation without exposing credential details."""
+
+    CHANGED = "changed"
+    INVALID_CURRENT_PASSWORD = "invalid_current_password"
+    NOT_AVAILABLE = "not_available"
 
 
 class BackendConfigurationError(RuntimeError):
@@ -154,6 +162,14 @@ class AdminPasswordCredential:
             dklen=32,
         )
         return secrets.compare_digest(candidate, self.password_digest)
+
+
+class AdminCredentialStore(Protocol):
+    """Persistent password-hash storage injected into the session manager."""
+
+    def load_credentials(self) -> tuple[AdminPasswordCredential, ...]: ...
+
+    def replace_credential(self, credential: AdminPasswordCredential) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,19 +382,84 @@ class TrustedProxyConfig:
         return peer_text
 
 
+@dataclass(frozen=True, slots=True)
+class AdminIpAllowlist:
+    """Optional network boundary for every admin API request.
+
+    An empty allowlist leaves network filtering disabled so deployments that
+    enforce a VPN at the edge remain supported.  Once any network is supplied,
+    unknown, malformed, and out-of-range client addresses fail closed.
+    """
+
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+
+    @classmethod
+    def from_spec(cls, spec: object) -> AdminIpAllowlist:
+        if spec is None or spec == "":
+            return cls(())
+        if not isinstance(spec, str) or len(spec) > 2048:
+            raise BackendConfigurationError("admin IP allowlist is invalid")
+        networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for item in spec.split(","):
+            token = item.strip()
+            if not token:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(token, strict=False))
+            except ValueError as exc:
+                raise BackendConfigurationError(
+                    "admin IP allowlist is invalid"
+                ) from exc
+            if len(networks) > 64:
+                raise BackendConfigurationError(
+                    "too many admin IP networks are configured"
+                )
+        if not networks:
+            raise BackendConfigurationError("admin IP allowlist is invalid")
+        return cls(tuple(networks))
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.networks)
+
+    def allows(self, value: object) -> bool:
+        if not self.networks:
+            return True
+        if not isinstance(value, str):
+            return False
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return any(address in network for network in self.networks)
+
+
 class AdminSessionManager:
     def __init__(
         self,
         settings: AdminAuthSettings,
         *,
+        credential_store: AdminCredentialStore | None = None,
         clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(settings, AdminAuthSettings):
             raise BackendConfigurationError("admin auth settings are invalid")
         self._settings = settings
         self._clock = clock
+        self._credential_store = credential_store
+        credentials = (
+            settings.credentials
+            if credential_store is None
+            else credential_store.load_credentials()
+        )
+        configured_subjects = {item.subject for item in settings.credentials}
+        stored_subjects = {item.subject for item in credentials}
+        if not credentials or stored_subjects != configured_subjects:
+            raise BackendConfigurationError(
+                "stored admin credential subjects do not match configuration"
+            )
         self._credentials = {
-            credential.subject: credential for credential in settings.credentials
+            credential.subject: credential for credential in credentials
         }
         self._sessions: OrderedDict[bytes, AdminSessionRecord] = OrderedDict()
         self._last_seen: dict[bytes, datetime] = {}
@@ -407,6 +488,46 @@ class AdminSessionManager:
         if not credential.verify(password):
             return None
         return credential.subject
+
+    @property
+    def password_change_available(self) -> bool:
+        return self._credential_store is not None
+
+    def change_password(
+        self,
+        subject: object,
+        current_password: object,
+        new_password: object,
+    ) -> PasswordChangeResult:
+        """Persist a new salted password hash without retaining plaintext.
+
+        The persistent store is updated before the in-process credential is
+        swapped.  A process interruption therefore converges on the new hash
+        at restart instead of reporting a successful but non-durable change.
+        Live sessions are revoked by the HTTP boundary only after this method
+        returns ``CHANGED``.
+        """
+
+        if self._credential_store is None:
+            return PasswordChangeResult.NOT_AVAILABLE
+        if not isinstance(subject, str):
+            return PasswordChangeResult.INVALID_CURRENT_PASSWORD
+        if not isinstance(new_password, str) or not 12 <= len(new_password) <= 1024:
+            return PasswordChangeResult.INVALID_CURRENT_PASSWORD
+        with self._lock:
+            current = self._credentials.get(subject)
+            if current is None or not current.verify(current_password):
+                return PasswordChangeResult.INVALID_CURRENT_PASSWORD
+            if current.verify(new_password):
+                return PasswordChangeResult.INVALID_CURRENT_PASSWORD
+            replacement = AdminPasswordCredential.derive_for_configuration(
+                subject=subject,
+                password=new_password,
+                iterations=current.iterations,
+            )
+            self._credential_store.replace_credential(replacement)
+            self._credentials[subject] = replacement
+        return PasswordChangeResult.CHANGED
 
     def issue_session(
         self,
@@ -887,6 +1008,8 @@ class DeviceActionGrantManager:
 
 __all__ = [
     "AdminAuthSettings",
+    "AdminCredentialStore",
+    "AdminIpAllowlist",
     "AdminPasswordCredential",
     "AdminSessionManager",
     "AdminSessionRecord",
@@ -897,6 +1020,7 @@ __all__ = [
     "DeviceActionGrantManager",
     "IssuedAdminSession",
     "IssuedDeviceGrant",
+    "PasswordChangeResult",
     "ReservedDeviceGrant",
     "SessionAssurance",
     "TrustedProxyConfig",

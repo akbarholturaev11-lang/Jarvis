@@ -273,16 +273,21 @@ list, per-session and revoke-all, and TOTP/recovery step-up. `api_auth.py` adds
 session assurance (`mfa_pending` restricts a not-yet-enrolled operator to
 enrollment only; `mfa_satisfied` is full), idle + absolute timeouts, rotation on
 login/step-up, revoke-all-for-subject, a recent-auth window for sensitive
-actions, and `TrustedProxyConfig` (X-Forwarded-For honored only from an
-explicitly configured trusted proxy; otherwise the socket peer is authoritative).
-Login is single-step `subject + password + TOTP`. `create_product_backend_app`
-takes an optional `mfa=`; when it is `None` the login stays single-factor (this
-keeps pre-BOSQICH-4 tests valid), while `runtime.py` always injects it, making
-MFA mandatory in production (`JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY` is an
-explicit dev opt-in). MFA events are audited without ever recording a secret or
-code. Admin credentials remain env-based, so there is no runtime
-password-change endpoint; rotating the env password plus revoke-all is the
-operational path.
+actions, account-global password/MFA attempt budgets, and `TrustedProxyConfig`
+(X-Forwarded-For honored only from an explicitly configured trusted proxy;
+otherwise the socket peer is authoritative). `AdminIpAllowlist` optionally
+restricts every admin API request to configured CIDR networks after trusted
+proxy resolution. Login is single-step `subject + password + TOTP`.
+`create_product_backend_app` now fails closed without an MFA manager unless its
+explicit password-only test/dev override is passed; `runtime.py` always injects
+MFA and keeps `JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY` as an explicit dev opt-in.
+Core account/license/device/release/payment/activation mutations enforce CSRF
+and the configured recent-auth window; the bilingual UI exposes TOTP/recovery
+step-up. `admin_credentials.py::SQLiteAdminCredentialStore` bootstraps salted
+PBKDF2 hashes from deployment config once, persists later password rotations in
+private `admin-credentials.sqlite3`, and never stores plaintext. Password change
+requires recent MFA plus the current password, revokes every session, and is
+audited. MFA events never record a secret or code.
 
 The updater deliberately does not mutate a real installed app yet. macOS needs a
 signed/notarized atomic helper, persisted `.app` backup location and real

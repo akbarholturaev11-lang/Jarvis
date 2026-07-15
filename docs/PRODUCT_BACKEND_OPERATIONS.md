@@ -13,11 +13,18 @@ Put it behind an HTTPS reverse proxy with the configured host preserved. Do not
 expose the plain HTTP listener publicly. The admin cookie is secure-only and the
 app rejects hosts outside `JARVIS_API_ALLOWED_HOSTS`.
 
-The admin-login CPU budget uses the ASGI peer in `request.client.host`; the app
-does not parse or trust `X-Forwarded-For`. If a reverse proxy rewrites the ASGI
-peer from forwarding headers, configure that trust only for known proxy
-addresses. Otherwise all proxied logins correctly share the proxy peer budget;
-apply an additional edge rate limit when per-origin separation is required.
+By default the admin-login CPU budget and network policy use the direct ASGI
+peer and ignore `X-Forwarded-For`. Set `JARVIS_TRUSTED_PROXIES` only to the CIDR
+networks of proxies that actually sanitize that header; requests arriving from
+any other peer cannot spoof it. Password and MFA budgets include an
+account-global bound in addition to the client-IP bound. Apply an edge rate
+limit too; the in-process bounds are not a substitute for DDoS protection.
+
+Set `JARVIS_ADMIN_ALLOWED_NETWORKS` to comma-separated client CIDRs when the
+admin console must be reachable only through a VPN or operator network. Once
+configured, every admin API call fails closed for an unknown, malformed or
+out-of-range resolved client address. Leaving it unset means the network edge
+is responsible for access restriction.
 
 ## Required configuration
 
@@ -37,6 +44,28 @@ present:
   `JARVIS_ADMIN_PASSWORD_HASH_B64URL`, `JARVIS_ADMIN_PBKDF2_ITERATIONS`,
   `JARVIS_ADMIN_SESSION_SECRET_B64URL`, `JARVIS_API_ALLOWED_HOSTS`: validated by
   `AdminAuthSettings.from_env()`.
+- `JARVIS_ADMIN_MFA_KEY_FILE`: absolute, regular, owner-only (`0600`), 32–128
+  random bytes used to derive TOTP encryption and recovery-code HMAC keys. The
+  production factory will not start without it.
+
+Optional security policy:
+
+- `JARVIS_TRUSTED_PROXIES`: comma-separated proxy CIDRs; absent means forwarded
+  client headers are ignored.
+- `JARVIS_ADMIN_ALLOWED_NETWORKS`: comma-separated operator/VPN CIDRs enforced
+  after trusted-proxy resolution.
+- `JARVIS_ADMIN_SESSION_TTL_SECONDS`, `JARVIS_ADMIN_SESSION_IDLE_SECONDS` and
+  `JARVIS_ADMIN_REAUTH_WINDOW_SECONDS`: bounded absolute, idle and sensitive
+  action re-authentication windows.
+- `JARVIS_ADMIN_MFA_ISSUER`: authenticator display issuer.
+- `JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY`: development-only bypass. Never set it
+  in a customer-facing deployment.
+
+The environment password hash is a one-time bootstrap for
+`admin-credentials.sqlite3`. An authenticated password change requires recent
+MFA and the current password, persists a fresh salted PBKDF2 hash, audits the
+event and revokes all sessions. A later process restart keeps the rotated hash;
+changing only the bootstrap environment hash does not silently replace it.
 
 Optional manual-payment configuration:
 
@@ -74,8 +103,9 @@ replace an existing key ID with different key material.
 
 ## Backup, monitoring and retention
 
-- Back up the three SQLite databases and private payment evidence together from a
-  quiesced process or a database-aware snapshot.
+- Back up every SQLite database (commerce, device challenges, activation, MFA
+  and admin credentials) and private payment evidence together from a quiesced
+  process or a database-aware snapshot.
 - Monitor authentication capacity errors, repeated 401/409/429 responses,
   artifact integrity failures, payment evidence storage errors and SQLite disk
   space/locking.

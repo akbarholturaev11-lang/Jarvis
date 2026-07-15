@@ -192,6 +192,7 @@ class ProductClientBackendContractTests(unittest.TestCase):
                     maximum_artifact_bytes=1024,
                 ),
                 auth_settings=settings,
+                allow_password_only_admin=True,
                 clock=lambda: datetime(2026, 7, 13, 3, 0, tzinfo=timezone.utc),
             )
             try:
