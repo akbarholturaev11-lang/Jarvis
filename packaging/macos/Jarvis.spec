@@ -18,6 +18,11 @@ sys.path.insert(0, str(project_root))
 
 from core.product_version import BUNDLE_ID  # noqa: E402
 
+from PyInstaller.utils.hooks import (  # noqa: E402
+    collect_data_files,
+    collect_submodules,
+)
+
 
 release_version = os.environ.get("JARVIS_BUILD_VERSION", "")
 build_number = os.environ.get("JARVIS_BUILD_NUMBER", "")
@@ -37,6 +42,10 @@ if (
         "JARVIS build identity is required; use scripts/build_macos_release.py"
     )
 
+# Optional, development-only app icon (a rights-cleared icon is a branding gate).
+_icon_env = os.environ.get("JARVIS_APP_ICON", "").strip()
+app_icon = _icon_env if _icon_env and Path(_icon_env).is_file() else None
+
 datas = [
     (str(build_metadata), "."),
     (str(product_config), "config"),
@@ -53,12 +62,46 @@ datas = [
     (str(project_root / "dashboard" / "static"), "dashboard/static"),
 ]
 
+# Bundle non-Python data shipped inside third-party packages (Google GenAI SDK,
+# certifi trust store) so the frozen client is self-contained.
+datas += collect_data_files("google.genai")
+datas += collect_data_files("google.generativeai")
+datas += collect_data_files("certifi")
+
+# Hidden imports for code PyInstaller's static analysis can miss: the Google
+# GenAI SDK, the FastAPI/uvicorn local server used by mobile remote control, and
+# the update helper modules that make the frozen client self-updating.  PyQt6,
+# cryptography, PIL, numpy and cv2 also get their own explicit safety net on top
+# of PyInstaller's built-in hooks.
+hidden_imports = [
+    "PIL",
+    "PIL.Image",
+    "PIL.ImageQt",
+    "cryptography",
+    "cryptography.hazmat.primitives.asymmetric.ed25519",
+    "cv2",
+    "numpy",
+    "sounddevice",
+    "qrcode",
+    "core.app_paths",
+    # Updater helper: must ship so the frozen client can verify + roll back.
+    "core.installer",
+    "core.macos_update",
+    "core.update_startup",
+    "core.update_transaction",
+    "core.product_updates",
+]
+hidden_imports += collect_submodules("google.genai")
+hidden_imports += collect_submodules("google.generativeai")
+hidden_imports += collect_submodules("uvicorn")
+hidden_imports += collect_submodules("PyQt6")
+
 a = Analysis(
     [str(project_root / "main.py")],
     pathex=[str(project_root)],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -79,6 +122,7 @@ exe = EXE(
     upx=False,
     console=False,
     target_arch=target_architecture,
+    icon=app_icon,
 )
 coll = COLLECT(
     exe,
@@ -91,13 +135,15 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="JARVIS.app",
-    icon=None,
+    icon=app_icon,
     bundle_identifier=BUNDLE_ID,
     target_arch=target_architecture,
     info_plist={
         "CFBundleDisplayName": "JARVIS",
         "CFBundleShortVersionString": release_version,
         "CFBundleVersion": build_number,
+        "LSApplicationCategoryType": "public.app-category.productivity",
+        "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription": (
             "JARVIS needs microphone access for voice commands. / "

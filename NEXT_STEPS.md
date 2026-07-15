@@ -25,17 +25,25 @@ The following external gates must be cleared before any customer release:
    instructions. Enroll each admin operator's authenticator before go-live,
    store recovery codes offline, and rotate the bootstrap password through the
    authenticated admin password-change flow.
-4. Provide Apple Developer ID signing, hardened-runtime entitlements,
-   notarization/stapling and Gatekeeper verification.
+4. Provide real Apple Developer ID credentials and run the now-implemented
+   signing/notarization pipeline end-to-end. The hardened-runtime entitlements
+   (`packaging/macos/entitlements.plist`), the env-driven Developer ID signing +
+   nested-code order + `codesign`/`spctl` verify + `notarytool`/`stapler` planner
+   (`core/platform_adapters/release_signing.py`), and the secret-gated CI signing
+   job exist, but no real Developer ID identity, notary profile, notarization,
+   staple or Gatekeeper result has been produced yet.
 5. Implement and independently audit the fixed signed privileged macOS helper's
    safe-shutdown/request protocol. The strict archive, backup, atomic local
    development swap, health and rollback transaction are implemented, but frozen
    production builds still honestly report install `not_available`.
 6. Run the pinned PyInstaller build on a controlled macOS build environment and
    complete clean-Mac install, activation, permission, offline, payment, update,
-   rollback and uninstall tests. The local smoke-build is currently blocked by
-   missing PyInstaller in the current build environment and final signing inputs,
-   not by a source-tree test failure.
+   rollback and uninstall tests. The self-contained build/sign/DMG pipeline
+   (`packaging/macos/*.sh`, `scripts/release_pipeline.py`, `packaging/macos/Jarvis.spec`,
+   `.github/workflows/macos-release.yml`) and its validation tests are complete,
+   but the actual freeze is still blocked by missing PyInstaller in this build
+   environment — no `JARVIS.app`/DMG has been produced and no build success is
+   claimed.
 
 ## Known Bugs
 
@@ -81,6 +89,19 @@ The following external gates must be cleared before any customer release:
    sensitive dialog, revoke the session remotely, and confirm offline mode
    shows no previously loaded admin data. This is a PWA check and must not be
    recorded as native iOS/Android verification.
+
+0.3 Verify the self-contained macOS build (BOSQICH 7) on a controlled macOS build
+   host that has PyInstaller installed. Create an isolated build venv
+   (`requirements.txt` + `requirements-build.txt`), export
+   `JARVIS_BUILD_VERSION`/`JARVIS_BUILD_NUMBER` and a validated non-secret
+   `JARVIS_PRODUCT_CONFIG`, then run `bash packaging/macos/build_all.sh`. Confirm a
+   `JARVIS.app` + versioned DMG are produced, `verify_app.sh` reports no secret
+   files and the bundled interpreter, the DMG opens with a drag-to-Applications
+   shortcut, and the app double-click-launches on a clean Mac account with no
+   Python/Terminal/pip/`.venv`. With real Developer ID credentials, run
+   `bash packaging/macos/sign_artifact.sh --execute` and confirm
+   `codesign`/`spctl`/`notarytool`/`stapler` all pass. Until then, the freeze is
+   blocked by missing PyInstaller and is not recorded as a build success.
 
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.

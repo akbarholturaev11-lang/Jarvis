@@ -137,14 +137,9 @@ def _validate_product_config(path: Path) -> None:
         raise RuntimeError("product client configuration is invalid")
 
 
-def _execute_local_unsigned(
-    plan: ReleaseBuildPlan,
-    *,
-    product_config: Path,
-) -> dict[str, object]:
-    if not plan.executable or len(plan.commands) != 2:
-        raise RuntimeError("macOS packaging plan is not executable")
-    _validate_product_config(product_config)
+def prepare_build_metadata(plan: ReleaseBuildPlan) -> Path:
+    """Write the non-secret ``product_build.json`` identity for the frozen app."""
+
     plan.workspace_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     build_metadata = plan.workspace_root / "product_build.json"
     build_metadata.write_text(
@@ -162,6 +157,17 @@ def _execute_local_unsigned(
     )
     if os.name != "nt":
         build_metadata.chmod(0o600)
+    return build_metadata
+
+
+def build_environment(
+    plan: ReleaseBuildPlan,
+    *,
+    build_metadata: Path,
+    product_config: Path,
+) -> dict[str, str]:
+    """Build the PyInstaller environment shared by every packaging driver."""
+
     environment = dict(os.environ)
     environment.update(
         {
@@ -171,6 +177,23 @@ def _execute_local_unsigned(
             "JARVIS_BUILD_METADATA": str(build_metadata),
             "JARVIS_PRODUCT_CONFIG": str(product_config.resolve(strict=True)),
         }
+    )
+    return environment
+
+
+def _execute_local_unsigned(
+    plan: ReleaseBuildPlan,
+    *,
+    product_config: Path,
+) -> dict[str, object]:
+    if not plan.executable or len(plan.commands) != 2:
+        raise RuntimeError("macOS packaging plan is not executable")
+    _validate_product_config(product_config)
+    build_metadata = prepare_build_metadata(plan)
+    environment = build_environment(
+        plan,
+        build_metadata=build_metadata,
+        product_config=product_config,
     )
     _run(
         plan.commands[0].argv,

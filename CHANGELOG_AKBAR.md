@@ -1,5 +1,48 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-16 - Self-contained macOS app + DMG build/sign/CI pipeline (BOSQICH 7)
+
+### Added
+
+- Added a granular, argv-only local packaging pipeline (`scripts/release_pipeline.py`
+  + `packaging/macos/{clean,build_app,build_dmg,generate_manifest,verify_app,
+  sign_artifact,smoke_launch,cleanup,make_icns,build_all}.sh`) driving the shared
+  `MacOSReleaseAdapter` plan, so a customer needs no Python, Terminal, pip, repo or
+  `.venv`.
+- Added `packaging/macos/entitlements.plist` (hardened runtime for a frozen
+  CPython + PyQt6 app; JIT/unsigned-memory/library-validation + mic/camera/Apple
+  Events/network; no App Sandbox).
+- Added `core/platform_adapters/release_signing.py`: a side-effect-free Developer
+  ID signing + notarization planner using only public env labels
+  (`JARVIS_MACOS_SIGN_IDENTITY`/`_TEAM_ID`/`_NOTARY_PROFILE`), nested-code-first
+  ordering, `codesign`/`spctl`/`notarytool`/`stapler`, and an honest unsigned
+  dev-build status when no credentials exist.
+- Added `core/release_build_manifest.py` (non-secret build manifest: identity,
+  SHA-256, byte size, signed/notarized/distribution_ready) reusing the shared
+  product identity.
+- Hardened `packaging/macos/Jarvis.spec` with hidden imports (Google GenAI SDK,
+  PyQt6 plugins, cryptography, PIL, cv2, uvicorn), the updater-helper modules
+  (`core.macos_update`/`core.installer`/`core.update_startup`), and an optional
+  dev-only `JARVIS_APP_ICON`.
+- Added `.github/workflows/macos-release.yml`: unit tests → unsigned build/verify/
+  upload → secret-gated signing/notarization, with masked secrets and `set +x`.
+- Added tests: `test_release_signing`, `test_release_build_manifest`,
+  `test_release_bundle_contract`, `test_release_pipeline` (spec/resource/hidden-
+  import/manifest/no-secret-files/updater-helper/no-Terminal/no-system-Python).
+
+### Verification
+
+- `py_compile` OK; full suite **681 passed, 473 subtests** (no regressions).
+- Scripts exercised end-to-end: `verify_app`/`generate_manifest`/`smoke_launch`/
+  `cleanup` pass on a fixture bundle; secret-in-bundle is rejected.
+
+### Blocker (no fake success)
+
+- PyInstaller is **not installed** in this environment, so **no real `JARVIS.app`
+  or DMG was built**. The spec, scripts, signing planner, CI and validation tests
+  are complete; the freeze must run on a controlled macOS build host with
+  PyInstaller and real Developer ID credentials (see NEXT_STEPS 0.3, gates 4/6).
+
 ## 2026-07-16 - Verified macOS update and rollback transaction
 
 ### Added

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for a Developer ID signed, notarized JARVIS.app.
+
+  A PyInstaller-frozen CPython + PyQt6 bundle requires the JIT / unsigned-memory /
+  library-validation exceptions below to run under the hardened runtime.  Device
+  and network entitlements are limited to capabilities the app already uses:
+  microphone (voice), camera (only on explicit request), Apple Events automation,
+  and the local network server for the explicitly enabled mobile remote control.
+
+  This file grants no App Sandbox, no keychain sharing, and no broad file access.
+-->
+<plist version="1.0">
+<dict>
+    <!-- CPython / PyInstaller runtime requirements under the hardened runtime. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+
+    <!-- Capabilities the app actually uses; each maps to a usage string in Info.plist. -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.camera</key>
+    <true/>
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+</dict>
+</plist>

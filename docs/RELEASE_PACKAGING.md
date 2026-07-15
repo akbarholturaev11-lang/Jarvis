@@ -29,9 +29,27 @@ preservation or rollback.
   honest placeholders.
 - `core/platform_adapters/release_factory.py` — target routing with no silent
   macOS fallback.
-- `packaging/macos/Jarvis.spec` — explicit non-secret PyInstaller resource list.
+- `packaging/macos/Jarvis.spec` — explicit non-secret PyInstaller resource list,
+  hidden imports (Google GenAI SDK, PyQt6 plugins, cryptography, PIL, cv2, uvicorn)
+  and the updater-helper modules, plus an optional dev-only `JARVIS_APP_ICON`.
+- `packaging/macos/entitlements.plist` — hardened-runtime entitlements (JIT /
+  unsigned-memory / library-validation for a frozen CPython + PyQt6 app, plus
+  microphone, camera, Apple Events and network) with **no** App Sandbox.
+- `core/platform_adapters/release_signing.py` — side-effect-free Developer ID
+  signing + notarization planner: env-only public labels, nested-code-first
+  ordering, `codesign --options runtime`/`spctl`/`notarytool`/`stapler`, and an
+  honest unsigned-dev-build status when no credentials are configured.
+- `core/release_build_manifest.py` — a non-secret local build manifest
+  (product identity, SHA-256, byte size, `signed`/`notarized`/`distribution_ready`).
 - `scripts/build_macos_release.py` — read-only planning by default and an explicit
-  local-unsigned execution mode.
+  combined local-unsigned execution mode.
+- `scripts/release_pipeline.py` + `packaging/macos/*.sh` — granular, argv-only
+  steps (`clean`, `build_app`, `build_dmg`, `generate_manifest`, `verify_app`,
+  `sign_artifact`, `smoke_launch`, `cleanup`, `build_all`), each a thin driver
+  over the same `MacOSReleaseAdapter` plan, signing planner and manifest builder.
+- `.github/workflows/macos-release.yml` — CI that runs the packaging unit tests,
+  builds/verifies/uploads an unsigned artifact, and runs signing/notarization
+  **only** when the protected Developer ID secrets are present (never logged).
 
 The adapters resolve the source resource root through `AppPaths`.  The spec
 places the committed prompt, safe settings, example configuration and dashboard
@@ -101,17 +119,56 @@ byte size.  Its output always records:
 
 It must never be offered to customers as a trusted release.
 
+## Granular local pipeline
+
+The end-to-end local unsigned pipeline runs as discrete, reversible steps from a
+double-clickable set of scripts (never the customer runtime; use an isolated
+build venv via `JARVIS_BUILD_PYTHON`):
+
+```bash
+export JARVIS_BUILD_VERSION=1.0.0 JARVIS_BUILD_NUMBER=1 JARVIS_TARGET_ARCH=arm64
+export JARVIS_BUILD_PYTHON=/secure/build-venv/bin/python
+export JARVIS_PRODUCT_CONFIG=/secure/build-input/product.json
+bash packaging/macos/build_all.sh   # clean → build_app → build_dmg → manifest →
+                                    # verify_app → sign (plan) → smoke → cleanup
+```
+
+Each step refuses to fake success: `build_app` fails honestly when PyInstaller is
+absent, `generate_manifest` fails until the DMG exists, and `verify_app` fails if
+any secret file (`api_keys.json`, `long_term.json`, private configs, `*.key`,
+`*.pem`, …) is found inside the bundle.
+
+## Signing, notarization and the credential interface
+
+`sign_artifact.sh` (and `scripts/release_pipeline.py sign`) read only **public**
+labels from the environment; the private key and notary credentials stay in the
+macOS keychain and are referenced by name:
+
+- `JARVIS_MACOS_SIGN_IDENTITY` — e.g. `Developer ID Application: Name (TEAMID)`
+- `JARVIS_MACOS_TEAM_ID` — 10-character Apple Team ID
+- `JARVIS_MACOS_NOTARY_PROFILE` — `notarytool` keychain profile name
+
+Without these, the planner returns an honest `not_available` unsigned-dev-build
+result. With them, it plans nested-code-first `codesign --options runtime
+--timestamp --entitlements …`, signs the outer bundle last, then
+`codesign --verify`, `spctl --assess`, `notarytool submit --wait`,
+`stapler staple`/`validate` and a final `spctl` install assessment.
+
 ## Remaining integration gates
 
 The following are not solved by the packaging skeleton:
 
-1. The PyInstaller version is pinned in `requirements-build.txt`, but dependency
-   closure, native libraries, audio, camera, dashboard,
-   optional Playwright browsers and optional remote-tunnel tools need a real
-   frozen-runtime audit.
-2. A final product icon/name/bundle identifier requires cleared branding rights.
-3. Developer ID signing, hardened runtime entitlements, notarization, stapling
-   and Gatekeeper verification are not implemented.
+1. The PyInstaller version is pinned in `requirements-build.txt`, but PyInstaller
+   is not installed in the current build environment, so **no `JARVIS.app`/DMG has
+   been produced**; dependency closure, native libraries, audio, camera,
+   dashboard, optional Playwright browsers and optional remote-tunnel tools also
+   need a real frozen-runtime audit on a controlled macOS build host.
+2. A final product icon/name/bundle identifier requires cleared branding rights;
+   `make_icns.sh` only produces a provisional dev icon from the committed PWA art.
+3. The Developer ID signing / hardened-runtime / notarization / stapling /
+   Gatekeeper pipeline is now **implemented as a planner + entitlements + CI job**,
+   but it has never been run with a real Developer ID identity, notary profile or
+   Apple notarization service; no signed, notarized, stapled artifact exists yet.
 4. Update download/staging and a durable rollback contract exist, but the real
    signed atomic application-replacement helper is not implemented on any platform.
 5. The final artifact has not been installed and exercised on a clean supported
