@@ -1859,6 +1859,7 @@ class SettingsOverlay(QWidget):
             }}
         """)
         self._state = self._get_state()
+        self._install_ready = bool(self._state.get("product_update_staged"))
         self._lang = str(self._state.get("language", "en"))
         self.product_result.connect(self._on_product_result)
         self._build()
@@ -2014,6 +2015,11 @@ class SettingsOverlay(QWidget):
             t("settings.download_update"), self._download_product_update
         )
         b.addWidget(self._download_update_btn)
+        self._install_update_btn = self._mini_btn(
+            t("settings.install_update"), self._install_product_update
+        )
+        self._install_update_btn.setEnabled(self._install_ready)
+        b.addWidget(self._install_update_btn)
         payment_row = QHBoxLayout(); payment_row.setSpacing(6)
         self._payment_btn = self._mini_btn(
             t("settings.submit_payment"), self._submit_update_payment
@@ -2196,6 +2202,7 @@ class SettingsOverlay(QWidget):
         self._payment_btn.setEnabled(not busy and self._payment_ready)
         self._payment_status_btn.setEnabled(not busy)
         self._download_update_btn.setEnabled(not busy)
+        self._install_update_btn.setEnabled(not busy and self._install_ready)
         if busy:
             self._product_lbl.setText(t("settings.product_working"))
 
@@ -2216,6 +2223,9 @@ class SettingsOverlay(QWidget):
 
     def _download_product_update(self) -> None:
         self._run_product_action("download_product_update")
+
+    def _install_product_update(self) -> None:
+        self._run_product_action("install_product_update")
 
     def _copy_product_device_id(self) -> None:
         device_id = str(self._state.get("product_device_id") or "").strip()
@@ -2290,6 +2300,21 @@ class SettingsOverlay(QWidget):
                 if status == "success"
                 else "settings.update_download_failed"
             )
+            self._install_ready = status == "success"
+            self._install_update_btn.setEnabled(self._install_ready)
+        elif action == "install_product_update":
+            key = {
+                "installed": "settings.update_installed",
+                "preserved": "settings.update_preserved",
+                "rolled_back": "settings.update_rolled_back",
+                "rollback_required": "settings.update_rollback_required",
+                "not_available": "settings.update_install_not_available",
+                "unsupported": "settings.update_install_not_available",
+                "invalid": "settings.update_install_invalid",
+            }.get(status, "settings.update_install_failed")
+            if status in {"installed", "invalid", "rollback_required"}:
+                self._install_ready = False
+            self._install_update_btn.setEnabled(self._install_ready)
         else:
             key = {
                 "submitted": "settings.payment_submitted",

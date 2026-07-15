@@ -51,8 +51,10 @@ from core.product_updates import (
 from core.runtime_product import RuntimeProductIdentity, load_runtime_product_identity
 from core.secure_store import STATUS_SUCCESS, SecureStore, create_secure_store
 from core.update_transaction import (
+    TransactionStatus,
     UpdateTransactionCoordinator,
     UpdateTransactionResult,
+    UpdaterPlatformAdapter,
     create_updater_adapter,
 )
 
@@ -125,6 +127,7 @@ class ProductRuntimeService:
         secure_store: SecureStore | None = None,
         config_result: ProductConfigResult | None = None,
         runtime_identity: RuntimeProductIdentity | None = None,
+        updater_adapter: UpdaterPlatformAdapter | None = None,
     ) -> None:
         self._paths = resolve_app_paths() if app_paths is None else app_paths
         self._packaged_runtime_expected = (
@@ -155,7 +158,7 @@ class ProductRuntimeService:
             ),
         )
         self._coordinator = UpdateTransactionCoordinator(
-            create_updater_adapter(),
+            create_updater_adapter() if updater_adapter is None else updater_adapter,
             journal_path=self._paths.data_dir / "updates" / "rollback.json",
         )
         self._activation: ProductActivationService | None = None
@@ -861,12 +864,63 @@ class ProductRuntimeService:
         return result
 
     def apply_staged_update(self) -> UpdateTransactionResult | None:
-        if self._last_staged_update is None:
+        staged = self._last_staged_update
+        if staged is None:
             return None
-        return self._coordinator.apply(self._last_staged_update)
+        state = self.local_state()
+        if (
+            not state.entitled
+            or state.license_id is None
+            or state.runtime is None
+            or state.runtime.product_version != staged.source
+        ):
+            return UpdateTransactionResult(
+                TransactionStatus.INVALID,
+                "The staged update no longer matches the installed entitlement.",
+                staged.source,
+                staged.target,
+            )
+        identity = self._identity.load()
+        if not identity.ok or identity.identity is None or self._cache is None:
+            return UpdateTransactionResult(
+                TransactionStatus.NOT_AVAILABLE,
+                "Update entitlement verification is not available.",
+                staged.source,
+                staged.target,
+            )
+        target_entitlement = self._cache.load_verified(
+            license_id=state.license_id,
+            device_fingerprint=identity.identity.fingerprint,
+            version=staged.target.version,
+        )
+        if not target_entitlement.ok:
+            status = (
+                TransactionStatus.NOT_AVAILABLE
+                if target_entitlement.status == "not_available"
+                else TransactionStatus.FAILED
+                if target_entitlement.status == "failed"
+                else TransactionStatus.INVALID
+            )
+            return UpdateTransactionResult(
+                status,
+                "Exact-version update entitlement could not be verified.",
+                staged.source,
+                staged.target,
+            )
+        result = self._coordinator.apply(staged)
+        if result.status is TransactionStatus.INSTALLED:
+            self._last_staged_update = None
+        return result
+
+    @property
+    def staged_update_ready(self) -> bool:
+        return self._last_staged_update is not None
 
     def recover_update(self) -> UpdateTransactionResult:
         return self._coordinator.recover()
+
+    def recover_update_if_required(self) -> UpdateTransactionResult | None:
+        return self._coordinator.recover_if_required()
 
 
 __all__ = [

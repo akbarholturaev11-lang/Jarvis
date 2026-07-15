@@ -75,7 +75,8 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Device proof, activation, purchase, signed update and rollback contracts:
      `core/device_identity.py`, `core/product_activation.py`,
      `core/product_purchase.py`, `core/product_updates.py`,
-     `core/update_transaction.py`
+     `core/update_transaction.py`, `core/macos_update.py`,
+     `core/update_startup.py`
    - Secure credential migration: `core/credential_service.py`,
      `core/secure_store.py`
    - Commerce/backend/admin UI: `product_backend/`
@@ -250,8 +251,10 @@ main.py
 - `requirements.txt` is HIGH risk. Do not change dependency versions casually.
 - `requirements-build.txt`, `packaging/`, release signing keys and updater
   contracts are RELEASE HIGH RISK. Build tooling stays separate from the runtime;
-  no adapter may claim install success before private-copy verification, atomic
-  mutation, health proof and rollback are real.
+  no adapter may claim install success before exact target entitlement,
+  private-copy verification, atomic mutation, fresh-nonce health proof and
+  rollback are all independently verified. The macOS development adapter must
+  never be selected by source defaults or any frozen runtime.
 - Real `config/product.json`, payment-instructions files, backend databases,
   signing keys, activation peppers and admin secrets are LOCAL/DEPLOYMENT data;
   never commit or print them.

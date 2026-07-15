@@ -13,7 +13,7 @@ Desktop app
   ├─ OS secure store: Gemini key, device private key, active license ID
   ├─ signed offline entitlement cache (exact version + device fingerprint)
   ├─ HTTPS product client + one-time Ed25519 device proof
-  └─ private update staging + durable rollback journal contract
+  └─ private update staging + verified install/rollback transaction
              │
              ▼
 FastAPI product backend
@@ -47,13 +47,18 @@ wrappers and push providers are `not_available`.
   `core/product_updates.py` implement activation, manual screenshot payment,
   status polling, update authority and byte-for-byte staging.
 - `core/update_transaction.py` pins the verified staged descriptor through the
-  install call and requires the future helper to make and re-hash an inaccessible
-  private copy before mutation. It also defines persisted backup, atomic mutation,
-  bounded health proof and durable rollback-journal semantics. Real OS mutation
-  adapters remain unavailable until a signed helper exists.
+  install call, requires a private re-hashed copy, and coordinates persisted
+  backup, atomic mutation, bounded health proof and a durable rollback journal.
+  `core/macos_update.py` implements strict `.app` ZIP extraction, app/tree
+  identity, fresh-nonce health proof and a real temporary-filesystem macOS
+  development adapter. The production adapter assesses a fixed signed/notarized
+  helper but remains fail-closed until its privileged shutdown/swap protocol is
+  implemented and audited.
 - `core/product_runtime.py` is the desktop facade used by `main.py` and `ui.py`.
   Source development is not gated. Frozen builds require a locally verified
-  signed entitlement for their exact version before Gemini runtime startup.
+  signed entitlement for their exact version before Gemini runtime startup;
+  installation separately rechecks target-version authority. Startup recovery
+  runs before licensing/onboarding and blocks on an unresolved journal.
 
 ## Backend layers and schema
 
@@ -109,8 +114,10 @@ wrappers and push providers are `not_available`.
 ## Honest current limitations
 
 - The backend runtime is a single-process SQLite MVP, not a multi-region service.
-- Real macOS application replacement is disabled. Verified downloads and durable
-  rollback contracts exist, but no adapter can claim install success.
+- Real temporary-filesystem macOS `.app` replacement and rollback are tested
+  through an explicit development-only adapter. Production replacement remains
+  `not_available` until a signed/notarized helper, safe shutdown protocol and
+  clean-Mac verification exist.
 - Windows/Linux packaging, secure credential backends and installer helpers are
   `not_available` where not verified.
 - A real deployment origin, release public key, entitlement private key,

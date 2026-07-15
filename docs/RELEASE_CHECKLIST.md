@@ -75,10 +75,19 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 
 - [ ] Pending/review/rejected payments cannot download or install an update.
 - [ ] Approved exact-version entitlement authorizes only the bound active device and correct artifact target.
+- [ ] Exact target entitlement is re-read locally immediately before mutation;
+      missing/corrupt/wrong-device authority blocks the adapter call.
 - [ ] Full download length, digest, signature, source compatibility and monotonic build are verified before mutation.
 - [ ] Old app and user data remain untouched through download and verification.
+- [ ] Strict app-ZIP extraction rejects traversal, case collisions, special files,
+      archive bombs and escaping/cyclic/dangling symlinks while preserving only
+      safe in-bundle framework links.
 - [ ] Atomic replacement and bounded post-install health check pass.
 - [ ] Injected install/health failures restore and re-verify the last-known-working app.
+- [ ] Interrupted journal recovery completes before any license/Gemini/runtime
+      startup; an unresolved recovery blocks the app fail-closed.
+- [ ] The fixed production helper passes owner/mode/inode, Team ID, designated
+      requirement, `codesign`, `spctl` and stapler checks on the final bytes.
 - [ ] A declined update leaves the purchased older version operating offline.
 
 ## Publication gate

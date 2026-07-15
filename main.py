@@ -54,6 +54,7 @@ from core.app_paths import resolve_app_paths
 from core.product_runtime import ProductRuntimeService
 from core.product_gate import ProductLicenseGate
 from core.product_bootstrap import ProductBootstrapCoordinator
+from core.update_startup import recover_interrupted_update
 from core.power_manager import KeepAwakeManager
 from core.remote_tunnel import CloudflareTunnel, TailscaleFunnel
 from core.app_settings import (
@@ -2621,6 +2622,14 @@ class JarvisLive:
                     "action": action,
                     "status": result.status if result is not None else "failed",
                 }
+            if action == "install_product_update":
+                result = self._product_runtime.apply_staged_update()
+                return {
+                    "action": action,
+                    "status": (
+                        result.status.value if result is not None else "invalid"
+                    ),
+                }
             if action == "run_command":
                 text = str(kwargs.get("text") or "").strip()
                 if text:
@@ -2652,11 +2661,13 @@ class JarvisLive:
             )
             product_status = product.status
             product_device_id = self._product_runtime.device_fingerprint() or ""
+            product_update_staged = self._product_runtime.staged_update_ready
         except Exception:
             product_version = "—"
             product_build = "—"
             product_status = "failed"
             product_device_id = ""
+            product_update_staged = False
         return {
             "tunnel_enabled": bool(tunnel_cfg.get("enabled")),
             "tunnel_status": self._tunnel.status if self._tunnel else "stopped",
@@ -2671,6 +2682,7 @@ class JarvisLive:
             "product_build": product_build,
             "product_status": product_status,
             "product_device_id": product_device_id,
+            "product_update_staged": product_update_staged,
         }
 
     def _set_keep_awake_enabled(self, enabled: bool) -> tuple[bool, str]:
@@ -2916,13 +2928,22 @@ def main():
         except Exception:
             pass
 
-    threading.Thread(
-        target=resume_pending_payment,
-        daemon=True,
-        name="product-payment-resume",
-    ).start()
-
     def runner():
+        recovery = recover_interrupted_update(product_runtime)
+        if recovery.required:
+            status = recovery.result.status.value if recovery.result else "blocked"
+            key = {
+                "preserved": "product.update_recovery_preserved",
+                "rolled_back": "product.update_recovery_rolled_back",
+            }.get(status, "product.update_recovery_blocked")
+            ui.write_log(f"SYS: {t(key)}")
+        if not recovery.may_start:
+            return
+        threading.Thread(
+            target=resume_pending_payment,
+            daemon=True,
+            name="product-payment-resume",
+        ).start()
         prepared = bootstrap.prepare(
             lambda: JarvisLive(ui, product_runtime=product_runtime)
         )

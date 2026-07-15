@@ -27,12 +27,15 @@ The following external gates must be cleared before any customer release:
    authenticated admin password-change flow.
 4. Provide Apple Developer ID signing, hardened-runtime entitlements,
    notarization/stapling and Gatekeeper verification.
-5. Implement and audit a signed privileged macOS updater helper; the current app
-   only downloads/verifies and honestly reports install `not_available`.
+5. Implement and independently audit the fixed signed privileged macOS helper's
+   safe-shutdown/request protocol. The strict archive, backup, atomic local
+   development swap, health and rollback transaction are implemented, but frozen
+   production builds still honestly report install `not_available`.
 6. Run the pinned PyInstaller build on a controlled macOS build environment and
    complete clean-Mac install, activation, permission, offline, payment, update,
    rollback and uninstall tests. The local smoke-build is currently blocked by
-   unavailable external package-download approval, not by a source-tree error.
+   missing PyInstaller in the current build environment and final signing inputs,
+   not by a source-tree test failure.
 
 ## Known Bugs
 

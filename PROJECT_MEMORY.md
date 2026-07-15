@@ -209,9 +209,10 @@ Durable product layers:
   `config/api_keys.json` is a read-only fallback.
 - `core/device_identity.py`, `entitlement_certificate.py`,
   `entitlement_cache.py`, `product_activation.py`, `product_purchase.py`,
-  `product_updates.py` and `update_transaction.py` implement generated Ed25519
+  `product_updates.py`, `update_transaction.py` and `macos_update.py` implement generated Ed25519
   device proof, signed exact-version offline authority, manual payment evidence,
-  verified update staging and durable rollback contracts.
+  verified update staging, strict macOS app archives, persisted backup, atomic
+  development replacement, nonce health proof and durable rollback recovery.
 - `product_backend/` contains the single-plan SQLite commerce schema, one-device
   binding history, releases/artifacts with bilingual features/fixes, payment
   states, exact-version entitlements, append-only admin decisions, one-time activation credentials,
@@ -301,9 +302,16 @@ SQLite read projections and survive restart. Pending-payment notification is
 visible+online in-app polling only; native iOS/Android and push providers are
 honestly `not_available` under `docs/MOBILE_ADMIN.md`.
 
-The updater deliberately does not mutate a real installed app yet. macOS needs a
-signed/notarized atomic helper, persisted `.app` backup location and real
-post-launch health marker before install can be enabled or reported successful.
+The updater transaction is real and locally tested on synthetic `.app` bundles:
+strict archive extraction, private tree-digested backup, same-volume atomic
+replacement, fresh-nonce exact-version health checks, interrupted recovery and
+verified rollback. `ProductRuntimeService` rechecks the purchased exact target
+entitlement immediately before mutation, and `core/update_startup.py` blocks
+licensing/Gemini/runtime startup until any journal is safely resolved. The
+mutating adapter is development-only and is mechanically rejected in frozen
+runtimes. Production macOS remains honest `not_available` until the fixed helper
+has an audited safe-shutdown/privileged protocol, Developer ID signing,
+notarization and clean-Mac evidence.
 
 ## AI Assistant Rule
 

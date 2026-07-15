@@ -1,5 +1,31 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-16 - Verified macOS update and rollback transaction
+
+### Added
+
+- Added strict `jarvis_macos_app_zip_v1` extraction with bounded archive limits,
+  exact bundle/version/build identity and safe in-bundle framework symlinks.
+- Added a private tree-digested backup, same-volume atomic development `.app`
+  swap, fresh-nonce health proof, durable journal recovery and verified rollback.
+- Added install-time exact-target entitlement revalidation, an explicit desktop
+  Install action, and fail-closed recovery before licensing, Gemini onboarding,
+  payment resume or assistant startup.
+- Added bilingual English/Russian install, preserve, rollback and blocked-recovery
+  states plus adversarial unit/integration coverage.
+
+### Security and release status
+
+- The development updater requires explicit construction and is rejected in a
+  frozen runtime. Default macOS, Windows and Linux factories never select it.
+- The production macOS boundary assesses a fixed helper path for owner/mode/link,
+  Team ID, designated requirement, `codesign`, Gatekeeper and notarization
+  evidence, but mutation remains honest `not_available` until the privileged
+  shutdown/swap protocol is implemented and independently audited.
+- Local synthetic `.app` A-to-B, forced health failure/rollback and interrupted
+  recovery pass. Real `/Applications`, signing/notarization and clean-Mac results
+  are not claimed.
+
 ## 2026-07-15 - Secure Mobile Admin PWA (BOSQICH 5)
 
 ### Added and enforced

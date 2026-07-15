@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import tempfile
 import unittest
@@ -48,6 +49,7 @@ from core.product_purchase import (
     InitialPurchaseOfferResult,
     PurchaseResult,
 )
+from core.product_updates import VerifiedStagedUpdate
 from core.product_version import BUNDLE_ID, PRODUCT_ID, ProductVersion
 from core.runtime_product import RuntimeProductIdentity
 from core.secure_store import (
@@ -57,6 +59,7 @@ from core.secure_store import (
     SecureStore,
     SecureStoreResult,
 )
+from core.update_transaction import TransactionStatus, UpdateTransactionResult
 
 
 KEY_ID = "entitlement-key-runtime-001"
@@ -214,6 +217,20 @@ class _RecordingUpdatePurchase:
         self.submissions.append(dict(kwargs))
         index = min(len(self.submissions) - 1, len(self._results) - 1)
         return self._results[index]
+
+
+class _RecordingUpdateCoordinator:
+    def __init__(self, result: UpdateTransactionResult) -> None:
+        self.result = result
+        self.applied: list[VerifiedStagedUpdate] = []
+        self.rollback_required = False
+
+    def apply(self, staged: VerifiedStagedUpdate) -> UpdateTransactionResult:
+        self.applied.append(staged)
+        return self.result
+
+    def recover(self) -> UpdateTransactionResult:
+        raise AssertionError("recovery was not requested")
 
 
 class ProductRuntimeTests(unittest.TestCase):
@@ -762,6 +779,163 @@ class ProductRuntimeTests(unittest.TestCase):
             self.assertEqual(result.status, STATUS_NOT_AVAILABLE)
             # No network submission is attempted without a durable record.
             self.assertEqual(len(purchase.submissions), 0)
+
+    def test_install_rechecks_exact_target_entitlement_before_mutation(self) -> None:
+        signing_key = Ed25519PrivateKey.generate()
+        public_key = signing_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            service = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=self._config(public_key),
+                runtime_identity=runtime,
+            )
+            fingerprint = service.device_fingerprint()
+            self.assertIsNotNone(fingerprint)
+            assert fingerprint is not None
+            for version in ("1.0.0", "1.1.0"):
+                stored = service._cache.store_verified(
+                    _certificate(
+                        signing_key,
+                        fingerprint=fingerprint,
+                        version=version,
+                    ),
+                    license_id=LICENSE_ID,
+                    device_fingerprint=fingerprint,
+                    version=version,
+                )
+                self.assertTrue(stored.ok)
+            store.set(LICENSE_STATE_SERVICE, LICENSE_ID_ACCOUNT, LICENSE_ID)
+            content = b"verified macOS app archive"
+            staged_path = paths.update_staging_dir / "JARVIS.app.zip"
+            staged_path.parent.mkdir(parents=True)
+            staged_path.write_bytes(content)
+            staged = VerifiedStagedUpdate(
+                staged_path,
+                runtime.product_version,
+                ProductVersion.parse("1.1.0", 2),
+                hashlib.sha256(content).hexdigest(),
+                len(content),
+            )
+            expected = UpdateTransactionResult(
+                TransactionStatus.INSTALLED,
+                "installed",
+                staged.source,
+                staged.target,
+            )
+            coordinator = _RecordingUpdateCoordinator(expected)
+            service._coordinator = coordinator
+            service._last_staged_update = staged
+
+            result = service.apply_staged_update()
+
+            self.assertIs(result, expected)
+            self.assertEqual(coordinator.applied, [staged])
+            self.assertFalse(service.staged_update_ready)
+
+    def test_missing_target_entitlement_blocks_installer_and_preserves_stage(self) -> None:
+        signing_key = Ed25519PrivateKey.generate()
+        public_key = signing_key.public_key().public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            service = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=self._config(public_key),
+                runtime_identity=runtime,
+            )
+            fingerprint = service.device_fingerprint()
+            self.assertIsNotNone(fingerprint)
+            assert fingerprint is not None
+            current = service._cache.store_verified(
+                _certificate(
+                    signing_key,
+                    fingerprint=fingerprint,
+                    version="1.0.0",
+                ),
+                license_id=LICENSE_ID,
+                device_fingerprint=fingerprint,
+                version="1.0.0",
+            )
+            self.assertTrue(current.ok)
+            store.set(LICENSE_STATE_SERVICE, LICENSE_ID_ACCOUNT, LICENSE_ID)
+            content = b"verified macOS app archive"
+            staged_path = paths.update_staging_dir / "JARVIS.app.zip"
+            staged_path.parent.mkdir(parents=True)
+            staged_path.write_bytes(content)
+            staged = VerifiedStagedUpdate(
+                staged_path,
+                runtime.product_version,
+                ProductVersion.parse("1.1.0", 2),
+                hashlib.sha256(content).hexdigest(),
+                len(content),
+            )
+            coordinator = _RecordingUpdateCoordinator(
+                UpdateTransactionResult(
+                    TransactionStatus.INSTALLED,
+                    "must not run",
+                    staged.source,
+                    staged.target,
+                )
+            )
+            service._coordinator = coordinator
+            service._last_staged_update = staged
+
+            result = service.apply_staged_update()
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.status, TransactionStatus.INVALID)
+            self.assertEqual(coordinator.applied, [])
+            self.assertTrue(service.staged_update_ready)
+
+    def test_staged_source_mismatch_blocks_installer(self) -> None:
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            service = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=self._config(b"e" * 32),
+                runtime_identity=runtime,
+            )
+            staged = VerifiedStagedUpdate(
+                paths.update_staging_dir / "JARVIS.app.zip",
+                ProductVersion.parse("0.9.0", 1),
+                ProductVersion.parse("1.1.0", 2),
+                "0" * 64,
+                1,
+            )
+            coordinator = _RecordingUpdateCoordinator(
+                UpdateTransactionResult(TransactionStatus.INSTALLED, "must not run")
+            )
+            service._coordinator = coordinator
+            service._last_staged_update = staged
+            entitled = LocalProductState(STATUS_ENTITLED, runtime, LICENSE_ID)
+
+            with mock.patch.object(
+                ProductRuntimeService,
+                "local_state",
+                return_value=entitled,
+            ):
+                result = service.apply_staged_update()
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertEqual(result.status, TransactionStatus.INVALID)
+            self.assertEqual(coordinator.applied, [])
 
 
 if __name__ == "__main__":

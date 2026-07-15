@@ -1046,6 +1046,34 @@ class UpdateTransactionCoordinator:
                 "Rollback journal is not available.",
             )
 
+    def recover_if_required(self) -> UpdateTransactionResult | None:
+        """Freshly probe and resolve startup recovery under one journal lock.
+
+        Returning ``None`` proves there was no checkpoint at the instant of the
+        locked read. Any unreadable state returns ``ROLLBACK_REQUIRED`` so a
+        stale in-memory flag can never open the runtime past a disk checkpoint.
+        """
+
+        if self._journal is None:
+            return None
+        try:
+            with self._journal.acquire():
+                self._reload_checkpoint_locked()
+                if self._journal_invalid:
+                    return _transaction_result(
+                        TransactionStatus.ROLLBACK_REQUIRED,
+                        "Rollback checkpoint is invalid.",
+                    )
+                if self._pending_source is None:
+                    return None
+                return self._rollback_locked()
+        except Exception:
+            self._journal_invalid = True
+            return _transaction_result(
+                TransactionStatus.ROLLBACK_REQUIRED,
+                "Rollback journal is not available.",
+            )
+
     def apply(self, staged: VerifiedStagedUpdate) -> UpdateTransactionResult:
         if self._journal is None:
             return self._apply_locked(staged)

@@ -330,6 +330,41 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertFalse(journal.exists())
         self.assertFalse(restarted.rollback_required)
 
+    def test_startup_probe_sees_checkpoint_written_after_construction(self):
+        journal = Path(self.temp.name).resolve() / "late-checkpoint.json"
+        observer_adapter = FakeUpdaterAdapter()
+        observer = self._coordinator(observer_adapter, journal=journal)
+        self.assertFalse(observer.rollback_required)
+
+        writer_adapter = FakeUpdaterAdapter()
+        writer_adapter.install_exception = SystemExit("simulated helper loss")
+        writer = self._coordinator(writer_adapter, journal=journal)
+        with self.assertRaises(SystemExit):
+            writer.apply(self.staged)
+        self.assertTrue(journal.exists())
+        # The observer's cached construction state is stale; startup must use
+        # the atomic fresh probe, which reloads under the journal lock.
+        self.assertFalse(observer.rollback_required)
+
+        recovered = observer.recover_if_required()
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(recovered.status, TransactionStatus.PRESERVED)
+        self.assertFalse(journal.exists())
+
+    def test_startup_probe_blocks_late_corrupt_checkpoint(self):
+        journal = Path(self.temp.name).resolve() / "late-corrupt.json"
+        observer = self._coordinator(FakeUpdaterAdapter(), journal=journal)
+        self.assertFalse(observer.rollback_required)
+        journal.write_text('{"state":"rollback_required","secret":"unexpected"}')
+
+        recovered = observer.recover_if_required()
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(recovered.status, TransactionStatus.ROLLBACK_REQUIRED)
+
     def test_process_loss_after_mutation_restores_persisted_backup_on_restart(self):
         journal = Path(self.temp.name).resolve() / "post-mutation-loss.json"
         adapter = FakeUpdaterAdapter()
