@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from core.payment_request_store import (
     DEFAULT_ENVELOPE_ACCOUNT,
@@ -20,6 +23,7 @@ from core.payment_request_store import (
     PaymentRequestState,
 )
 from core.secure_store import (
+    STATUS_FAILED as STORE_FAILED,
     STATUS_NOT_FOUND as STORE_NOT_FOUND,
     STATUS_SUCCESS as STORE_SUCCESS,
     SecureStore,
@@ -52,6 +56,28 @@ class _MemorySecureStore(SecureStore):
         return SecureStoreResult(STORE_SUCCESS)
 
 
+class _FaultingSecureStore(_MemorySecureStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_failure: str | None = None
+        self.delete_fails = False
+
+    def _set(self, service: str, account: str, secret: str) -> SecureStoreResult:
+        if self.set_failure == "return":
+            return SecureStoreResult(STORE_FAILED)
+        if self.set_failure == "raise":
+            raise OSError("simulated secure-store failure")
+        if self.set_failure == "commit_then_fail":
+            self.values[(service, account)] = secret
+            return SecureStoreResult(STORE_FAILED)
+        return super()._set(service, account, secret)
+
+    def _delete(self, service: str, account: str) -> SecureStoreResult:
+        if self.delete_fails:
+            return SecureStoreResult(STORE_FAILED)
+        return super()._delete(service, account)
+
+
 def _envelope(
     *,
     screenshot: bytes = SCREENSHOT,
@@ -71,6 +97,12 @@ def _envelope(
         updated_at="2026-07-14T04:00:00Z",
         purchase_id=PURCHASE_ID,
     )
+
+
+def _active_blob_path(root: Path, secure: _MemorySecureStore) -> Path:
+    secret = secure.values[(DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT)]
+    metadata = json.loads(secret)
+    return root / "payments" / metadata["cipher"]["blob_name"]
 
 
 class DurablePaymentRequestStoreTests(unittest.TestCase):
@@ -96,9 +128,15 @@ class DurablePaymentRequestStoreTests(unittest.TestCase):
             self.assertEqual(loaded.envelope.purchase_id, PURCHASE_ID)
 
             # The on-disk blob is ciphertext -- the plaintext never appears.
-            blob = (root / "payments" / f"{DEFAULT_ENVELOPE_ACCOUNT}.enc").read_bytes()
+            blob_path = _active_blob_path(root, secure)
+            blob = blob_path.read_bytes()
             self.assertNotIn(SCREENSHOT, blob)
             self.assertNotEqual(blob, SCREENSHOT)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE(blob_path.stat().st_mode), 0o600)
+                self.assertEqual(
+                    stat.S_IMODE((root / "payments").stat().st_mode), 0o700
+                )
 
             # The secure-store secret is metadata only; no screenshot bytes.
             secret = secure.values[(DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT)]
@@ -108,9 +146,10 @@ class DurablePaymentRequestStoreTests(unittest.TestCase):
     def test_clear_shreds_secret_and_blob(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            store = self._store(root)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
             self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
-            blob = root / "payments" / f"{DEFAULT_ENVELOPE_ACCOUNT}.enc"
+            blob = _active_blob_path(root, secure)
             self.assertTrue(blob.exists())
             self.assertTrue(store.clear().ok)
             self.assertFalse(blob.exists())
@@ -160,9 +199,10 @@ class DurablePaymentRequestStoreTests(unittest.TestCase):
     def test_corrupt_blob_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            store = self._store(root)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
             self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
-            blob = root / "payments" / f"{DEFAULT_ENVELOPE_ACCOUNT}.enc"
+            blob = _active_blob_path(root, secure)
             raw = bytearray(blob.read_bytes())
             raw[0] ^= 0xFF
             blob.write_bytes(bytes(raw))
@@ -173,11 +213,207 @@ class DurablePaymentRequestStoreTests(unittest.TestCase):
     def test_truncated_blob_is_detected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            store = self._store(root)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
             self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
-            blob = root / "payments" / f"{DEFAULT_ENVELOPE_ACCOUNT}.enc"
+            blob = _active_blob_path(root, secure)
             blob.write_bytes(b"")
             self.assertEqual(store.load().status, STATUS_CORRUPT)
+
+    def test_failed_secure_store_replacement_preserves_existing_request(self) -> None:
+        replacement = b"different-sanitized-evidence" * 9
+        for failure in ("return", "raise"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                secure = _FaultingSecureStore()
+                store = self._store(root, secure)
+                self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+                previous_secret = secure.values[
+                    (DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT)
+                ]
+                previous_blob = _active_blob_path(root, secure)
+
+                secure.set_failure = failure
+                result = store.save(_envelope(screenshot=replacement), replacement)
+
+                self.assertEqual(result.status, STORE_FAILED)
+                self.assertEqual(
+                    secure.values[
+                        (DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT)
+                    ],
+                    previous_secret,
+                )
+                self.assertTrue(previous_blob.is_file())
+                loaded = store.load()
+                self.assertEqual(loaded.status, STATUS_SUCCESS)
+                self.assertEqual(loaded.screenshot, SCREENSHOT)
+                self.assertEqual(list((root / "payments").glob("*.enc")), [previous_blob])
+
+    def test_ambiguous_set_failure_that_committed_is_recovered_as_success(self) -> None:
+        replacement = b"committed-before-error-evidence" * 9
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _FaultingSecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            previous_blob = _active_blob_path(root, secure)
+
+            secure.set_failure = "commit_then_fail"
+            result = store.save(_envelope(screenshot=replacement), replacement)
+
+            self.assertEqual(result.status, STATUS_SUCCESS)
+            self.assertFalse(previous_blob.exists())
+            self.assertEqual(store.load().screenshot, replacement)
+
+    def test_failed_secure_store_delete_preserves_existing_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _FaultingSecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            blob = _active_blob_path(root, secure)
+
+            secure.delete_fails = True
+            self.assertEqual(store.clear().status, STORE_FAILED)
+            self.assertTrue(blob.is_file())
+            self.assertEqual(store.load().screenshot, SCREENSHOT)
+
+    def test_failed_state_update_preserves_previous_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            secure = _FaultingSecureStore()
+            store = self._store(Path(temp), secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            secure.set_failure = "raise"
+
+            result = store.update_state(
+                state=PaymentRequestState.FAILED,
+                updated_at="2026-07-14T04:07:00Z",
+            )
+
+            self.assertEqual(result.status, STORE_FAILED)
+            secure.set_failure = None
+            loaded = store.load()
+            self.assertEqual(loaded.status, STATUS_SUCCESS)
+            assert loaded.envelope is not None
+            self.assertIs(loaded.envelope.state, PaymentRequestState.PENDING)
+
+    def test_ambiguous_state_update_is_confirmed_after_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            secure = _FaultingSecureStore()
+            store = self._store(Path(temp), secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            secure.set_failure = "commit_then_fail"
+
+            result = store.update_state(
+                state=PaymentRequestState.FAILED,
+                updated_at="2026-07-14T04:08:00Z",
+            )
+
+            self.assertEqual(result.status, STATUS_SUCCESS)
+            assert store.peek().envelope is not None
+            self.assertIs(store.peek().envelope.state, PaymentRequestState.FAILED)
+
+    @unittest.skipIf(os.name == "nt", "POSIX private-mode semantics")
+    def test_blob_with_public_mode_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            _active_blob_path(root, secure).chmod(0o644)
+            self.assertEqual(store.load().status, STATUS_CORRUPT)
+
+    @unittest.skipIf(os.name == "nt", "POSIX hard-link semantics")
+    def test_hard_linked_blob_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            blob = _active_blob_path(root, secure)
+            os.link(blob, root / "duplicate.enc")
+            self.assertEqual(store.load().status, STATUS_CORRUPT)
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink semantics")
+    def test_symlink_blob_is_rejected_without_reading_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            blob = _active_blob_path(root, secure)
+            target = root / "outside"
+            target.write_bytes(b"must-not-be-read-or-changed")
+            blob.unlink()
+            blob.symlink_to(target)
+
+            self.assertEqual(store.load().status, STATUS_CORRUPT)
+            self.assertEqual(target.read_bytes(), b"must-not-be-read-or-changed")
+
+    def test_non_regular_blob_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            blob = _active_blob_path(root, secure)
+            blob.unlink()
+            blob.mkdir()
+            self.assertEqual(store.load().status, STATUS_CORRUPT)
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "POSIX ownership semantics")
+    def test_owner_mismatch_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            with mock.patch(
+                "core.payment_request_store.os.getuid", return_value=os.getuid() + 1
+            ):
+                self.assertEqual(store.load().status, STATUS_CORRUPT)
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink semantics")
+    def test_symlink_storage_directory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            external = root / "external"
+            external.mkdir()
+            (root / "payments").symlink_to(external, target_is_directory=True)
+            store = self._store(root)
+
+            self.assertEqual(store.save(_envelope(), SCREENSHOT).status, STORE_FAILED)
+            self.assertEqual(list(external.iterdir()), [])
+
+    def test_metadata_cannot_redirect_blob_outside_private_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            key = (DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT)
+            metadata = json.loads(secure.values[key])
+            metadata["cipher"]["blob_name"] = "../../outside.enc"
+            secure.values[key] = json.dumps(metadata, separators=(",", ":"))
+            self.assertEqual(store.load().status, STATUS_CORRUPT)
+
+    def test_legacy_fixed_blob_without_pointer_remains_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            secure = _MemorySecureStore()
+            store = self._store(root, secure)
+            self.assertTrue(store.save(_envelope(), SCREENSHOT).ok)
+            key = (DEFAULT_ENVELOPE_SERVICE, DEFAULT_ENVELOPE_ACCOUNT)
+            metadata = json.loads(secure.values[key])
+            generated = _active_blob_path(root, secure)
+            legacy = root / "payments" / f"{DEFAULT_ENVELOPE_ACCOUNT}.enc"
+            generated.replace(legacy)
+            metadata["cipher"].pop("blob_name")
+            secure.values[key] = json.dumps(metadata, separators=(",", ":"))
+
+            loaded = store.load()
+            self.assertEqual(loaded.status, STATUS_SUCCESS)
+            self.assertEqual(loaded.screenshot, SCREENSHOT)
 
     def test_tampered_metadata_binding_fails_authentication(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

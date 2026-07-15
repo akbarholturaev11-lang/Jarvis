@@ -167,7 +167,7 @@ class InitialPurchaseAuthorizerTests(unittest.TestCase):
         )
         self.assertEqual(replay.status, STATUS_NOT_FOUND)
 
-    def test_wrong_context_consumes_grant_and_parallel_reserve_has_one_winner(self):
+    def test_wrong_context_preserves_grant_and_parallel_reserve_has_one_winner(self):
         _, wrong_context_grant = self._grant()
         self.assertIsNone(
             self.authority.reserve_grant(
@@ -176,13 +176,13 @@ class InitialPurchaseAuthorizerTests(unittest.TestCase):
                 release_id="rel_other_001",
             )
         )
-        self.assertIsNone(
-            self.authority.reserve_grant(
-                wrong_context_grant.token,
-                purchase_id=PURCHASE_ID,
-                release_id=RELEASE_ID,
-            )
+        reservation = self.authority.reserve_grant(
+            wrong_context_grant.token,
+            purchase_id=PURCHASE_ID,
+            release_id=RELEASE_ID,
         )
+        self.assertIsNotNone(reservation)
+        self.assertTrue(self.authority.commit_grant(reservation))
 
         _, grant = self._grant()
         outcomes = []

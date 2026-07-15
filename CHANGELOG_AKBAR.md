@@ -1,5 +1,30 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-15 - Payment durability and abuse hardening (BOSQICH 3 review)
+
+### Fixed
+
+- A wrong purchase/release context no longer consumes an otherwise valid
+  one-time initial-purchase upload grant; the same grant can still be used once
+  with its bound context.
+- Initial-purchase challenge creation now has a separate client-IP budget, so
+  attacker-controlled random purchase IDs cannot create unlimited rate-limit
+  buckets and exhaust the bounded challenge authority.
+- Initial and update payment submissions now share the durable encrypted
+  request envelope: response loss or restart reuses the original idempotency
+  key and sanitized evidence bytes instead of creating a duplicate payment.
+- Encrypted evidence uses immutable generation files with the OS secure-store
+  metadata as the commit pointer. Failed/ambiguous secure-store writes preserve
+  the previously committed request; path traversal, symlink, hard-link,
+  non-regular file, wrong owner/mode and truncated blob cases fail closed.
+- Product payment status labels are explicitly Qt plain text.
+
+### Verification
+
+- Added negative tests for wrong-context grant reuse, randomized-ID rate-limit
+  bypass, response-loss/restart update retry, secure-store failure/ambiguity,
+  legacy blob migration and unsafe filesystem objects.
+
 ## 2026-07-15 - Admin TOTP MFA and hardened sessions (BOSQICH 4)
 
 ### Added

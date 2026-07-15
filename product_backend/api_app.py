@@ -711,6 +711,12 @@ def create_product_backend_app(
         max_keys=2048,
         clock=now,
     )
+    initial_purchase_client_limiter = BoundedAttemptLimiter(
+        max_attempts=20,
+        window_seconds=300,
+        max_keys=2048,
+        clock=now,
+    )
     login_factor_limiter = BoundedAttemptLimiter(
         max_attempts=5,
         window_seconds=300,
@@ -1368,6 +1374,10 @@ def create_product_backend_app(
     ) -> dict[str, Any]:
         if body.product_id != PRODUCT_ID:
             raise HTTPException(status_code=400, detail="product is invalid")
+        if not initial_purchase_client_limiter.consume(
+            _client_attempt_key(request)
+        ):
+            raise HTTPException(status_code=429, detail="too many purchase requests")
         limiter_key = _attempt_key(
             request,
             f"initial|{body.purchase_id}|{body.version}",

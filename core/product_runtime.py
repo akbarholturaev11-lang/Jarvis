@@ -418,13 +418,16 @@ class ProductRuntimeService:
                 STATUS_INVALID,
                 "A pending payment request is unreadable.",
             )
-        if (
-            existing.pending
-            and existing.envelope is not None
-            and existing.envelope.kind is PaymentRequestKind.INITIAL
-            and existing.screenshot is not None
-        ):
-            return self._resume_initial(existing.envelope, existing.screenshot)
+        if existing.pending and existing.envelope is not None:
+            if (
+                existing.envelope.kind is PaymentRequestKind.INITIAL
+                and existing.screenshot is not None
+            ):
+                return self._resume_initial(existing.envelope, existing.screenshot)
+            return PurchaseResult(
+                STATUS_INVALID,
+                "Another payment request is already pending.",
+            )
         if offer is None or submission_id is None:
             return PurchaseResult(
                 STATUS_NOT_CONFIGURED,
@@ -475,24 +478,34 @@ class ProductRuntimeService:
         if self._purchase is None:
             return None
         loaded = self._payment_requests.load()
-        if loaded.status in {
-            PAYMENT_REQUEST_NOT_FOUND,
-            PAYMENT_REQUEST_NOT_AVAILABLE,
-        }:
+        if loaded.status == PAYMENT_REQUEST_NOT_FOUND:
             return None
+        if loaded.status == PAYMENT_REQUEST_NOT_AVAILABLE:
+            return PurchaseResult(
+                PURCHASE_NOT_AVAILABLE,
+                "Secure payment storage is not available.",
+            )
         if loaded.status == PAYMENT_REQUEST_CORRUPT:
             return PurchaseResult(
                 STATUS_INVALID,
                 "A pending payment request is unreadable.",
             )
+        if not loaded.ok:
+            return PurchaseResult(
+                STATUS_FAILED,
+                "A pending payment request could not be read.",
+            )
         if (
             not loaded.pending
             or loaded.envelope is None
             or loaded.screenshot is None
-            or loaded.envelope.kind is not PaymentRequestKind.INITIAL
         ):
             return None
-        return self._resume_initial(loaded.envelope, loaded.screenshot)
+        if loaded.envelope.kind is PaymentRequestKind.INITIAL:
+            return self._resume_initial(loaded.envelope, loaded.screenshot)
+        if loaded.envelope.kind is PaymentRequestKind.UPDATE:
+            return self._resume_update(loaded.envelope, loaded.screenshot)
+        return None
 
     def _resume_initial(
         self,
@@ -660,10 +673,26 @@ class ProductRuntimeService:
         self._last_update_candidate = result.candidate
         next_release_id = getattr(result.candidate, "release_id", None)
         if next_release_id != previous_release_id:
-            self._last_update_submission_id = (
-                new_initial_purchase_id() if next_release_id is not None else None
-            )
-            self._last_update_rejected_payment_id = None
+            pending = self._payment_requests.peek()
+            envelope = pending.envelope
+            if (
+                next_release_id is not None
+                and envelope is not None
+                and envelope.kind is PaymentRequestKind.UPDATE
+                and envelope.release_id == next_release_id
+                and result.candidate is not None
+                and envelope.version == result.candidate.target.version
+                and envelope.license_id == state.license_id
+            ):
+                self._last_update_submission_id = envelope.idempotency_key
+                self._last_update_rejected_payment_id = (
+                    envelope.supersedes_payment_id
+                )
+            else:
+                self._last_update_submission_id = (
+                    new_initial_purchase_id() if next_release_id is not None else None
+                )
+                self._last_update_rejected_payment_id = None
         return result
 
     def submit_update_payment(
@@ -682,19 +711,107 @@ class ProductRuntimeService:
             or self._purchase is None
         ):
             return None
+        existing = self._payment_requests.load()
+        if existing.status == PAYMENT_REQUEST_NOT_AVAILABLE:
+            return PurchaseResult(
+                PURCHASE_NOT_AVAILABLE,
+                "Secure payment storage is not available.",
+            )
+        if existing.status == PAYMENT_REQUEST_CORRUPT:
+            return PurchaseResult(
+                STATUS_INVALID,
+                "A pending payment request is unreadable.",
+            )
+        if existing.pending and existing.envelope is not None:
+            if (
+                existing.envelope.kind is PaymentRequestKind.UPDATE
+                and existing.screenshot is not None
+            ):
+                return self._resume_update(existing.envelope, existing.screenshot)
+            return PurchaseResult(
+                STATUS_INVALID,
+                "Another payment request is already pending.",
+            )
         if self._last_update_submission_id is None:
             self._last_update_submission_id = new_initial_purchase_id()
+        identity = self._identity.load()
+        if not identity.ok or identity.identity is None:
+            return PurchaseResult(
+                PURCHASE_NOT_AVAILABLE,
+                "Secure device identity is not available.",
+            )
+        try:
+            if type(screenshot) is not bytes or not screenshot:
+                raise ValueError("payment evidence is invalid")
+            now = self._utc_now_text()
+            envelope = PaymentRequestEnvelope(
+                idempotency_key=self._last_update_submission_id,
+                kind=PaymentRequestKind.UPDATE,
+                release_id=candidate.release_id,
+                device_fingerprint=identity.identity.fingerprint,
+                proof_sha256=hashlib.sha256(screenshot).hexdigest(),
+                content_type=content_type,
+                paid_at=paid_at,
+                version=candidate.target.version,
+                state=PaymentRequestState.PENDING,
+                created_at=now,
+                updated_at=now,
+                license_id=state.license_id,
+                supersedes_payment_id=self._last_update_rejected_payment_id,
+            )
+        except (TypeError, ValueError):
+            return PurchaseResult(STATUS_INVALID, "Update payment request is invalid.")
+        saved = self._payment_requests.save(envelope, screenshot)
+        if not saved.ok:
+            if saved.status == PAYMENT_REQUEST_NOT_AVAILABLE:
+                return PurchaseResult(
+                    PURCHASE_NOT_AVAILABLE,
+                    "Secure payment storage is not available.",
+                )
+            return PurchaseResult(
+                STATUS_FAILED,
+                "Payment request could not be stored securely.",
+            )
+        return self._submit_and_finalize_update(envelope, screenshot)
+
+    def _resume_update(
+        self,
+        envelope: PaymentRequestEnvelope,
+        screenshot: bytes,
+    ) -> PurchaseResult:
+        state = self.local_state()
+        if (
+            not state.entitled
+            or state.license_id != envelope.license_id
+            or self._purchase is None
+        ):
+            return PurchaseResult(
+                STATUS_INVALID,
+                "The pending update payment no longer matches this license.",
+            )
+        self._last_update_submission_id = envelope.idempotency_key
+        self._last_update_rejected_payment_id = envelope.supersedes_payment_id
+        return self._submit_and_finalize_update(envelope, screenshot)
+
+    def _submit_and_finalize_update(
+        self,
+        envelope: PaymentRequestEnvelope,
+        screenshot: bytes,
+    ) -> PurchaseResult:
+        assert self._purchase is not None
+        assert envelope.license_id is not None
         result = self._purchase.submit_payment(
-            license_id=state.license_id,
-            release_id=candidate.release_id,
-            paid_at=paid_at,
+            license_id=envelope.license_id,
+            release_id=envelope.release_id,
+            paid_at=envelope.paid_at,
             screenshot=screenshot,
-            content_type=content_type,
-            submission_id=self._last_update_submission_id,
-            supersedes_payment_id=self._last_update_rejected_payment_id,
+            content_type=envelope.content_type,
+            submission_id=envelope.idempotency_key,
+            supersedes_payment_id=envelope.supersedes_payment_id,
         )
         if result.status == "submitted":
             self._last_update_rejected_payment_id = None
+            self._payment_requests.clear()
         return result
 
     def poll_update_purchase(self) -> PurchaseResult | None:

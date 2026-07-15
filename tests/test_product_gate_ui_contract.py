@@ -95,12 +95,22 @@ class ProductGateUiContractTests(unittest.TestCase):
         payment_result = ast.unparse(
             _function(source, "ProductGateOverlay", "apply_payment_result")
         )
+        gate_constructor = ast.unparse(
+            _function(source, "ProductGateOverlay", "__init__")
+        )
+        settings_build = ast.unparse(_function(source, "SettingsOverlay", "_build"))
         self.assertIn("prepare_payment_evidence(selected)", select_payment)
         self.assertIn("evidence.content", select_payment)
         self.assertNotIn("read_bytes", select_payment)
         self.assertIn("_payment_poll_delays", schedule)
         self.assertNotIn("while", schedule)
         self.assertIn("product.gate.payment_rejected", payment_result)
+        self.assertIn(
+            "_status.setTextFormat(Qt.TextFormat.PlainText)", gate_constructor
+        )
+        self.assertIn(
+            "_product_lbl.setTextFormat(Qt.TextFormat.PlainText)", settings_build
+        )
         self.assertIn("setPlainText", source)
         self.assertIn("product_runtime.prepare_initial_purchase", main_source)
         self.assertIn("product_runtime.submit_initial_purchase", main_source)

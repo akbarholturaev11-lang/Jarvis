@@ -248,12 +248,14 @@ client persists the payment request before the network call in
 `core/payment_request_store.py` (`DurablePaymentRequestStore`): envelope metadata
 lives as one secret in the OS `SecureStore`, and the sanitized screenshot is
 AES-256-GCM encrypted (associated-data-bound to the envelope identity) in a
-private `0o600` blob — never plain JSON. `ProductRuntimeService` resumes a pending
-request after a restart or lost response with the exact same idempotency key and
-bytes, clears it only after a confirmed submission, and returns an honest
-`not_available` when the secure store is unavailable. Durable update-payment
-envelopes are not yet implemented; the update path relies on the server's
-one-open-payment-per-license/release uniqueness for duplicate protection.
+private `0o600` blob — never plain JSON. `ProductRuntimeService` resumes a
+pending initial or update payment after a restart or lost response with the
+exact same idempotency key and bytes, clears it only after a confirmed
+submission, and returns an honest `not_available` when the secure store is
+unavailable. Blob generations are immutable and the secure-store record is the
+commit pointer, so a failed secure-store update cannot overwrite the previous
+recoverable request. Private blob access rejects symlink, hard-link,
+non-regular, wrong-owner and wrong-mode paths on POSIX.
 
 Admin MFA and hardened sessions (BOSQICH 4): the admin panel enforces a second
 factor and a hardened session lifecycle. `product_backend/api_totp.py` is a

@@ -448,6 +448,27 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                         wrong_version.status,
                         STATUS_PURCHASE_REQUIRED,
                     )
+
+                    # Random purchase identifiers must not create a fresh
+                    # rate-limit bucket for every request from one client.
+                    fingerprint = identity_manager.load().identity.fingerprint
+                    abuse_statuses = []
+                    for index in range(24):
+                        abuse_statuses.append(
+                            client.post(
+                                "/api/purchases/challenges",
+                                json={
+                                    "product_id": PRODUCT_ID,
+                                    "purchase_id": f"purchase_{index:032x}",
+                                    "version": "1.0.0",
+                                    "device_key_fingerprint": fingerprint,
+                                    "platform": "macos",
+                                    "architecture": "arm64",
+                                },
+                            ).status_code
+                        )
+                    self.assertEqual(abuse_statuses[-1], 429)
+                    self.assertIn(201, abuse_statuses)
             finally:
                 activation.close()
                 challenges.close()

@@ -30,6 +30,7 @@ from core.product_runtime import (
     STATUS_NOT_ACTIVATED,
     STATUS_NOT_AVAILABLE,
     STATUS_NOT_CONFIGURED,
+    LocalProductState,
     ProductRuntimeService,
 )
 from core.payment_request_store import (
@@ -202,6 +203,17 @@ class _RecordingPurchase:
         if len(self.submissions) <= len(self._results):
             return self._results[len(self.submissions) - 1]
         return self._results[-1]
+
+
+class _RecordingUpdatePurchase:
+    def __init__(self, results: list[PurchaseResult]) -> None:
+        self._results = list(results)
+        self.submissions: list[dict[str, object]] = []
+
+    def submit_payment(self, **kwargs: object) -> PurchaseResult:
+        self.submissions.append(dict(kwargs))
+        index = min(len(self.submissions) - 1, len(self._results) - 1)
+        return self._results[index]
 
 
 class ProductRuntimeTests(unittest.TestCase):
@@ -656,6 +668,72 @@ class ProductRuntimeTests(unittest.TestCase):
             self.assertEqual(purchase.submissions[1][0], original_key)
             self.assertEqual(purchase.submissions[1][1], b"original-image")
             self.assertIsNone(service._payment_requests.peek().envelope)
+
+    def test_update_response_loss_restart_reuses_same_key_and_evidence(self) -> None:
+        public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        store = MemoryStore()
+        with tempfile.TemporaryDirectory() as temp:
+            paths = self._paths(Path(temp))
+            runtime = self._runtime("1.0.0", packaged=True)
+            state = LocalProductState(STATUS_ENTITLED, runtime, LICENSE_ID)
+            candidate = SimpleNamespace(
+                release_id="rel_runtime_update_001",
+                target=SimpleNamespace(version="1.1.0"),
+            )
+            first = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=self._config(public_key),
+                runtime_identity=runtime,
+            )
+            self.assertIsNotNone(first.device_fingerprint())
+            first._last_update_candidate = candidate
+            first_purchase = _RecordingUpdatePurchase(
+                [PurchaseResult(STATUS_SERVER_UNAVAILABLE, "lost response")]
+            )
+            first._purchase = first_purchase
+            with mock.patch.object(
+                ProductRuntimeService, "local_state", return_value=state
+            ):
+                lost = first.submit_update_payment(
+                    paid_at="2026-07-14T00:00:00Z",
+                    screenshot=b"sanitized-update-image",
+                    content_type="image/png",
+                )
+            self.assertIsNotNone(lost)
+            assert lost is not None
+            self.assertEqual(lost.status, STATUS_SERVER_UNAVAILABLE)
+            original_key = first_purchase.submissions[0]["submission_id"]
+            pending = first._payment_requests.peek()
+            self.assertIsNotNone(pending.envelope)
+
+            restarted = ProductRuntimeService(
+                app_paths=paths,
+                secure_store=store,
+                config_result=self._config(public_key),
+                runtime_identity=runtime,
+            )
+            restart_purchase = _RecordingUpdatePurchase(
+                [PurchaseResult(STATUS_SUBMITTED, "submitted")]
+            )
+            restarted._purchase = restart_purchase
+            with mock.patch.object(
+                ProductRuntimeService, "local_state", return_value=state
+            ):
+                resumed = restarted.resume_pending_payment()
+            self.assertIsNotNone(resumed)
+            assert resumed is not None
+            self.assertEqual(resumed.status, STATUS_SUBMITTED)
+            self.assertEqual(
+                restart_purchase.submissions[0]["submission_id"], original_key
+            )
+            self.assertEqual(
+                restart_purchase.submissions[0]["screenshot"],
+                b"sanitized-update-image",
+            )
+            self.assertIsNone(restarted._payment_requests.peek().envelope)
 
     def test_secure_store_unavailable_blocks_durable_submit(self) -> None:
         public_key = Ed25519PrivateKey.generate().public_key().public_bytes(

@@ -1124,6 +1124,7 @@ class ProductGateOverlay(QWidget):
         self._version = label("", 8, bold=True, color=C.ACC2)
         layout.addWidget(self._version)
         self._status = label("", 9, color=C.TEXT)
+        self._status.setTextFormat(Qt.TextFormat.PlainText)
         layout.addWidget(self._status)
         self._device = label("", 7, color=C.TEXT_DIM)
         layout.addWidget(self._device)
@@ -1985,6 +1986,7 @@ class SettingsOverlay(QWidget):
         # Exact-version product entitlement and explicit update checks.
         b.addWidget(self._lbl(t("settings.product"), 9, bold=True, color=C.PRI))
         self._product_lbl = self._lbl(self._product_text(), 8, color=C.TEXT_DIM)
+        self._product_lbl.setTextFormat(Qt.TextFormat.PlainText)
         b.addWidget(self._product_lbl)
         self._product_device_lbl = self._lbl(
             self._product_device_text(), 7, color=C.TEXT_DIM

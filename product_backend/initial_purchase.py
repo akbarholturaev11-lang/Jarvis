@@ -417,7 +417,6 @@ class InitialPurchaseAuthorizer:
                 or verified.release_id != release_id
                 or not verified.device_principal.proof_verified
             ):
-                self._grants.pop(digest, None)
                 return None
             reservation_id = uuid.uuid4().hex
             self._reservations[digest] = reservation_id
