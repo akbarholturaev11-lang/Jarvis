@@ -4,7 +4,12 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f4f6fa">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <title>JARVIS Release Control</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icons/admin-icon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="styles.css">
     <script src="app.js" defer></script>
   </head>
@@ -15,6 +20,20 @@
       <button class="language-button" type="button" data-language="en" aria-pressed="true">EN</button>
       <button class="language-button" type="button" data-language="ru" aria-pressed="false">RU</button>
     </div>
+
+    <section id="network-status" class="network-status" role="status" aria-live="polite" hidden>
+      <span class="network-status-mark" aria-hidden="true"></span>
+      <div>
+        <strong data-i18n="network_offline_title">Offline — admin data is unavailable</strong>
+        <span data-i18n="network_offline_note">The public app shell remains visible, but sign-in, evidence, and decisions require HTTPS connectivity.</span>
+      </div>
+    </section>
+
+    <section id="privacy-shield" class="privacy-shield" aria-live="off" hidden>
+      <span class="wordmark-mark" aria-hidden="true">J</span>
+      <strong data-i18n="privacy_title">Admin view protected</strong>
+      <span data-i18n="privacy_note">Return to JARVIS to continue.</span>
+    </section>
 
     <main id="auth-shell" class="auth-shell">
       <section class="auth-card" aria-labelledby="login-title">
@@ -99,6 +118,10 @@
           </div>
         </div>
         <div class="session-block">
+          <div class="notification-mode" title="In-app notifications only / Только уведомления в приложении">
+            <span class="notification-mode-mark" aria-hidden="true"></span>
+            <span data-i18n="notifications_in_app">In-app alerts</span>
+          </div>
           <div>
             <span class="session-label" data-i18n="signed_in_as">Signed in as</span>
             <strong id="session-subject">—</strong>
@@ -138,6 +161,14 @@
       </aside>
 
       <main id="workspace" class="workspace" tabindex="-1">
+        <section id="notification-banner" class="notice notice-notification" role="status" aria-live="polite" hidden>
+          <div>
+            <strong data-i18n="new_payment_alert_title">New payment evidence</strong>
+            <p id="notification-message"></p>
+          </div>
+          <button id="dismiss-notification" class="button button-secondary button-small" type="button" data-i18n="dismiss">Dismiss</button>
+        </section>
+
         <section id="write-lock-banner" class="notice notice-warning" role="status" hidden>
           <div>
             <strong data-i18n="read_only_title">Read-only session restored</strong>
@@ -271,6 +302,63 @@
               <h1 id="customers-title" data-i18n="customers_title">Customer access</h1>
               <p data-i18n="customers_intro">Create the commercial records in order, then issue a one-time activation key only after payment approval.</p>
             </div>
+            <button class="button button-secondary refresh-button" type="button" data-refresh="customers" data-i18n="refresh">Refresh</button>
+          </div>
+
+          <div class="directory-grid">
+            <section class="directory-card" aria-labelledby="account-directory-title">
+              <div class="subsection-heading">
+                <div>
+                  <p class="eyebrow" data-i18n="customer_directory">Customer directory</p>
+                  <h2 id="account-directory-title" data-i18n="customer_records">Customer records</h2>
+                </div>
+                <span id="account-count" class="record-count">0</span>
+              </div>
+              <p data-i18n="customer_records_note">Server records remain available after this browser or backend restarts.</p>
+              <div class="table-shell directory-table-shell">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col" data-i18n="customer">Customer</th>
+                      <th scope="col" data-i18n="account_id">Account ID</th>
+                      <th scope="col" data-i18n="licenses_count">Licenses</th>
+                      <th scope="col" data-i18n="active_devices">Active devices</th>
+                    </tr>
+                  </thead>
+                  <tbody id="accounts-body"></tbody>
+                </table>
+                <div id="accounts-empty" class="empty-state" hidden>
+                  <strong data-i18n="accounts_empty">No customer records.</strong>
+                </div>
+              </div>
+            </section>
+
+            <section class="directory-card" aria-labelledby="license-directory-title">
+              <div class="subsection-heading">
+                <div>
+                  <p class="eyebrow" data-i18n="license_directory">License directory</p>
+                  <h2 id="license-directory-title" data-i18n="license_records">Licenses and entitlements</h2>
+                </div>
+                <span id="license-count" class="record-count">0</span>
+              </div>
+              <p data-i18n="license_records_note">Each license shows its active device and exact-version entitlements.</p>
+              <div class="table-shell directory-table-shell">
+                <table>
+                  <thead>
+                    <tr>
+                      <th scope="col" data-i18n="license_id">License ID</th>
+                      <th scope="col" data-i18n="customer">Customer</th>
+                      <th scope="col" data-i18n="active_device">Active device</th>
+                      <th scope="col" data-i18n="entitlements">Entitlements</th>
+                    </tr>
+                  </thead>
+                  <tbody id="licenses-body"></tbody>
+                </table>
+                <div id="licenses-empty" class="empty-state" hidden>
+                  <strong data-i18n="licenses_empty">No licenses issued.</strong>
+                </div>
+              </div>
+            </section>
           </div>
 
           <div class="provisioning-rail" aria-label="Provisioning sequence / Последовательность выдачи">

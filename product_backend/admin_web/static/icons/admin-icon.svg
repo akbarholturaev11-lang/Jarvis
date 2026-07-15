@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">JARVIS Admin / Администратор JARVIS</title>
+  <desc id="desc">A cobalt J inside a private evidence seal / Кобальтовая J внутри защищённой печати</desc>
+  <rect width="512" height="512" rx="104" fill="#f4f6fa"/>
+  <rect x="76" y="76" width="360" height="360" rx="44" fill="#17233d"/>
+  <path d="M116 124h280" stroke="#9eb9ff" stroke-width="8"/>
+  <path d="M116 388h280" stroke="#9eb9ff" stroke-width="8"/>
+  <path d="M300 150v142c0 53-28 78-78 78-31 0-57-11-76-31l32-38c14 13 28 20 43 20 20 0 30-11 30-34V150z" fill="#fff"/>
+  <circle cx="384" cy="384" r="44" fill="#2457c6"/>
+  <path d="m365 384 13 13 25-29" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+</svg>

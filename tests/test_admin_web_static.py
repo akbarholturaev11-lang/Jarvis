@@ -96,7 +96,7 @@ class AdminWebStaticTests(unittest.TestCase):
             '"/api/admin/session"',
             '"/api/admin/payments?limit=100"',
             '"/api/admin/audit?limit=100"',
-            '"/api/releases?limit=100"',
+            '"/api/admin/releases?limit=100&offset=0"',
             'headers["X-CSRF-Token"]',
             'credentials: "same-origin"',
             "encodeURIComponent(payment.id)",

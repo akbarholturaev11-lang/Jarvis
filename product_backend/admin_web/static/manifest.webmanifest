@@ -1,0 +1,23 @@
+{
+  "id": "./",
+  "name": "JARVIS Admin / Администратор JARVIS",
+  "short_name": "JARVIS",
+  "description": "Secure release administration / Защищённое управление релизами",
+  "lang": "en",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f6fa",
+  "theme_color": "#f4f6fa",
+  "categories": ["business", "security", "utilities"],
+  "icons": [
+    {
+      "src": "icons/admin-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

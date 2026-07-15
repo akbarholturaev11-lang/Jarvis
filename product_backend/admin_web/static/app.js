@@ -6,6 +6,8 @@ const state = {
   payments: [],
   releases: [],
   sessionDrafts: [],
+  accounts: [],
+  licenses: [],
   audit: [],
   selectedRelease: null,
   evidencePayment: null,
@@ -28,6 +30,13 @@ let csrfToken = "";
 let evidenceObjectUrl = "";
 let mfaQrObjectUrl = "";
 let toastTimer = 0;
+let paymentPollTimer = 0;
+let paymentPollInFlight = false;
+let pendingPaymentBaselineReady = false;
+let knownPendingPaymentIds = new Set();
+let lastNetworkOnline = navigator.onLine;
+
+const PAYMENT_POLL_INTERVAL_MS = 30_000;
 
 class ApiError extends Error {
   constructor(status, key = "action_failed") {
@@ -75,6 +84,7 @@ function translateStaticPage() {
   updateSessionAction();
   renderPayments();
   renderReleases();
+  renderDirectories();
   renderAudit();
   renderProvisioning();
   renderSecurity();
@@ -83,6 +93,12 @@ function translateStaticPage() {
     element("evidence-meta").textContent = evidenceMeta(state.evidencePayment);
   }
   if (state.decision && element("decision-dialog").open) configureDecisionDialog();
+  const notification = element("notification-banner");
+  if (notification && !notification.hidden && notification.dataset.count) {
+    element("notification-message").textContent = t("new_payment_alert", {
+      count: notification.dataset.count,
+    });
+  }
 }
 
 function errorText(error, fallback = "action_failed") {
@@ -162,6 +178,7 @@ function setBusy(control, busy) {
 }
 
 function showAuth({ allowCancel = false, message = "" } = {}) {
+  stopPaymentPolling();
   element("app-shell").hidden = true;
   element("auth-shell").hidden = false;
   element("auth-cancel").hidden = !allowCancel;
@@ -175,6 +192,7 @@ function showApp() {
   element("app-shell").hidden = false;
   element("session-subject").textContent = state.session?.subject || t("unknown");
   setWriteAccess(Boolean(csrfToken));
+  schedulePaymentPoll();
 }
 
 function setWriteAccess(allowed) {
@@ -269,6 +287,9 @@ async function handleSessionAction() {
     state.session = null;
     state.payments = [];
     state.releases = [];
+    state.sessionDrafts = [];
+    state.accounts = [];
+    state.licenses = [];
     state.audit = [];
     state.provisioning = {
       account: null,
@@ -277,6 +298,8 @@ async function handleSessionAction() {
       replacement: null,
     };
     state.security = { mfa: null, sessions: [], enrolling: false };
+    resetPendingPaymentNotifications();
+    revokeEvidenceUrl();
     revokeMfaQrUrl();
     renderProvisioning();
     showAuth();
@@ -289,20 +312,36 @@ async function handleSessionAction() {
 }
 
 async function loadAll() {
-  const results = await Promise.allSettled([loadPayments(), loadReleases(), loadAudit()]);
+  const results = await Promise.allSettled([
+    loadPayments(),
+    loadReleases(),
+    loadCustomers(),
+    loadAudit(),
+  ]);
   if (results.some((result) => result.status === "rejected")) showToast(t("load_failed"), true);
 }
 
-async function loadPayments() {
+async function loadPayments({ notifyNew = false } = {}) {
   const payload = await apiJson("/api/admin/payments?limit=100");
   state.payments = Array.isArray(payload.payments) ? payload.payments : [];
+  updatePendingPaymentNotifications({ notifyNew });
   renderPayments();
 }
 
 async function loadReleases() {
-  const payload = await apiJson("/api/releases?limit=100");
+  const payload = await apiJson("/api/admin/releases?limit=100&offset=0");
   state.releases = Array.isArray(payload.releases) ? payload.releases : [];
   renderReleases();
+}
+
+async function loadCustomers() {
+  const [accountPayload, licensePayload] = await Promise.all([
+    apiJson("/api/admin/accounts?limit=100&offset=0"),
+    apiJson("/api/admin/licenses?limit=100&offset=0&entitlements_limit=20"),
+  ]);
+  state.accounts = Array.isArray(accountPayload.accounts) ? accountPayload.accounts : [];
+  state.licenses = Array.isArray(licensePayload.licenses) ? licensePayload.licenses : [];
+  renderDirectories();
 }
 
 async function loadAudit() {
@@ -311,10 +350,142 @@ async function loadAudit() {
   renderAudit();
 }
 
+function resetPendingPaymentNotifications() {
+  pendingPaymentBaselineReady = false;
+  knownPendingPaymentIds = new Set();
+  element("notification-banner").hidden = true;
+  delete element("notification-banner").dataset.count;
+  element("notification-message").textContent = "";
+}
+
+function updatePendingPaymentNotifications({ notifyNew }) {
+  const pendingIds = new Set(
+    state.payments
+      .filter((payment) => payment.state === "pending" && typeof payment.id === "string")
+      .map((payment) => payment.id),
+  );
+  if (notifyNew && pendingPaymentBaselineReady) {
+    const newlyPending = [...pendingIds].filter((id) => !knownPendingPaymentIds.has(id));
+    if (newlyPending.length) {
+      element("notification-banner").dataset.count = String(newlyPending.length);
+      element("notification-message").textContent = t("new_payment_alert", {
+        count: newlyPending.length,
+      });
+      element("notification-banner").hidden = false;
+      showToast(t("new_payment_alert", { count: newlyPending.length }));
+    }
+  }
+  knownPendingPaymentIds = pendingIds;
+  pendingPaymentBaselineReady = true;
+}
+
+function canPollPayments() {
+  return Boolean(
+    state.session
+    && navigator.onLine
+    && document.visibilityState === "visible"
+    && !element("app-shell").hidden,
+  );
+}
+
+function stopPaymentPolling() {
+  if (paymentPollTimer) window.clearTimeout(paymentPollTimer);
+  paymentPollTimer = 0;
+}
+
+function schedulePaymentPoll() {
+  stopPaymentPolling();
+  if (!canPollPayments()) return;
+  paymentPollTimer = window.setTimeout(runPaymentPoll, PAYMENT_POLL_INTERVAL_MS);
+}
+
+async function runPaymentPoll() {
+  paymentPollTimer = 0;
+  if (!canPollPayments() || paymentPollInFlight) {
+    schedulePaymentPoll();
+    return;
+  }
+  paymentPollInFlight = true;
+  try {
+    await loadPayments({ notifyNew: true });
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) {
+      state.session = null;
+      csrfToken = "";
+      showAuth({ message: t("session_expired") });
+    }
+  } finally {
+    paymentPollInFlight = false;
+    schedulePaymentPoll();
+  }
+}
+
 function showProvisionResult(id, text) {
   const result = element(id);
   result.textContent = text;
   result.hidden = false;
+}
+
+function recordId(record, primary) {
+  const value = record?.[primary] || record?.id;
+  return typeof value === "string" ? value : "";
+}
+
+function accountSubject(license) {
+  const value = license?.external_subject
+    || license?.account_external_subject
+    || license?.account?.external_subject;
+  return typeof value === "string" && value ? value : t("unknown");
+}
+
+function activeDeviceLabel(license) {
+  const device = license?.active_device;
+  if (!device || typeof device !== "object") return t("not_available");
+  const platform = typeof device.platform === "string" ? device.platform : t("unknown");
+  const architecture = typeof device.architecture === "string" ? device.architecture : t("unknown");
+  return `${platform} / ${architecture}`;
+}
+
+function entitlementLabel(license) {
+  const entitlements = Array.isArray(license?.entitlements) ? license.entitlements : [];
+  const versions = entitlements
+    .map((item) => typeof item?.version === "string" ? item.version : "")
+    .filter(Boolean);
+  if (!versions.length) return t("none");
+  const suffix = license?.entitlements_truncated ? ` ${t("and_more")}` : "";
+  return `${versions.join(", ")}${suffix}`;
+}
+
+function renderDirectories() {
+  const accountsBody = element("accounts-body");
+  const licensesBody = element("licenses-body");
+  if (!accountsBody || !licensesBody) return;
+  accountsBody.replaceChildren();
+  for (const account of state.accounts) {
+    const row = node("tr");
+    row.append(
+      tableCell("customer", account.external_subject || t("unknown")),
+      tableCell("account_id", shortId(recordId(account, "account_id")), "cell-mono"),
+      tableCell("licenses_count", String(account.license_count ?? 0)),
+      tableCell("active_devices", String(account.active_device_count ?? 0)),
+    );
+    accountsBody.append(row);
+  }
+  licensesBody.replaceChildren();
+  for (const license of state.licenses) {
+    const row = node("tr");
+    row.append(
+      tableCell("license_id", shortId(recordId(license, "license_id")), "cell-mono"),
+      tableCell("customer", accountSubject(license)),
+      tableCell("active_device", activeDeviceLabel(license)),
+      tableCell("entitlements", entitlementLabel(license), "cell-mono"),
+    );
+    licensesBody.append(row);
+  }
+  element("account-count").textContent = String(state.accounts.length);
+  element("license-count").textContent = String(state.licenses.length);
+  element("accounts-empty").hidden = state.accounts.length !== 0;
+  element("licenses-empty").hidden = state.licenses.length !== 0;
 }
 
 function renderProvisioning() {
@@ -811,8 +982,13 @@ async function handleDecision(event) {
 }
 
 function combinedReleases() {
-  const publishedIds = new Set(state.releases.map((item) => item.id));
-  return [...state.sessionDrafts.filter((item) => !publishedIds.has(item.id)), ...state.releases];
+  const persistedIds = new Set(state.releases.map((item) => recordId(item, "release_id")));
+  return [
+    ...state.sessionDrafts.filter(
+      (item) => !persistedIds.has(recordId(item, "release_id")),
+    ),
+    ...state.releases,
+  ];
 }
 
 function renderReleases() {
@@ -824,14 +1000,20 @@ function renderReleases() {
     const card = node("article", { className: "release-card" });
     const top = node("div");
     top.append(statusPill(release.state), node("h2", { text: release.version }));
-    top.append(node("p", { className: "release-card-meta", text: shortId(release.id) }));
+    top.append(node("p", {
+      className: "release-card-meta",
+      text: shortId(recordId(release, "release_id")),
+    }));
     const footer = node("div", { className: "release-card-footer" });
     const price = node("div");
     price.append(
       node("span", { className: "eyebrow", text: t("release_price") }),
       node("strong", { className: "release-price", text: formatMoney(release.price_minor, release.currency) }),
     );
-    footer.append(price, actionButton("details", () => openRelease(release.id)));
+    footer.append(
+      price,
+      actionButton("details", () => openRelease(recordId(release, "release_id"))),
+    );
     card.append(top, footer);
     grid.append(card);
   }
@@ -900,6 +1082,13 @@ async function handleCreateRelease(event) {
   if (!csrfToken || !event.currentTarget.reportValidity()) return;
   const form = event.currentTarget;
   const data = new FormData(form);
+  const version = String(data.get("version") || "").trim();
+  const priceMinor = Number(data.get("price_minor"));
+  const currency = String(data.get("currency") || "").trim().toUpperCase();
+  if (!window.confirm(t("create_release_confirm", {
+    version,
+    price: `${priceMinor} ${currency}`,
+  }))) return;
   const submit = form.querySelector("button[type='submit']");
   const error = form.querySelector("[data-form-error]");
   error.hidden = true;
@@ -909,9 +1098,9 @@ async function handleCreateRelease(event) {
       method: "POST",
       mutate: true,
       body: {
-        version: String(data.get("version") || "").trim(),
-        price_minor: Number(data.get("price_minor")),
-        currency: String(data.get("currency") || "").trim().toUpperCase(),
+        version,
+        price_minor: priceMinor,
+        currency,
         features_en: String(data.get("features_en") || "").trim(),
         features_ru: String(data.get("features_ru") || "").trim(),
         fixes_en: String(data.get("fixes_en") || "").trim(),
@@ -925,7 +1114,7 @@ async function handleCreateRelease(event) {
     element("release-create-card").hidden = true;
     renderReleases();
     showToast(t("draft_created"));
-    await openRelease(release.id);
+    await openRelease(recordId(release, "release_id"));
   } catch (caught) {
     error.textContent = errorText(caught);
     error.hidden = false;
@@ -948,7 +1137,8 @@ async function handleAddArtifact(event) {
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
-    const artifact = await apiJson(`/api/admin/releases/${encodeURIComponent(state.selectedRelease.id)}/artifacts`, {
+    const releaseId = recordId(state.selectedRelease, "release_id");
+    const artifact = await apiJson(`/api/admin/releases/${encodeURIComponent(releaseId)}/artifacts`, {
       method: "POST",
       mutate: true,
       body: {
@@ -983,12 +1173,15 @@ async function publishSelectedRelease() {
   const button = element("publish-release-button");
   setBusy(button, true);
   try {
-    const published = await apiJson(`/api/admin/releases/${encodeURIComponent(release.id)}/publish`, {
+    const releaseId = recordId(release, "release_id");
+    const published = await apiJson(`/api/admin/releases/${encodeURIComponent(releaseId)}/publish`, {
       method: "POST",
       mutate: true,
     });
     state.selectedRelease = { ...release, ...published };
-    state.sessionDrafts = state.sessionDrafts.filter((item) => item.id !== release.id);
+    state.sessionDrafts = state.sessionDrafts.filter(
+      (item) => recordId(item, "release_id") !== releaseId,
+    );
     await loadReleases();
     renderReleaseDetail();
     showToast(t("release_published"));
@@ -1057,7 +1250,6 @@ function renderMfaStatus() {
   pill.textContent = t(mfaStateKeys[stateName] || "unknown");
   pill.className = `status-pill status-${stateName === "active" ? "approved" : stateName === "disabled" ? "rejected" : "pending"}`;
   const active = stateName === "active";
-  const enrolling = stateName === "enrolling";
   const summary = element("mfa-status-summary");
   if (active) {
     summary.textContent = t("mfa_summary_active", {
@@ -1068,10 +1260,10 @@ function renderMfaStatus() {
   } else {
     summary.textContent = t("mfa_summary_optional");
   }
-  element("mfa-enroll-button").hidden = active || enrolling || !csrfToken;
+  element("mfa-enroll-button").hidden = active || state.security.enrolling || !csrfToken;
   element("mfa-regenerate-button").hidden = !active || !csrfToken;
   element("mfa-disable-button").hidden = !active || !csrfToken;
-  element("mfa-enroll-card").hidden = !enrolling;
+  element("mfa-enroll-card").hidden = !state.security.enrolling;
 }
 
 function assuranceLabel(assurance) {
@@ -1403,7 +1595,9 @@ async function refreshSection(name, button) {
   try {
     if (name === "payments") await loadPayments();
     if (name === "releases") await loadReleases();
+    if (name === "customers") await loadCustomers();
     if (name === "audit") await loadAudit();
+    if (name === "security") await loadSecurity();
   } catch (error) {
     showToast(errorText(error, "load_failed"), true);
   } finally {
@@ -1413,6 +1607,83 @@ async function refreshSection(name, button) {
 
 function closeDialog(dialog) {
   if (dialog.open) dialog.close();
+}
+
+function clearSensitiveUiForBackground() {
+  document.body.classList.add("privacy-active");
+  element("privacy-shield").hidden = false;
+  stopPaymentPolling();
+  document.querySelectorAll(
+    "input[type='password'], input[autocomplete='one-time-code']",
+  ).forEach((input) => {
+    input.value = "";
+  });
+  revokeEvidenceUrl();
+  state.evidencePayment = null;
+  closeDialog(element("evidence-dialog"));
+  revokeMfaQrUrl();
+  element("mfa-secret").value = "";
+  state.security.enrolling = false;
+  element("mfa-enroll-card").hidden = true;
+  clearRecoveryCodes();
+  closeDialog(element("recovery-dialog"));
+  clearActivationCredential();
+  closeDialog(element("activation-key-dialog"));
+  element("reject-reason").value = "";
+  closeDialog(element("decision-dialog"));
+}
+
+function restoreForegroundUi() {
+  document.body.classList.remove("privacy-active");
+  element("privacy-shield").hidden = true;
+  updateNetworkStatus();
+  renderMfaStatus();
+  schedulePaymentPoll();
+}
+
+function handleVisibilityChange() {
+  if (document.visibilityState === "hidden") clearSensitiveUiForBackground();
+  else restoreForegroundUi();
+}
+
+function updateNetworkStatus({ announce = false } = {}) {
+  const online = navigator.onLine;
+  element("network-status").hidden = online;
+  document.body.classList.toggle("is-offline", !online);
+  if (online) schedulePaymentPoll();
+  else stopPaymentPolling();
+  if (announce && online && !lastNetworkOnline) showToast(t("network_restored"));
+  lastNetworkOnline = online;
+}
+
+function guardExternalNavigation(event) {
+  if (!(event.target instanceof Element)) return;
+  const link = event.target.closest("a[href]");
+  if (!link) return;
+  let target;
+  try {
+    target = new URL(link.getAttribute("href"), document.baseURI);
+  } catch (_error) {
+    event.preventDefault();
+    return;
+  }
+  if (target.protocol === "blob:" && link.hasAttribute("download")) return;
+  if (target.origin !== window.location.origin) {
+    event.preventDefault();
+    showToast(t("external_navigation_blocked"), true);
+  }
+}
+
+async function registerAdminServiceWorker() {
+  if (!("serviceWorker" in navigator) || !window.isSecureContext) return;
+  try {
+    await navigator.serviceWorker.register(
+      new URL("sw.js", document.baseURI),
+      { scope: "./", updateViaCache: "none" },
+    );
+  } catch (_error) {
+    // The HTTPS admin console remains usable; installation is honestly unavailable.
+  }
 }
 
 function attachEvents() {
@@ -1435,6 +1706,9 @@ function attachEvents() {
   element("auth-cancel").addEventListener("click", showApp);
   element("session-action").addEventListener("click", handleSessionAction);
   element("unlock-button").addEventListener("click", () => showAuth({ allowCancel: true }));
+  element("dismiss-notification").addEventListener("click", () => {
+    element("notification-banner").hidden = true;
+  });
   element("payment-filter").addEventListener("change", renderPayments);
   element("decision-form").addEventListener("submit", handleDecision);
   element("release-create-form").addEventListener("submit", handleCreateRelease);
@@ -1478,6 +1752,12 @@ function attachEvents() {
       showToast(t("changes_locked"), true);
     }
   });
+  document.addEventListener("click", guardExternalNavigation, true);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
+  window.addEventListener("online", () => updateNetworkStatus({ announce: true }));
+  window.addEventListener("offline", () => updateNetworkStatus({ announce: true }));
+  window.addEventListener("pagehide", clearSensitiveUiForBackground);
+  window.addEventListener("pageshow", restoreForegroundUi);
 }
 
 async function initialize() {
@@ -1497,6 +1777,8 @@ async function initialize() {
   state.language = navigator.language.toLowerCase().startsWith("ru") ? "ru" : "en";
   attachEvents();
   translateStaticPage();
+  updateNetworkStatus();
+  void registerAdminServiceWorker();
   await restoreSession();
 }
 
