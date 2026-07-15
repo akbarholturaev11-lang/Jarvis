@@ -15,7 +15,11 @@ The following external gates must be cleared before any customer release:
    PyQt6 distribution license model.
 2. Confirm cleared product name, icon and final bundle identifier.
 3. Supply production HTTPS origin, release public keys, entitlement signing key,
-   activation pepper, admin auth material and owner-only payment instructions.
+   activation pepper, admin auth material, the owner-only admin MFA master key
+   (`JARVIS_ADMIN_MFA_KEY_FILE`, fail-closed and mandatory by default), any
+   `JARVIS_TRUSTED_PROXIES` in front of the API, and owner-only payment
+   instructions. Enroll each admin operator's authenticator before go-live and
+   store their recovery codes offline.
 4. Provide Apple Developer ID signing, hardened-runtime entitlements,
    notarization/stapling and Gatekeeper verification.
 5. Implement and audit a signed privileged macOS updater helper; the current app
@@ -52,6 +56,16 @@ The following external gates must be cleared before any customer release:
      phone shows *Reconnecting…* (not kicked to login) and resumes on wake.
    - Build a macro from capabilities on the phone and in the settings window; confirm
      one tap runs the composed multi-action command and it appears on both surfaces.
+
+0.1 Verify admin MFA (BOSQICH 4) against a real `runtime.py` deployment (not only
+   the in-process test server): export the full `JARVIS_*` env including an
+   owner-only `JARVIS_ADMIN_MFA_KEY_FILE`, start the backend, and confirm
+   password-only login lands on the enrollment screen, the QR activates a real
+   authenticator app, recovery-code login works once, an idle session expires,
+   `revoke-all` signs the operator out everywhere, and starting the backend
+   without the MFA key file fails closed. Then decide whether admin credentials
+   should move from env-only to a rotatable store so a true password-change +
+   session-revoke endpoint can exist.
 
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.

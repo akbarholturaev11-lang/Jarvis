@@ -35,6 +35,16 @@
           <label for="password" data-i18n="password">Password</label>
           <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024">
 
+          <label for="totp" data-i18n="totp_code">Authentication code</label>
+          <input id="totp" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6">
+          <p class="field-note" data-i18n="totp_login_note">If multi-factor authentication is enabled, enter the 6-digit code from your authenticator app.</p>
+
+          <details class="login-recovery">
+            <summary data-i18n="use_recovery_code">Use a recovery code instead</summary>
+            <label for="recovery-code" data-i18n="recovery_code">Recovery code</label>
+            <input id="recovery-code" name="recovery_code" type="text" autocomplete="off" maxlength="32" spellcheck="false">
+          </details>
+
           <p id="login-error" class="form-error" role="alert" hidden></p>
           <button id="login-submit" class="button button-primary button-wide" type="submit" data-i18n="sign_in">Sign in</button>
           <button id="auth-cancel" class="button button-quiet button-wide" type="button" data-i18n="return_read_only" hidden>
@@ -115,6 +125,10 @@
           <button class="nav-button" type="button" data-view="audit">
             <span class="nav-code">A</span>
             <span data-i18n="audit">Audit</span>
+          </button>
+          <button class="nav-button" type="button" data-view="security">
+            <span class="nav-code">S</span>
+            <span data-i18n="security">Security</span>
           </button>
         </nav>
         <div class="sidebar-rule">
@@ -362,8 +376,115 @@
             </div>
           </div>
         </section>
+
+        <section class="view-panel" data-panel="security" aria-labelledby="security-title" hidden>
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow" data-i18n="account_security">Account security</p>
+              <h1 id="security-title" data-i18n="security_title">Multi-factor authentication</h1>
+              <p data-i18n="security_intro">Protect release decisions with a time-based one-time-password app and manage active sessions.</p>
+            </div>
+            <button class="button button-secondary refresh-button" type="button" data-refresh="security" data-i18n="refresh">Refresh</button>
+          </div>
+
+          <section class="form-card" aria-labelledby="mfa-status-title">
+            <div class="form-card-heading">
+              <div>
+                <p class="eyebrow" data-i18n="second_factor">Second factor</p>
+                <h2 id="mfa-status-title" data-i18n="mfa_status_title">Authenticator status</h2>
+              </div>
+              <span id="mfa-state-pill" class="status-pill">—</span>
+            </div>
+            <p id="mfa-status-summary" class="mfa-status-summary" aria-live="polite"></p>
+            <div class="mfa-actions">
+              <button id="mfa-enroll-button" class="button button-primary" type="button" data-i18n="enable_mfa" hidden>Set up authenticator</button>
+              <button id="mfa-regenerate-button" class="button button-secondary" type="button" data-i18n="regenerate_recovery" hidden>Regenerate recovery codes</button>
+              <button id="mfa-disable-button" class="button button-quiet" type="button" data-i18n="disable_mfa" hidden>Disable / reset MFA</button>
+            </div>
+            <p id="mfa-status-error" class="form-error" role="alert" hidden></p>
+          </section>
+
+          <section id="mfa-enroll-card" class="form-card" aria-labelledby="mfa-enroll-title" hidden>
+            <div class="form-card-heading">
+              <div>
+                <p class="eyebrow" data-i18n="enrollment">Enrollment</p>
+                <h2 id="mfa-enroll-title" data-i18n="enroll_title">Scan and verify</h2>
+              </div>
+              <button id="mfa-enroll-cancel" class="button button-quiet button-small" type="button" data-i18n="cancel">Cancel</button>
+            </div>
+            <ol class="enroll-steps">
+              <li>
+                <strong data-i18n="enroll_step_scan">1. Scan this QR code</strong>
+                <span data-i18n="enroll_scan_note">Open your authenticator app and scan the code, or enter the secret manually.</span>
+                <div class="enroll-qr-stage">
+                  <img id="mfa-qr-image" alt="Authenticator setup QR / QR-код настройки аутентификатора" hidden>
+                  <p id="mfa-qr-error" class="form-error" role="alert" hidden></p>
+                </div>
+                <label for="mfa-secret" data-i18n="enroll_secret_label">Manual entry secret</label>
+                <input id="mfa-secret" class="mfa-secret-value" type="text" readonly autocomplete="off" spellcheck="false">
+              </li>
+              <li>
+                <strong data-i18n="enroll_step_verify">2. Enter the 6-digit code</strong>
+                <span data-i18n="enroll_verify_note">Confirm the code your app shows. MFA becomes active only after this step.</span>
+                <form id="mfa-activate-form" class="stack-form" novalidate>
+                  <label for="mfa-activate-code" data-i18n="totp_code">Authentication code</label>
+                  <input id="mfa-activate-code" name="totp" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" minlength="6" maxlength="6" required>
+                  <p class="form-error" data-form-error hidden></p>
+                  <button class="button button-primary" type="submit" data-i18n="activate_mfa">Activate MFA</button>
+                </form>
+              </li>
+            </ol>
+          </section>
+
+          <section class="form-card" aria-labelledby="sessions-title">
+            <div class="form-card-heading">
+              <div>
+                <p class="eyebrow" data-i18n="active_sessions">Active sessions</p>
+                <h2 id="sessions-title" data-i18n="sessions_title">Session management</h2>
+              </div>
+              <button id="revoke-all-sessions" class="button button-quiet button-small" type="button" data-i18n="revoke_all_sessions">Sign out everywhere</button>
+            </div>
+            <div class="table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="session_created">Signed in</th>
+                    <th scope="col" data-i18n="session_last_seen">Last seen</th>
+                    <th scope="col" data-i18n="session_expires">Expires</th>
+                    <th scope="col" data-i18n="assurance">Assurance</th>
+                    <th scope="col" data-i18n="actions">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="sessions-body"></tbody>
+              </table>
+              <div id="sessions-empty" class="empty-state" hidden>
+                <strong data-i18n="sessions_empty">No active sessions.</strong>
+              </div>
+            </div>
+          </section>
+        </section>
       </main>
     </div>
+
+    <dialog id="recovery-dialog" class="modal recovery-modal" aria-labelledby="recovery-title">
+      <div class="modal-heading">
+        <div>
+          <p class="eyebrow" data-i18n="one_time_secret">One-time secret</p>
+          <h2 id="recovery-title" data-i18n="recovery_codes_title">Recovery codes</h2>
+        </div>
+        <button class="icon-button" type="button" data-close-dialog="recovery-dialog" data-i18n-aria="close" aria-label="Close">×</button>
+      </div>
+      <div class="activation-key-warning" role="alert">
+        <strong data-i18n="recovery_save_now">Save these codes now.</strong>
+        <p data-i18n="recovery_warning">Each code works once if you lose your authenticator. They are shown only here, are not stored in browser storage, and cannot be recovered from the server. Download or print them and keep them somewhere safe.</p>
+      </div>
+      <ul id="recovery-code-list" class="recovery-code-list"></ul>
+      <div class="modal-actions">
+        <button id="download-recovery" class="button button-secondary" type="button" data-i18n="download_codes">Download</button>
+        <button id="print-recovery" class="button button-secondary" type="button" data-i18n="print_codes">Print</button>
+        <button class="button button-primary" type="button" data-close-dialog="recovery-dialog" data-i18n="recovery_saved">I saved them</button>
+      </div>
+    </dialog>
 
     <dialog id="evidence-dialog" class="modal evidence-modal" aria-labelledby="evidence-title">
       <div class="modal-heading">

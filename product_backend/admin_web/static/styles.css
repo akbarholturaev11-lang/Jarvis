@@ -1531,3 +1531,117 @@ dialog::backdrop {
     transition-duration: 0.01ms !important;
   }
 }
+
+.field-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.login-recovery {
+  margin-top: 6px;
+  font-size: 0.9rem;
+}
+
+.login-recovery summary {
+  cursor: pointer;
+  color: var(--cobalt);
+}
+
+.mfa-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.mfa-status-summary {
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+}
+
+.enroll-steps {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 20px;
+}
+
+.enroll-steps > li {
+  display: grid;
+  gap: 8px;
+}
+
+.enroll-qr-stage {
+  display: flex;
+  justify-content: center;
+  padding: 14px;
+  background: var(--surface-blue);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+#mfa-qr-image {
+  width: 200px;
+  height: 200px;
+  max-width: 100%;
+  image-rendering: pixelated;
+  background: #ffffff;
+}
+
+.mfa-secret-value,
+.activation-key-value {
+  font-family: var(--utility);
+  letter-spacing: 0.08em;
+}
+
+.recovery-code-list {
+  list-style: none;
+  margin: 16px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.recovery-code-item {
+  font-family: var(--utility);
+  font-size: 1.05rem;
+  letter-spacing: 0.12em;
+  text-align: center;
+  padding: 10px 8px;
+  background: var(--surface-blue);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+}
+
+@media (max-width: 560px) {
+  .recovery-code-list {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #recovery-dialog,
+  #recovery-dialog * {
+    visibility: visible;
+  }
+
+  #recovery-dialog {
+    position: fixed;
+    inset: 0;
+    box-shadow: none;
+  }
+
+  #download-recovery,
+  #print-recovery,
+  #recovery-dialog .icon-button,
+  #recovery-dialog .button-primary {
+    display: none;
+  }
+}

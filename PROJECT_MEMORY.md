@@ -255,6 +255,33 @@ bytes, clears it only after a confirmed submission, and returns an honest
 envelopes are not yet implemented; the update path relies on the server's
 one-open-payment-per-license/release uniqueness for duplicate protection.
 
+Admin MFA and hardened sessions (BOSQICH 4): the admin panel enforces a second
+factor and a hardened session lifecycle. `product_backend/api_totp.py` is a
+standard-library RFC 6238 TOTP (HMAC-SHA1, 6 digits, 30s step, ±1 drift,
+constant-time compare returning the matched step for replay defence).
+`product_backend/admin_mfa.py::SQLiteAdminMfaManager` (private
+`admin-mfa.sqlite3`) never stores the TOTP secret in plaintext: it is sealed with
+AES-256-GCM (`MfaSecretCipher`) under a subkey derived from an operator master
+key read only from the owner-only `JARVIS_ADMIN_MFA_KEY_FILE` — a missing key is
+fail-closed. Recovery codes are stored only as keyed HMAC-SHA256 digests, are
+single-use, and are revoked in bulk on regeneration; a used time step cannot be
+replayed. `product_backend/admin_mfa_api.py` mounts enrollment (begin,
+server-rendered QR PNG, activate), recovery regenerate, disable/reset, session
+list, per-session and revoke-all, and TOTP/recovery step-up. `api_auth.py` adds
+session assurance (`mfa_pending` restricts a not-yet-enrolled operator to
+enrollment only; `mfa_satisfied` is full), idle + absolute timeouts, rotation on
+login/step-up, revoke-all-for-subject, a recent-auth window for sensitive
+actions, and `TrustedProxyConfig` (X-Forwarded-For honored only from an
+explicitly configured trusted proxy; otherwise the socket peer is authoritative).
+Login is single-step `subject + password + TOTP`. `create_product_backend_app`
+takes an optional `mfa=`; when it is `None` the login stays single-factor (this
+keeps pre-BOSQICH-4 tests valid), while `runtime.py` always injects it, making
+MFA mandatory in production (`JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY` is an
+explicit dev opt-in). MFA events are audited without ever recording a secret or
+code. Admin credentials remain env-based, so there is no runtime
+password-change endpoint; rotating the env password plus revoke-all is the
+operational path.
+
 The updater deliberately does not mutate a real installed app yet. macOS needs a
 signed/notarized atomic helper, persisted `.app` backup location and real
 post-launch health marker before install can be enabled or reported successful.

@@ -6,13 +6,16 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import threading
+import uuid
 from collections import OrderedDict, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from typing import Final
 
 from .device_challenges import DeviceChallengeAction, VerifiedDeviceChallenge
@@ -22,6 +25,19 @@ from .models import format_utc_timestamp, validate_opaque_identifier
 MIN_PBKDF2_ITERATIONS: Final = 200_000
 MAX_PBKDF2_ITERATIONS: Final = 2_000_000
 MIN_SESSION_SECRET_BYTES: Final = 32
+
+
+class SessionAssurance(StrEnum):
+    """How strongly the current admin session was authenticated.
+
+    ``MFA_PENDING`` is a password-only session issued only so an operator whose
+    account still requires a second factor can complete enrollment or step-up.
+    It must never authorize protected admin mutations.  ``MFA_SATISFIED`` is a
+    fully authenticated session.
+    """
+
+    MFA_PENDING = "mfa_pending"
+    MFA_SATISFIED = "mfa_satisfied"
 
 
 class BackendConfigurationError(RuntimeError):
@@ -149,6 +165,8 @@ class AdminAuthSettings:
     max_sessions: int = 64
     cookie_name: str = "jarvis_admin_session"
     secure_cookie: bool = True
+    idle_timeout_seconds: int = 900
+    reauth_window_seconds: int = 300
 
     def __post_init__(self) -> None:
         if not self.credentials or len(self.credentials) > 32:
@@ -165,6 +183,16 @@ class AdminAuthSettings:
             raise BackendConfigurationError("session TTL is invalid")
         if not 1 <= self.max_sessions <= 256:
             raise BackendConfigurationError("session bound is invalid")
+        if (
+            type(self.idle_timeout_seconds) is not int
+            or not 60 <= self.idle_timeout_seconds <= self.session_ttl_seconds
+        ):
+            raise BackendConfigurationError("idle timeout is invalid")
+        if (
+            type(self.reauth_window_seconds) is not int
+            or not 30 <= self.reauth_window_seconds <= self.session_ttl_seconds
+        ):
+            raise BackendConfigurationError("re-authentication window is invalid")
         if (
             not self.allowed_hosts
             or len(self.allowed_hosts) > 32
@@ -223,16 +251,37 @@ class AdminAuthSettings:
             for item in source["JARVIS_API_ALLOWED_HOSTS"].split(",")
             if item.strip()
         )
-        return cls((credential,), session_secret, hosts)
+        overrides: dict[str, int] = {}
+        for env_name, field_name in (
+            ("JARVIS_ADMIN_SESSION_TTL_SECONDS", "session_ttl_seconds"),
+            ("JARVIS_ADMIN_SESSION_IDLE_SECONDS", "idle_timeout_seconds"),
+            ("JARVIS_ADMIN_REAUTH_WINDOW_SECONDS", "reauth_window_seconds"),
+        ):
+            raw = source.get(env_name)
+            if raw:
+                try:
+                    overrides[field_name] = int(raw)
+                except (TypeError, ValueError) as exc:
+                    raise BackendConfigurationError(
+                        f"{env_name} must be an integer"
+                    ) from exc
+        return cls((credential,), session_secret, hosts, **overrides)
 
 
 @dataclass(frozen=True, slots=True)
 class AdminSessionRecord:
     subject: str
+    session_id: str
     token_digest: bytes = field(repr=False)
     csrf_digest: bytes = field(repr=False)
     created_at: datetime
     expires_at: datetime
+    authenticated_at: datetime
+    assurance: SessionAssurance = SessionAssurance.MFA_SATISFIED
+
+    @property
+    def mfa_satisfied(self) -> bool:
+        return self.assurance is SessionAssurance.MFA_SATISFIED
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +290,80 @@ class IssuedAdminSession:
     session_token: str = field(repr=False)
     csrf_token: str = field(repr=False)
     expires_at: str
+    assurance: SessionAssurance = SessionAssurance.MFA_SATISFIED
+    session_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class AdminSessionSummary:
+    """Non-secret description of one active session for management screens."""
+
+    session_id: str
+    created_at: str
+    expires_at: str
+    last_seen_at: str
+    assurance: SessionAssurance
+    current: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedProxyConfig:
+    """Networks whose ``X-Forwarded-For`` header may be trusted, if any.
+
+    With no configured proxy the forwarded header is ignored entirely and the
+    direct socket peer is authoritative, so a client cannot spoof its identity
+    for rate limiting by sending its own ``X-Forwarded-For``.
+    """
+
+    networks: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
+
+    @classmethod
+    def from_spec(cls, spec: object) -> TrustedProxyConfig:
+        if not spec:
+            return cls(())
+        if not isinstance(spec, str) or len(spec) > 2048:
+            raise BackendConfigurationError("trusted proxy configuration is invalid")
+        networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for item in spec.split(","):
+            token = item.strip()
+            if not token:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(token, strict=False))
+            except ValueError as exc:
+                raise BackendConfigurationError(
+                    "trusted proxy configuration is invalid"
+                ) from exc
+            if len(networks) > 32:
+                raise BackendConfigurationError(
+                    "too many trusted proxy networks are configured"
+                )
+        return cls(tuple(networks))
+
+    def _is_trusted(self, value: str) -> bool:
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            return False
+        return any(address in network for network in self.networks)
+
+    def client_ip(self, peer: object, forwarded_for: object) -> str:
+        """Resolve the caller IP, honoring forwarded headers only from proxies."""
+
+        peer_text = peer if isinstance(peer, str) and peer else "unknown"
+        if not self.networks or not self._is_trusted(peer_text):
+            return peer_text
+        if not isinstance(forwarded_for, str) or len(forwarded_for) > 1024:
+            return peer_text
+        hops = [item.strip() for item in forwarded_for.split(",") if item.strip()]
+        for candidate in reversed(hops):
+            if not self._is_trusted(candidate):
+                try:
+                    ipaddress.ip_address(candidate)
+                except ValueError:
+                    return peer_text
+                return candidate
+        return peer_text
 
 
 class AdminSessionManager:
@@ -258,6 +381,7 @@ class AdminSessionManager:
             credential.subject: credential for credential in settings.credentials
         }
         self._sessions: OrderedDict[bytes, AdminSessionRecord] = OrderedDict()
+        self._last_seen: dict[bytes, datetime] = {}
         self._lock = threading.RLock()
 
     @property
@@ -271,40 +395,99 @@ class AdminSessionManager:
             hashlib.sha256,
         ).digest()
 
-    def authenticate_and_issue(
-        self,
-        subject: object,
-        password: object,
-    ) -> IssuedAdminSession | None:
-        credential = self._credentials.get(subject) if isinstance(subject, str) else None
+    def verify_password(self, subject: object, password: object) -> str | None:
+        """Constant-work password check; a dummy hash runs for unknown subjects."""
+
+        credential = (
+            self._credentials.get(subject) if isinstance(subject, str) else None
+        )
         if credential is None:
-            dummy = next(iter(self._credentials.values()))
-            dummy.verify(password)
+            next(iter(self._credentials.values())).verify(password)
             return None
         if not credential.verify(password):
             return None
-        now = _aware_utc(self._clock)
+        return credential.subject
+
+    def issue_session(
+        self,
+        subject: str,
+        *,
+        assurance: SessionAssurance = SessionAssurance.MFA_SATISFIED,
+        now: datetime | None = None,
+    ) -> IssuedAdminSession:
+        """Mint a fresh session with rotated token and CSRF material."""
+
+        if subject not in self._credentials:
+            raise BackendConfigurationError("unknown admin subject")
+        moment = _aware_utc(self._clock) if now is None else now
         session_token = _base64url(secrets.token_bytes(32))
         csrf_token = _base64url(secrets.token_bytes(32))
         token_digest = self._digest(b"session\x00", session_token)
         record = AdminSessionRecord(
-            credential.subject,
+            subject,
+            f"sess_{uuid.uuid4().hex}",
             token_digest,
             self._digest(b"csrf\x00", csrf_token),
-            now,
-            now + timedelta(seconds=self._settings.session_ttl_seconds),
+            moment,
+            moment + timedelta(seconds=self._settings.session_ttl_seconds),
+            moment,
+            assurance,
         )
         with self._lock:
-            self._prune_locked(now)
+            self._prune_locked(moment)
             if len(self._sessions) >= self._settings.max_sessions:
                 raise AuthenticationCapacityError("admin session capacity reached")
             self._sessions[token_digest] = record
+            self._last_seen[token_digest] = moment
         return IssuedAdminSession(
             record.subject,
             session_token,
             csrf_token,
             format_utc_timestamp(record.expires_at),
+            assurance,
+            record.session_id,
         )
+
+    def authenticate_and_issue(
+        self,
+        subject: object,
+        password: object,
+        *,
+        assurance: SessionAssurance = SessionAssurance.MFA_SATISFIED,
+    ) -> IssuedAdminSession | None:
+        verified = self.verify_password(subject, password)
+        if verified is None:
+            return None
+        return self.issue_session(verified, assurance=assurance)
+
+    def rotate(
+        self,
+        session_token: object,
+        *,
+        assurance: SessionAssurance | None = None,
+    ) -> IssuedAdminSession | None:
+        """Revoke the presented session and issue a fresh one for its subject.
+
+        Session rotation defeats fixation: the pre-authentication or pre-step-up
+        token can never be reused.  Passing ``assurance`` raises the new session
+        to that level (used when a second factor is completed).
+        """
+
+        if not isinstance(session_token, str) or not 20 <= len(session_token) <= 128:
+            return None
+        now = _aware_utc(self._clock)
+        digest = self._digest(b"session\x00", session_token)
+        with self._lock:
+            self._prune_locked(now)
+            record = self._sessions.get(digest)
+            if record is None or not secrets.compare_digest(
+                digest, record.token_digest
+            ):
+                return None
+            self._sessions.pop(digest, None)
+            self._last_seen.pop(digest, None)
+            target = record.assurance if assurance is None else assurance
+            return self.issue_session(record.subject, assurance=target, now=now)
 
     def resolve(self, session_token: object) -> AdminSessionRecord | None:
         if not isinstance(session_token, str) or not 20 <= len(session_token) <= 128:
@@ -318,7 +501,19 @@ class AdminSessionManager:
                 digest, record.token_digest
             ):
                 return None
+            self._last_seen[digest] = now
             return record
+
+    def requires_reauth(self, record: object, *, now: datetime | None = None) -> bool:
+        """True when a sensitive action needs fresh authentication or step-up."""
+
+        if not isinstance(record, AdminSessionRecord):
+            return True
+        if record.assurance is not SessionAssurance.MFA_SATISFIED:
+            return True
+        moment = _aware_utc(self._clock) if now is None else now
+        window = timedelta(seconds=self._settings.reauth_window_seconds)
+        return moment - record.authenticated_at > window
 
     def verify_csrf(
         self,
@@ -338,15 +533,83 @@ class AdminSessionManager:
         digest = self._digest(b"session\x00", session_token)
         with self._lock:
             self._sessions.pop(digest, None)
+            self._last_seen.pop(digest, None)
+
+    def revoke_all_for_subject(self, subject: object) -> int:
+        """Revoke every session for a subject (password change, revoke-all)."""
+
+        if not isinstance(subject, str):
+            return 0
+        with self._lock:
+            targets = [
+                digest
+                for digest, record in self._sessions.items()
+                if record.subject == subject
+            ]
+            for digest in targets:
+                self._sessions.pop(digest, None)
+                self._last_seen.pop(digest, None)
+        return len(targets)
+
+    def revoke_session_id(self, subject: object, session_id: object) -> bool:
+        """Revoke one named session belonging to ``subject`` (management UI)."""
+
+        if not isinstance(subject, str) or not isinstance(session_id, str):
+            return False
+        with self._lock:
+            for digest, record in list(self._sessions.items()):
+                if (
+                    record.subject == subject
+                    and secrets.compare_digest(record.session_id, session_id)
+                ):
+                    self._sessions.pop(digest, None)
+                    self._last_seen.pop(digest, None)
+                    return True
+        return False
+
+    def list_sessions_for_subject(
+        self,
+        subject: object,
+        *,
+        current_token: object = None,
+    ) -> tuple[AdminSessionSummary, ...]:
+        if not isinstance(subject, str):
+            return ()
+        current_digest = (
+            self._digest(b"session\x00", current_token)
+            if isinstance(current_token, str) and 20 <= len(current_token) <= 128
+            else b""
+        )
+        now = _aware_utc(self._clock)
+        with self._lock:
+            self._prune_locked(now)
+            summaries = [
+                AdminSessionSummary(
+                    record.session_id,
+                    format_utc_timestamp(record.created_at),
+                    format_utc_timestamp(record.expires_at),
+                    format_utc_timestamp(self._last_seen.get(digest, record.created_at)),
+                    record.assurance,
+                    bool(current_digest)
+                    and secrets.compare_digest(digest, current_digest),
+                )
+                for digest, record in self._sessions.items()
+                if record.subject == subject
+            ]
+        summaries.sort(key=lambda item: item.created_at, reverse=True)
+        return tuple(summaries)
 
     def _prune_locked(self, now: datetime) -> None:
+        idle = timedelta(seconds=self._settings.idle_timeout_seconds)
         expired = [
             digest
             for digest, record in self._sessions.items()
             if now >= record.expires_at
+            or now - self._last_seen.get(digest, record.created_at) >= idle
         ]
         for digest in expired:
             self._sessions.pop(digest, None)
+            self._last_seen.pop(digest, None)
 
 
 class BoundedAttemptLimiter:
@@ -627,6 +890,7 @@ __all__ = [
     "AdminPasswordCredential",
     "AdminSessionManager",
     "AdminSessionRecord",
+    "AdminSessionSummary",
     "AuthenticationCapacityError",
     "BackendConfigurationError",
     "BoundedAttemptLimiter",
@@ -634,4 +898,6 @@ __all__ = [
     "IssuedAdminSession",
     "IssuedDeviceGrant",
     "ReservedDeviceGrant",
+    "SessionAssurance",
+    "TrustedProxyConfig",
 ]

@@ -17,10 +17,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
+from .admin_mfa import (
+    AdminMfaSettings,
+    MfaSecretCipher,
+    SQLiteAdminMfaManager,
+)
 from .api_activation import SQLiteClientActivationService
 from .api_app import create_product_backend_app
 from .api_artifact_storage import LocalReadOnlyReleaseArtifactStore
-from .api_auth import AdminAuthSettings, BackendConfigurationError
+from .api_auth import (
+    AdminAuthSettings,
+    BackendConfigurationError,
+    TrustedProxyConfig,
+)
 from .api_queries import SQLiteProductReadStore
 from .api_signing import InjectedEd25519EntitlementSigner
 from .device_challenges import SQLiteDeviceChallengeService
@@ -38,7 +47,24 @@ _REQUIRED_RUNTIME_ENV: Final = (
     "JARVIS_ENTITLEMENT_KEY_ID",
     "JARVIS_ENTITLEMENT_PRIVATE_KEY_FILE",
     "JARVIS_ACTIVATION_PEPPER_FILE",
+    "JARVIS_ADMIN_MFA_KEY_FILE",
 )
+_TRUTHY: Final = frozenset({"1", "true", "yes", "on"})
+
+
+def _admin_mfa_settings(source: Mapping[str, str]) -> AdminMfaSettings:
+    """Mandatory MFA by default; a password-only bypass is explicit opt-in."""
+
+    allow_password_only = (
+        source.get("JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY", "").strip().lower()
+        in _TRUTHY
+    )
+    issuer = source.get("JARVIS_ADMIN_MFA_ISSUER", "").strip() or "JARVIS Admin"
+    return AdminMfaSettings(
+        issuer=issuer,
+        mandatory=not allow_password_only,
+        allow_password_only=allow_password_only,
+    )
 
 
 def create_app_from_environment(
@@ -66,7 +92,17 @@ def create_app_from_environment(
         minimum_bytes=32,
         maximum_bytes=128,
     )
+    mfa_master_key = _read_private_file(
+        source["JARVIS_ADMIN_MFA_KEY_FILE"],
+        minimum_bytes=32,
+        maximum_bytes=128,
+    )
     admin_settings = AdminAuthSettings.from_env(source)
+    mfa_settings = _admin_mfa_settings(source)
+    trusted_proxy = TrustedProxyConfig.from_spec(
+        source.get("JARVIS_TRUSTED_PROXIES")
+    )
+    mfa_cipher = MfaSecretCipher(mfa_master_key)
     clock = lambda: datetime.now(timezone.utc)
     commerce_path = data_dir / "commerce.sqlite3"
     commerce = SQLiteCommerceRepository(
@@ -79,6 +115,7 @@ def create_app_from_environment(
     )
     challenges = None
     activation = None
+    mfa = None
     try:
         challenges = SQLiteDeviceChallengeService(
             commerce,
@@ -96,6 +133,12 @@ def create_app_from_environment(
             data_dir / "activation.sqlite3",
             clock=clock,
         )
+        mfa = SQLiteAdminMfaManager(
+            mfa_cipher,
+            data_dir / "admin-mfa.sqlite3",
+            settings=mfa_settings,
+            clock=clock,
+        )
         evidence = LocalPrivateObjectStore(data_dir / "payment-evidence").ensure()
         reads = SQLiteProductReadStore(commerce_path)
         artifact_store = LocalReadOnlyReleaseArtifactStore(artifact_root)
@@ -111,9 +154,13 @@ def create_app_from_environment(
             release_artifact_store=artifact_store,
             auth_settings=admin_settings,
             payment_instructions=payment_instructions,
+            mfa=mfa,
+            trusted_proxy=trusted_proxy,
             clock=clock,
         )
     except BaseException:
+        if mfa is not None:
+            mfa.close()
         if activation is not None:
             activation.close()
         if challenges is not None:
@@ -128,6 +175,7 @@ def create_app_from_environment(
         if closed:
             return
         closed = True
+        mfa.close()
         activation.close()
         challenges.close()
         commerce.close()

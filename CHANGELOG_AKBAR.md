@@ -1,5 +1,72 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-15 - Admin TOTP MFA and hardened sessions (BOSQICH 4)
+
+### Added
+
+- `product_backend/api_totp.py`: standard-library RFC 6238 TOTP
+  (HMAC-SHA1, 6 digits, 30-second step, ±1 step drift), constant-time code
+  comparison that returns the matched time step for replay defence, base32
+  secret encoding, `otpauth://` provisioning URIs, and single-use recovery-code
+  generation/normalization. No secret is ever logged or placed in an exception.
+- `product_backend/admin_mfa.py`: `MfaSecretCipher` (AES-256-GCM sealing of the
+  TOTP secret under a subkey derived from an operator master key, AAD-bound to
+  the admin subject) and `SQLiteAdminMfaManager` (a private `admin-mfa.sqlite3`
+  store). The TOTP secret is never stored in plaintext; recovery codes are kept
+  only as keyed HMAC-SHA256 digests, are single-use, and are revoked in bulk on
+  regeneration. A used time step cannot be replayed. A missing/short master key
+  is fail-closed. MFA events (enrollment started/completed, disable/reset, login
+  success/failure, TOTP failure/replay, recovery use, session revoke) are
+  audited without ever recording a secret or code.
+- `product_backend/admin_mfa_api.py`: MFA enrollment (begin, server-rendered QR
+  PNG, activate), recovery regenerate, disable/reset, session listing, revoke
+  one/revoke all, TOTP/recovery step-up re-auth, plus the single-step login
+  second-factor integration.
+- Admin console UI (`admin_web/static`): a bilingual (EN+RU) Security panel with
+  the QR enrollment flow, a TOTP field on login, a recovery-code screen carrying
+  a download/print warning, and session management with revoke controls.
+- Tests: `tests/test_product_backend_totp.py` and
+  `tests/test_product_backend_mfa_sessions.py` cover valid/invalid/expired TOTP,
+  clock drift, replay, incomplete/complete enrollment, recovery single-use and
+  regeneration, the missing-encryption-key fail-closed path, session rotation,
+  idle and absolute timeouts, logout, revoke-all, CSRF, rate limiting, trusted
+  proxy resolution, audit, and absence of secret leakage.
+
+### Why
+
+- Bosqich 4 hardens the admin panel: a stolen or guessed admin password alone
+  can no longer approve payments, grant entitlements, or issue activation keys.
+
+### Changed
+
+- `product_backend/api_auth.py`: session assurance levels (`mfa_pending` vs
+  `mfa_satisfied`), idle timeout, absolute timeout, rotation on login/step-up,
+  revoke-all-for-subject, per-session revoke, recent-auth window for sensitive
+  actions, and a `TrustedProxyConfig` that only honors `X-Forwarded-For` from an
+  explicitly configured trusted proxy.
+- `product_backend/api_app.py`: single-step `subject + password + TOTP` login,
+  a full-assurance gate on protected routes, and optional MFA wiring — when no
+  MFA manager is injected the login stays single-factor, preserving existing
+  callers and tests.
+- `product_backend/runtime.py`: production assembly now requires
+  `JARVIS_ADMIN_MFA_KEY_FILE` (owner-only, fail-closed), builds the MFA manager,
+  makes MFA mandatory by default (`JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY` is an
+  explicit dev opt-in), and reads `JARVIS_TRUSTED_PROXIES`.
+
+### Constraints kept
+
+- Cross-platform-neutral backend; new UI strings bilingual EN+RU; no real
+  secret/key committed; `cryptography`/`qrcode` were already in
+  `requirements.txt`; existing product/entitlement contract untouched.
+
+### Verification
+
+- `.venv/bin/python -m pytest tests/ -q` → 560 passed, 372 subtests passed.
+- `py_compile` on `main.py` and the whole `product_backend` package.
+- Manual browser smoke: local backend start, password login, QR enrollment,
+  authenticator-code activation, recovery-code screen, active status, and
+  session management all rendered and functioned bilingually.
+
 ## 2026-07-14 - Durable payment and activation flow (BOSQICH 3)
 
 ### Problem

@@ -38,6 +38,9 @@ class ProductBackendRuntimeTests(unittest.TestCase):
         pepper_file = root / "activation.pepper"
         pepper_file.write_bytes(b"p" * 32)
         pepper_file.chmod(0o600)
+        mfa_key_file = root / "admin-mfa.key"
+        mfa_key_file.write_bytes(b"m" * 32)
+        mfa_key_file.chmod(0o600)
         release = Ed25519PrivateKey.generate().public_key().public_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw,
@@ -56,6 +59,7 @@ class ProductBackendRuntimeTests(unittest.TestCase):
             "JARVIS_ENTITLEMENT_KEY_ID": "entitlement-key-001",
             "JARVIS_ENTITLEMENT_PRIVATE_KEY_FILE": str(entitlement_file),
             "JARVIS_ACTIVATION_PEPPER_FILE": str(pepper_file),
+            "JARVIS_ADMIN_MFA_KEY_FILE": str(mfa_key_file),
             "JARVIS_ADMIN_SUBJECT": credential.subject,
             "JARVIS_ADMIN_PASSWORD_SALT_B64URL": _b64(credential.salt),
             "JARVIS_ADMIN_PASSWORD_HASH_B64URL": _b64(

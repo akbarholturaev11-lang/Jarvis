@@ -44,6 +44,11 @@ from .api_activation import (
     ActivationNotAvailableError,
     ActivationRejectedError,
 )
+from .admin_mfa import SQLiteAdminMfaManager
+from .admin_mfa_api import (
+    complete_admin_login,
+    register_admin_security_routes,
+)
 from .api_artifact_storage import ReleaseArtifactStorageError
 from .api_auth import (
     AdminAuthSettings,
@@ -54,6 +59,8 @@ from .api_auth import (
     BoundedAttemptLimiter,
     DeviceActionGrantManager,
     ReservedDeviceGrant,
+    SessionAssurance,
+    TrustedProxyConfig,
 )
 from .api_ports import (
     ClientActivationPort,
@@ -131,6 +138,8 @@ class _StrictBody(BaseModel):
 class AdminLoginBody(_StrictBody):
     subject: str = Field(min_length=3, max_length=128)
     password: str = Field(min_length=1, max_length=1024)
+    totp: str | None = Field(default=None, pattern=r"^[0-9]{6}$")
+    recovery_code: str | None = Field(default=None, min_length=8, max_length=32)
 
 
 class ReleaseCreateBody(_StrictBody):
@@ -618,6 +627,8 @@ def create_product_backend_app(
     release_artifact_store: ReleaseArtifactStore | None = None,
     auth_settings: AdminAuthSettings | None = None,
     payment_instructions: PaymentInstructionsLoadResult | None = None,
+    mfa: SQLiteAdminMfaManager | None = None,
+    trusted_proxy: TrustedProxyConfig | None = None,
     clock: Any = None,
 ) -> FastAPI:
     """Create an API process from explicit dependencies and security config.
@@ -625,7 +636,20 @@ def create_product_backend_app(
     When ``auth_settings`` is omitted, only hash/session material from the
     documented ``JARVIS_*`` environment variables is accepted.  Missing values
     stop app creation rather than starting an unauthenticated admin surface.
+
+    When ``mfa`` is provided the admin login enforces a second factor and the
+    MFA/session-management routes are mounted.  ``trusted_proxy`` controls
+    whether an ``X-Forwarded-For`` header may be honored for rate-limit
+    identity; without it the direct socket peer is authoritative.
     """
+
+    if mfa is not None and not isinstance(mfa, SQLiteAdminMfaManager):
+        raise BackendConfigurationError("MFA manager is invalid")
+    proxy_config = (
+        TrustedProxyConfig(()) if trusted_proxy is None else trusted_proxy
+    )
+    if not isinstance(proxy_config, TrustedProxyConfig):
+        raise BackendConfigurationError("trusted proxy configuration is invalid")
 
     if not isinstance(activation, ClientActivationPort):
         raise BackendConfigurationError(
@@ -687,6 +711,24 @@ def create_product_backend_app(
         max_keys=2048,
         clock=now,
     )
+    login_factor_limiter = BoundedAttemptLimiter(
+        max_attempts=5,
+        window_seconds=300,
+        max_keys=1024,
+        clock=now,
+    )
+    mfa_enrollment_limiter = BoundedAttemptLimiter(
+        max_attempts=5,
+        window_seconds=900,
+        max_keys=1024,
+        clock=now,
+    )
+    mfa_stepup_limiter = BoundedAttemptLimiter(
+        max_attempts=5,
+        window_seconds=300,
+        max_keys=1024,
+        clock=now,
+    )
 
     app = FastAPI(
         title="JARVIS Product Backend Foundation",
@@ -711,6 +753,7 @@ def create_product_backend_app(
     app.state.initial_purchase_authorizer = initial_purchases
     app.state.artifact_download_grants = artifact_grants
     app.state.client_activation = activation
+    app.state.admin_mfa = mfa
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Any) -> Response:
@@ -782,7 +825,11 @@ def create_product_backend_app(
         )
 
     def _client_attempt_key(request: Request) -> str:
-        host = "unknown" if request.client is None else request.client.host
+        peer = None if request.client is None else request.client.host
+        host = proxy_config.client_ip(
+            peer,
+            request.headers.get("x-forwarded-for"),
+        )
         return hashlib.sha256(f"client|{host}".encode("utf-8")).hexdigest()
 
     def _attempt_key(request: Request, subject: str) -> str:
@@ -790,7 +837,9 @@ def create_product_backend_app(
             f"{_client_attempt_key(request)}|{subject}".encode("utf-8")
         ).hexdigest()
 
-    def require_admin(request: Request) -> AdminSessionRecord:
+    def require_admin_any(request: Request) -> AdminSessionRecord:
+        """Any live admin session, including a restricted enrollment session."""
+
         token = request.cookies.get(settings.cookie_name)
         record = sessions.resolve(token)
         if record is None:
@@ -798,9 +847,27 @@ def create_product_backend_app(
         request.state.admin_session = record
         return record
 
+    def require_admin(
+        record: AdminSessionRecord = Depends(require_admin_any),
+    ) -> AdminSessionRecord:
+        """A fully authenticated session; enrollment-only sessions are refused."""
+
+        if record.assurance is not SessionAssurance.MFA_SATISFIED:
+            raise HTTPException(
+                status_code=403, detail="multi-factor enrollment is required"
+            )
+        return record
+
     def require_admin_csrf(
-        request: Request,
         record: AdminSessionRecord = Depends(require_admin),
+        csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
+    ) -> AdminSessionRecord:
+        if not sessions.verify_csrf(record, csrf_token):
+            raise HTTPException(status_code=403, detail="CSRF verification failed")
+        return record
+
+    def require_admin_any_csrf(
+        record: AdminSessionRecord = Depends(require_admin_any),
         csrf_token: Annotated[str | None, Header(alias="X-CSRF-Token")] = None,
     ) -> AdminSessionRecord:
         if not sessions.verify_csrf(record, csrf_token):
@@ -814,32 +881,32 @@ def create_product_backend_app(
             _client_attempt_key(request)
         ) or not login_subject_limiter.consume(attempt_key):
             raise HTTPException(status_code=429, detail="too many authentication attempts")
-        issued = sessions.authenticate_and_issue(body.subject, body.password)
-        if issued is None:
+        subject = sessions.verify_password(body.subject, body.password)
+        if subject is None:
             raise HTTPException(status_code=401, detail="invalid admin credentials")
         login_subject_limiter.clear(attempt_key)
-        response.set_cookie(
-            settings.cookie_name,
-            issued.session_token,
-            max_age=settings.session_ttl_seconds,
-            httponly=True,
-            secure=settings.secure_cookie,
-            samesite="strict",
-            path="/api/admin",
+        return complete_admin_login(
+            sessions=sessions,
+            mfa=mfa,
+            subject=subject,
+            totp=body.totp,
+            recovery_code=body.recovery_code,
+            response=response,
+            cookie_name=settings.cookie_name,
+            secure_cookie=settings.secure_cookie,
+            session_ttl_seconds=settings.session_ttl_seconds,
+            factor_limiter=login_factor_limiter,
+            factor_key=attempt_key,
         )
-        return {
-            "subject": issued.subject,
-            "csrf_token": issued.csrf_token,
-            "expires_at": issued.expires_at,
-        }
 
     @app.get("/api/admin/session")
     def admin_session(
-        record: AdminSessionRecord = Depends(require_admin),
+        record: AdminSessionRecord = Depends(require_admin_any),
     ) -> dict[str, Any]:
         return {
             "subject": record.subject,
             "expires_at": record.expires_at.isoformat().replace("+00:00", "Z"),
+            "assurance": record.assurance.value,
         }
 
     @app.delete("/api/admin/session")
@@ -1666,6 +1733,23 @@ def create_product_backend_app(
             "active_device_bound": customer.active_device_bound,
             "entitlement_certificate": entitlement_certificate,
         }
+
+    if mfa is not None:
+        register_admin_security_routes(
+            app,
+            sessions=sessions,
+            mfa=mfa,
+            cookie_name=settings.cookie_name,
+            secure_cookie=settings.secure_cookie,
+            session_ttl_seconds=settings.session_ttl_seconds,
+            require_admin_any=require_admin_any,
+            require_admin=require_admin,
+            require_admin_csrf=require_admin_csrf,
+            require_admin_any_csrf=require_admin_any_csrf,
+            attempt_key=_attempt_key,
+            enrollment_limiter=mfa_enrollment_limiter,
+            stepup_limiter=mfa_stepup_limiter,
+        )
 
     mount_admin_web(app)
     return app

@@ -16,11 +16,17 @@ const state = {
     device: null,
     replacement: null,
   },
+  security: {
+    mfa: null,
+    sessions: [],
+    enrolling: false,
+  },
 };
 
 let translations = {};
 let csrfToken = "";
 let evidenceObjectUrl = "";
+let mfaQrObjectUrl = "";
 let toastTimer = 0;
 
 class ApiError extends Error {
@@ -71,6 +77,7 @@ function translateStaticPage() {
   renderReleases();
   renderAudit();
   renderProvisioning();
+  renderSecurity();
   if (state.selectedRelease && element("release-dialog").open) renderReleaseDetail();
   if (state.evidencePayment && element("evidence-dialog").open) {
     element("evidence-meta").textContent = evidenceMeta(state.evidencePayment);
@@ -197,19 +204,34 @@ async function handleLogin(event) {
   const subject = element("subject").value.trim();
   let password = element("password").value;
   element("password").value = "";
+  const totp = element("totp").value.trim();
+  let recovery = element("recovery-code").value.trim();
+  element("recovery-code").value = "";
+  const body = { subject, password };
+  if (totp) body.totp = totp;
+  else if (recovery) body.recovery_code = recovery;
   element("login-error").hidden = true;
   setBusy(submit, true);
   try {
     const issued = await apiJson("/api/admin/session", {
       method: "POST",
-      body: { subject, password },
+      body,
     });
     password = "";
+    recovery = "";
+    element("totp").value = "";
     state.session = { subject: issued.subject, expires_at: issued.expires_at };
     csrfToken = issued.csrf_token;
     showApp();
-    await loadAll();
-    showToast(t("signed_in"));
+    if (issued.mfa_enrollment_required) {
+      switchView("security");
+      await loadSecurity();
+      await beginEnrollment();
+      showToast(t("mfa_enroll_required"));
+    } else {
+      await loadAll();
+      showToast(t("signed_in"));
+    }
   } catch (error) {
     password = "";
     element("login-error").textContent =
@@ -242,6 +264,8 @@ async function handleSessionAction() {
       device: null,
       replacement: null,
     };
+    state.security = { mfa: null, sessions: [], enrolling: false };
+    revokeMfaQrUrl();
     renderProvisioning();
     showAuth();
     showToast(t("signed_out"));
@@ -981,7 +1005,289 @@ function renderAudit() {
   element("audit-empty").hidden = state.audit.length !== 0;
 }
 
+let recoveryCodes = [];
+
+function renderSecurity() {
+  renderMfaStatus();
+  renderSessions();
+}
+
+async function loadSecurity() {
+  const results = await Promise.allSettled([loadMfaStatus(), loadSessions()]);
+  if (results.some((result) => result.status === "rejected")) {
+    showToast(t("load_failed"), true);
+  }
+}
+
+async function loadMfaStatus() {
+  state.security.mfa = await apiJson("/api/admin/mfa");
+  renderMfaStatus();
+}
+
+async function loadSessions() {
+  const payload = await apiJson("/api/admin/sessions");
+  state.security.sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+  renderSessions();
+}
+
+const mfaStateKeys = {
+  not_enrolled: "mfa_state_not_enrolled",
+  enrolling: "mfa_state_enrolling",
+  active: "mfa_state_active",
+  disabled: "mfa_state_disabled",
+};
+
+function renderMfaStatus() {
+  const pill = element("mfa-state-pill");
+  if (!pill) return;
+  const mfa = state.security.mfa;
+  const stateName = mfa?.state || "not_enrolled";
+  pill.textContent = t(mfaStateKeys[stateName] || "unknown");
+  pill.className = `status-pill status-${stateName === "active" ? "approved" : stateName === "disabled" ? "rejected" : "pending"}`;
+  const active = stateName === "active";
+  const enrolling = stateName === "enrolling";
+  const summary = element("mfa-status-summary");
+  if (active) {
+    summary.textContent = t("mfa_summary_active", {
+      count: mfa?.recovery_codes_remaining ?? 0,
+    });
+  } else if (mfa?.mandatory) {
+    summary.textContent = t("mfa_summary_mandatory");
+  } else {
+    summary.textContent = t("mfa_summary_optional");
+  }
+  element("mfa-enroll-button").hidden = active || enrolling || !csrfToken;
+  element("mfa-regenerate-button").hidden = !active || !csrfToken;
+  element("mfa-disable-button").hidden = !active || !csrfToken;
+  element("mfa-enroll-card").hidden = !enrolling;
+}
+
+function assuranceLabel(assurance) {
+  return t(assurance === "mfa_satisfied" ? "assurance_full" : "assurance_pending");
+}
+
+function renderSessions() {
+  const body = element("sessions-body");
+  if (!body) return;
+  body.replaceChildren();
+  for (const session of state.security.sessions) {
+    const row = node("tr");
+    row.append(
+      tableCell("session_created", formatDate(session.created_at)),
+      tableCell("session_last_seen", formatDate(session.last_seen_at)),
+      tableCell("session_expires", formatDate(session.expires_at)),
+      tableCell("assurance", assuranceLabel(session.assurance)),
+    );
+    const actions = node("div", { className: "cell-actions" });
+    if (session.current) {
+      actions.append(node("span", { className: "cell-mono", text: t("this_device") }));
+    }
+    actions.append(
+      actionButton("revoke_session", () => revokeSession(session), { style: "quiet", write: true }),
+    );
+    row.append(tableCell("actions", actions));
+    body.append(row);
+  }
+  element("sessions-empty").hidden = state.security.sessions.length !== 0;
+}
+
+function revokeMfaQrUrl() {
+  if (mfaQrObjectUrl) URL.revokeObjectURL(mfaQrObjectUrl);
+  mfaQrObjectUrl = "";
+  element("mfa-qr-image").removeAttribute("src");
+}
+
+async function beginEnrollment() {
+  if (!csrfToken) {
+    showToast(t("changes_locked"), true);
+    return;
+  }
+  try {
+    const start = await apiJson("/api/admin/mfa/enrollment", {
+      method: "POST",
+      mutate: true,
+    });
+    state.security.enrolling = true;
+    element("mfa-secret").value = start.secret_base32;
+    element("mfa-activate-code").value = "";
+    await loadMfaStatus();
+    element("mfa-enroll-card").hidden = false;
+    await loadEnrollmentQr();
+    showToast(t("enrollment_started_toast"));
+  } catch (error) {
+    element("mfa-status-error").textContent = errorText(error);
+    element("mfa-status-error").hidden = false;
+  }
+}
+
+async function loadEnrollmentQr() {
+  revokeMfaQrUrl();
+  element("mfa-qr-error").hidden = true;
+  element("mfa-qr-image").hidden = true;
+  try {
+    const response = await fetch("/api/admin/mfa/enrollment/qr", {
+      headers: { Accept: "image/png" },
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok) throw new ApiError(response.status, "qr_failed");
+    const blob = await response.blob();
+    mfaQrObjectUrl = URL.createObjectURL(blob);
+    element("mfa-qr-image").src = mfaQrObjectUrl;
+    element("mfa-qr-image").hidden = false;
+  } catch (error) {
+    element("mfa-qr-error").textContent = errorText(error, "qr_failed");
+    element("mfa-qr-error").hidden = false;
+  }
+}
+
+function cancelEnrollment() {
+  revokeMfaQrUrl();
+  state.security.enrolling = false;
+  element("mfa-enroll-card").hidden = true;
+  element("mfa-secret").value = "";
+  void loadMfaStatus();
+}
+
+async function handleActivateMfa(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!csrfToken || !form.reportValidity()) return;
+  const { submit, error } = provisioningFormParts(form);
+  error.hidden = true;
+  setBusy(submit, true);
+  try {
+    const result = await apiJson("/api/admin/mfa/enrollment/activate", {
+      method: "POST",
+      mutate: true,
+      body: { totp: element("mfa-activate-code").value.trim() },
+    });
+    csrfToken = result.csrf_token;
+    revokeMfaQrUrl();
+    state.security.enrolling = false;
+    element("mfa-secret").value = "";
+    element("mfa-activate-code").value = "";
+    showRecoveryCodes(result.recovery_codes);
+    await loadSecurity();
+    setWriteAccess(Boolean(csrfToken));
+    showToast(t("mfa_enabled_toast"));
+  } catch (caught) {
+    error.textContent =
+      caught instanceof ApiError && caught.status === 401
+        ? t("mfa_code_invalid")
+        : errorText(caught);
+    error.hidden = false;
+  } finally {
+    setBusy(submit, false);
+  }
+}
+
+async function regenerateRecovery() {
+  if (!csrfToken || !window.confirm(t("regenerate_confirm"))) return;
+  try {
+    const result = await apiJson("/api/admin/mfa/recovery/regenerate", {
+      method: "POST",
+      mutate: true,
+    });
+    showRecoveryCodes(result.recovery_codes);
+    await loadMfaStatus();
+    showToast(t("recovery_regenerated_toast"));
+  } catch (error) {
+    showToast(errorText(error), true);
+  }
+}
+
+async function disableMfa() {
+  if (!csrfToken || !window.confirm(t("disable_mfa_confirm"))) return;
+  try {
+    await apiJson("/api/admin/mfa/disable", {
+      method: "POST",
+      mutate: true,
+      body: { reset: false },
+    });
+    csrfToken = "";
+    state.session = null;
+    state.security = { mfa: null, sessions: [], enrolling: false };
+    showAuth({ message: t("mfa_disabled_toast") });
+    showToast(t("mfa_disabled_toast"));
+  } catch (error) {
+    showToast(errorText(error), true);
+  }
+}
+
+async function revokeSession(session) {
+  if (!csrfToken || !window.confirm(t("revoke_session_confirm"))) return;
+  try {
+    await apiJson(`/api/admin/sessions/${encodeURIComponent(session.session_id)}`, {
+      method: "DELETE",
+      mutate: true,
+    });
+    if (session.current) {
+      csrfToken = "";
+      state.session = null;
+      showAuth({ message: t("session_revoked_toast") });
+    } else {
+      await loadSessions();
+    }
+    showToast(t("session_revoked_toast"));
+  } catch (error) {
+    showToast(errorText(error), true);
+  }
+}
+
+async function revokeAllSessions() {
+  if (!csrfToken || !window.confirm(t("revoke_all_confirm"))) return;
+  try {
+    await apiJson("/api/admin/sessions/revoke-all", {
+      method: "POST",
+      mutate: true,
+    });
+    csrfToken = "";
+    state.session = null;
+    showAuth({ message: t("sessions_revoked_toast") });
+    showToast(t("sessions_revoked_toast"));
+  } catch (error) {
+    showToast(errorText(error), true);
+  }
+}
+
+function showRecoveryCodes(codes) {
+  recoveryCodes = Array.isArray(codes) ? codes.slice() : [];
+  const list = element("recovery-code-list");
+  list.replaceChildren();
+  for (const code of recoveryCodes) {
+    list.append(node("li", { className: "recovery-code-item", text: code }));
+  }
+  element("recovery-dialog").showModal();
+}
+
+function clearRecoveryCodes() {
+  recoveryCodes = [];
+  element("recovery-code-list").replaceChildren();
+}
+
+function downloadRecovery() {
+  if (!recoveryCodes.length) return;
+  const text = `JARVIS admin recovery codes\n\n${recoveryCodes.join("\n")}\n`;
+  const blob = new Blob([text], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const link = node("a");
+  link.href = url;
+  link.download = "jarvis-recovery-codes.txt";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  showToast(t("codes_downloaded"));
+}
+
+function printRecovery() {
+  if (!recoveryCodes.length) return;
+  window.print();
+}
+
 function switchView(view) {
+  if (view === "security" && csrfToken) void loadSecurity();
   document.querySelectorAll("[data-panel]").forEach((panel) => {
     panel.hidden = panel.dataset.panel !== view;
   });
@@ -1057,6 +1363,15 @@ function attachEvents() {
     state.decision = null;
   });
   element("activation-key-dialog").addEventListener("close", clearActivationCredential);
+  element("mfa-enroll-button").addEventListener("click", beginEnrollment);
+  element("mfa-enroll-cancel").addEventListener("click", cancelEnrollment);
+  element("mfa-activate-form").addEventListener("submit", handleActivateMfa);
+  element("mfa-regenerate-button").addEventListener("click", regenerateRecovery);
+  element("mfa-disable-button").addEventListener("click", disableMfa);
+  element("revoke-all-sessions").addEventListener("click", revokeAllSessions);
+  element("download-recovery").addEventListener("click", downloadRecovery);
+  element("print-recovery").addEventListener("click", printRecovery);
+  element("recovery-dialog").addEventListener("close", clearRecoveryCodes);
   element("artifact-create-details").addEventListener("toggle", (event) => {
     if (event.currentTarget.open && !csrfToken) {
       event.currentTarget.open = false;
