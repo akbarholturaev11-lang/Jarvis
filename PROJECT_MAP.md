@@ -212,6 +212,10 @@ main.py
   hashes, MFA enrollment/step-up/password rotation, bounded sessions, CSRF,
   account-global authentication limits, trusted-proxy resolution and optional
   admin CIDR allowlisting.
+- `product_backend/admin_web/static/{manifest.webmanifest,sw.js,app.js}` is the
+  isolated Mobile Admin PWA shell. It caches no API/admin records and keeps
+  tokens out of browser storage; `docs/MOBILE_ADMIN.md` defines the PWA/native
+  boundary. `api_queries.py` owns bounded account/license/release admin reads.
 - Payment destinations are loaded only from an external owner-only JSON file;
   they are never committed and are returned only after verified device proof.
 - `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.

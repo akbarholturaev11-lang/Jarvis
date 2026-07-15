@@ -8,6 +8,9 @@ The local product foundation is implemented: exact-version offline entitlement,
 one-device binding/replacement history, manual payment approval, one-time
 activation, signed update discovery/download, bilingual release information,
 private payment-instructions config, admin panel, and an unsigned macOS DMG plan.
+The admin panel is also an installable responsive PWA with an isolated MFA
+boundary, persistent customer/license/release reads and in-app notifications;
+native iOS/Android and background push remain `not_available`.
 
 The following external gates must be cleared before any customer release:
 
@@ -68,6 +71,13 @@ The following external gates must be cleared before any customer release:
    without the MFA key file fails closed. Confirm password change survives a
    process restart, revokes every existing session, and an excluded client IP
    cannot reach any admin API when a CIDR allowlist is configured.
+
+0.2 Verify Mobile Admin PWA (BOSQICH 5) on representative real iOS and Android
+   browsers over production-like LAN HTTPS: install it, approve/reject test
+   evidence, inspect audit/customer/license/device views, background every
+   sensitive dialog, revoke the session remotely, and confirm offline mode
+   shows no previously loaded admin data. This is a PWA check and must not be
+   recorded as native iOS/Android verification.
 
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.

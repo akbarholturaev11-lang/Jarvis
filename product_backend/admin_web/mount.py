@@ -18,10 +18,11 @@ ADMIN_WEB_CSP = (
     "form-action 'self'; "
     "frame-ancestors 'none'; "
     "img-src 'self' blob:; "
-    "manifest-src 'none'; "
+    "manifest-src 'self'; "
     "object-src 'none'; "
     "script-src 'self'; "
-    "style-src 'self'"
+    "style-src 'self'; "
+    "worker-src 'self'"
 )
 
 _MOUNT_PATH_RE = re.compile(r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)*")

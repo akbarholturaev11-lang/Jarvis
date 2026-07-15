@@ -25,6 +25,11 @@ FastAPI product backend
   └─ signed update metadata + single-use artifact download grants
 ```
 
+Mobile Admin Phase 1 is the separate installable `/admin/` PWA: MFA/session
+cookies stay server-owned, the service worker caches only the public shell, and
+all admin records/evidence remain live same-origin HTTPS reads. Native mobile
+wrappers and push providers are `not_available`.
+
 ## Desktop layers
 
 - `core/credential_service.py` stores Gemini credentials in the platform secure
@@ -78,6 +83,9 @@ FastAPI product backend
   object adapter with exact size and SHA-256 checks.
 - `product_backend/api_app.py` exposes the customer/admin API and mounts the
   bilingual `/admin/` panel.
+- `product_backend/admin_web/static/` provides the installable responsive Admin
+  PWA, visible-only in-app payment alerts and background privacy cleanup;
+  `api_queries.py` supplies bounded persistent admin directories.
 - `product_backend/runtime.py` assembles a single-process SQLite deployment from
   explicit environment configuration and owner-only secret files.
 

@@ -289,6 +289,18 @@ private `admin-credentials.sqlite3`, and never stores plaintext. Password change
 requires recent MFA plus the current password, revokes every session, and is
 audited. MFA events never record a secret or code.
 
+Secure Mobile Admin Mode (BOSQICH 5) is implemented as a separate installable
+`/admin/` PWA, not as part of the ordinary remote-control PWA. Its server-owned
+MFA session uses a Secure/HttpOnly/SameSite=Strict cookie and an in-memory CSRF
+value; no auth material is stored in browser storage and there is no JavaScript
+bridge. The service worker caches only an explicit public shell and bypasses all
+`/api/` requests. Background/page-hide revokes evidence and QR Blob URLs, clears
+one-time/password fields and covers the UI. Admin account/license/active-device/
+entitlement and draft/published-release directories are bounded authenticated
+SQLite read projections and survive restart. Pending-payment notification is
+visible+online in-app polling only; native iOS/Android and push providers are
+honestly `not_available` under `docs/MOBILE_ADMIN.md`.
+
 The updater deliberately does not mutate a real installed app yet. macOS needs a
 signed/notarized atomic helper, persisted `.app` backup location and real
 post-launch health marker before install can be enabled or reported successful.

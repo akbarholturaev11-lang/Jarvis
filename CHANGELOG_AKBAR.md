@@ -1,5 +1,32 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-15 - Secure Mobile Admin PWA (BOSQICH 5)
+
+### Added and enforced
+
+- The isolated `/admin/` console is now an installable responsive PWA with a
+  same-origin manifest, local icon and a versioned service worker that caches
+  only an explicit public shell. API, session, evidence, customer, release and
+  audit responses are never intercepted or cached.
+- Added authenticated, bounded, restart-persistent admin directories for
+  accounts, licenses/active devices/exact-version entitlements and all
+  draft/published releases with server-controlled price and currency.
+- Added visible+online 30-second pending-payment polling with honest in-app
+  notifications, offline denial, background privacy shielding/secret cleanup,
+  external-navigation blocking and five-target mobile navigation.
+- Admin CSP permits only same-origin manifest and worker loading. The ordinary
+  remote-control PWA does not advertise Admin Mode; native iOS/Android and push
+  delivery remain explicitly `not_available`.
+
+### Verification
+
+- Static/security, API authorization/persistence, EN/RU parity, service-worker
+  allowlist, no-browser-storage and ordinary-PWA separation tests were added.
+- Real ephemeral HTTPS Chromium smoke passed at 390×844 and 412×915: MFA,
+  customer/license/release reads, active service worker with API-free cache,
+  secure cookie flags, background cleanup, external navigation denial and
+  offline no-data behavior.
+
 ## 2026-07-15 - Payment durability and abuse hardening (BOSQICH 3 review)
 
 ### Fixed

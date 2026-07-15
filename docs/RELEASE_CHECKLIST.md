@@ -40,6 +40,18 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 - [ ] Gemini onboarding and secure local key storage work without a bundled secret file.
 - [ ] Core voice, audio, dashboard and required macOS permission paths are manually tested.
 
+## Mobile admin gate
+
+- [ ] Ordinary remote-control users have no Admin Mode link; every admin record
+      and evidence request still requires the separate MFA session boundary.
+- [ ] The Admin PWA service worker cache contains public shell files only and no
+      `/api/`, session, evidence, customer, release or audit response.
+- [ ] Background privacy cleanup, logout/remote revoke, token expiry, offline
+      denial, external-navigation blocking and 390/412px layouts pass on real
+      target browsers over HTTPS.
+- [ ] Native iOS/Android and push status remain `not_available` until their own
+      security and real-device verification gates pass.
+
 ## Artifact verification
 
 - [ ] App and DMG byte sizes and SHA-256 digests are recorded.

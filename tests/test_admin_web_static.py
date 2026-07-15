@@ -249,6 +249,8 @@ class AdminWebMountTests(unittest.TestCase):
         with TestClient(self._app()) as client:
             page = client.get("/admin/")
             script = client.get("/admin/app.js")
+            manifest = client.get("/admin/manifest.webmanifest")
+            worker = client.get("/admin/sw.js")
             hidden_python = client.get("/admin/mount.py")
 
         self.assertEqual(page.status_code, 200)
@@ -258,6 +260,13 @@ class AdminWebMountTests(unittest.TestCase):
         self.assertEqual(page.headers["permissions-policy"], "camera=(), geolocation=(), microphone=(), payment=(), usb=()")
         self.assertEqual(script.status_code, 200)
         self.assertIn("javascript", script.headers["content-type"])
+        self.assertEqual(manifest.status_code, 200)
+        self.assertIn("manifest", manifest.headers["content-type"])
+        self.assertEqual(worker.status_code, 200)
+        self.assertIn("javascript", worker.headers["content-type"])
+        self.assertIn("manifest-src 'self'", ADMIN_WEB_CSP)
+        self.assertIn("worker-src 'self'", ADMIN_WEB_CSP)
+        self.assertNotIn("https:", ADMIN_WEB_CSP)
         self.assertEqual(hidden_python.status_code, 404)
 
     def test_mount_does_not_capture_api_routes_or_relax_api_csp(self):

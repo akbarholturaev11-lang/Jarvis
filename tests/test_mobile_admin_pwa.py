@@ -183,6 +183,20 @@ class MobileAdminPwaTests(unittest.TestCase):
         self.assertIn("There is no JavaScript bridge", self.docs)
         self.assertIn("must never be recorded as a passing native test", self.docs)
 
+    def test_ordinary_remote_pwa_does_not_advertise_admin_mode(self):
+        remote_root = PROJECT_ROOT / "dashboard" / "static"
+        ordinary_client = "\n".join(
+            path.read_text(encoding="utf-8", errors="strict")
+            for path in (
+                remote_root / "app.html",
+                remote_root / "login.html",
+                remote_root / "manifest.webmanifest",
+                remote_root / "sw.js",
+            )
+        )
+        self.assertNotIn("/admin", ordinary_client.casefold())
+        self.assertNotIn("admin mode", ordinary_client.casefold())
+
 
 if __name__ == "__main__":
     unittest.main()
