@@ -88,6 +88,9 @@ CREATE TABLE IF NOT EXISTS licenses (
     created_at TEXT NOT NULL CHECK (substr(created_at, -1) = 'Z')
 );
 
+CREATE INDEX IF NOT EXISTS licenses_by_account_created
+ON licenses(account_id, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS device_bindings (
     id TEXT PRIMARY KEY,
     license_id TEXT NOT NULL REFERENCES licenses(id) ON DELETE RESTRICT,
@@ -263,6 +266,9 @@ CREATE TABLE IF NOT EXISTS entitlements (
         REFERENCES payment_submissions(id, license_id, release_id)
         ON DELETE RESTRICT
 );
+
+CREATE INDEX IF NOT EXISTS entitlements_by_license_granted
+ON entitlements(license_id, granted_at DESC, id DESC);
 
 CREATE TRIGGER IF NOT EXISTS entitlement_requires_approved_payment
 BEFORE INSERT ON entitlements

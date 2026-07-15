@@ -10,6 +10,9 @@ from core.product_state import PaymentState
 from core.release_manifest import ArtifactKind
 
 from .api_ports import (
+    AdminAccountPage,
+    AdminLicensePage,
+    AdminReleasePage,
     DeviceChallengePort,
     PaymentStatusRecord,
     PrivatePaymentEvidenceStore,
@@ -95,6 +98,37 @@ class ProductBackendService:
 
     def list_catalog(self, *, limit: int = 50) -> Sequence[ReleaseCatalogRecord]:
         return self._reads.list_published_releases(limit=limit)
+
+    def list_admin_accounts(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> AdminAccountPage:
+        return self._reads.list_admin_accounts(limit=limit, offset=offset)
+
+    def list_admin_licenses(
+        self,
+        *,
+        account_id: str | None,
+        limit: int,
+        offset: int,
+        entitlements_limit: int,
+    ) -> AdminLicensePage:
+        return self._reads.list_admin_licenses(
+            account_id=account_id,
+            limit=limit,
+            offset=offset,
+            entitlements_limit=entitlements_limit,
+        )
+
+    def list_admin_releases(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> AdminReleasePage:
+        return self._reads.list_admin_releases(limit=limit, offset=offset)
 
     def create_release(
         self,

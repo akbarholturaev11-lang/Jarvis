@@ -461,6 +461,38 @@ def _release_payload(release: Any) -> dict[str, Any]:
     }
 
 
+def _admin_pagination_payload(page: Any) -> dict[str, Any]:
+    returned = len(page.records)
+    return {
+        "limit": page.limit,
+        "offset": page.offset,
+        "returned": returned,
+        "total": page.total,
+        "has_more": page.offset + returned < page.total,
+    }
+
+
+def _admin_device_payload(device: Any) -> dict[str, Any]:
+    return {
+        "id": device.id,
+        "license_id": device.license_id,
+        "device_key_fingerprint": device.device_key_fingerprint,
+        "platform": device.platform,
+        "architecture": device.architecture,
+        "device_label": device.device_label,
+        "activated_at": device.activated_at,
+    }
+
+
+def _admin_entitlement_payload(entitlement: Any) -> dict[str, Any]:
+    return {
+        "id": entitlement.id,
+        "release_id": entitlement.release_id,
+        "version": entitlement.version,
+        "granted_at": entitlement.granted_at,
+    }
+
+
 def _release_info_payload(release: Any, artifacts: Any) -> dict[str, Any]:
     supported_platforms = sorted(
         {
@@ -1025,6 +1057,27 @@ def create_product_backend_app(
             "created_at": account.created_at,
         }
 
+    @app.get("/api/admin/accounts")
+    def admin_accounts(
+        admin_session_record: AdminSessionRecord = Depends(require_admin),
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    ) -> dict[str, Any]:
+        page = service.list_admin_accounts(limit=limit, offset=offset)
+        return {
+            "accounts": [
+                {
+                    "id": record.account.id,
+                    "external_subject": record.account.external_subject,
+                    "created_at": record.account.created_at,
+                    "license_count": record.license_count,
+                    "active_device_count": record.active_device_count,
+                }
+                for record in page.records
+            ],
+            "pagination": _admin_pagination_payload(page),
+        }
+
     @app.post("/api/admin/accounts/{account_id}/licenses", status_code=201)
     def admin_issue_license(
         account_id: str,
@@ -1059,6 +1112,48 @@ def create_product_backend_app(
             "architecture": binding.architecture,
             "device_label": binding.device_label,
             "activated_at": binding.activated_at,
+        }
+
+    @app.get("/api/admin/licenses")
+    def admin_licenses(
+        admin_session_record: AdminSessionRecord = Depends(require_admin),
+        account_id: Annotated[
+            str | None,
+            Query(min_length=3, max_length=128),
+        ] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+        entitlements_limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    ) -> dict[str, Any]:
+        page = service.list_admin_licenses(
+            account_id=account_id,
+            limit=limit,
+            offset=offset,
+            entitlements_limit=entitlements_limit,
+        )
+        return {
+            "licenses": [
+                {
+                    "id": record.license.id,
+                    "account_id": record.license.account_id,
+                    "account_external_subject": record.account_external_subject,
+                    "plan_code": record.license.plan_code,
+                    "created_at": record.license.created_at,
+                    "active_device": (
+                        None
+                        if record.active_device is None
+                        else _admin_device_payload(record.active_device)
+                    ),
+                    "entitlements": [
+                        _admin_entitlement_payload(item)
+                        for item in record.entitlements
+                    ],
+                    "entitlement_count": record.entitlement_count,
+                    "entitlements_truncated": record.entitlements_truncated,
+                }
+                for record in page.records
+            ],
+            "pagination": _admin_pagination_payload(page),
         }
 
     @app.post(
@@ -1108,6 +1203,24 @@ def create_product_backend_app(
                 fixes_ru=body.fixes_ru,
             )
         )
+
+    @app.get("/api/admin/releases")
+    def admin_releases(
+        admin_session_record: AdminSessionRecord = Depends(require_admin),
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
+    ) -> dict[str, Any]:
+        page = service.list_admin_releases(limit=limit, offset=offset)
+        return {
+            "releases": [
+                {
+                    **_release_payload(record.release),
+                    "artifact_count": record.artifact_count,
+                }
+                for record in page.records
+            ],
+            "pagination": _admin_pagination_payload(page),
+        }
 
     @app.get("/api/admin/releases/{release_id}")
     def admin_release_detail(

@@ -12,12 +12,22 @@ from core.product_version import ProductVersion, SemanticVersion
 from core.release_manifest import ArtifactKind
 
 from .api_ports import (
+    AdminAccountPage,
+    AdminAccountSummary,
+    AdminLicensePage,
+    AdminLicenseSummary,
+    AdminReleasePage,
+    AdminReleaseSummary,
     ArtifactTargetSummary,
     PaymentStatusRecord,
     ReleaseCatalogRecord,
 )
 from .models import (
+    Account,
     ArtifactIdentity,
+    DeviceBinding,
+    Entitlement,
+    License,
     PaymentSubmission,
     Release,
     ReleaseArtifact,
@@ -28,6 +38,10 @@ from .models import (
     validate_build,
     validate_opaque_identifier,
 )
+
+
+_MAX_ADMIN_QUERY_OFFSET = 100_000
+_MAX_ADMIN_ENTITLEMENTS_PER_LICENSE = 100
 
 
 class ProductReadNotAvailableError(RuntimeError):
@@ -66,6 +80,30 @@ class SQLiteProductReadStore:
     def _limit(value: int) -> int:
         if type(value) is not int or not 1 <= value <= 100:
             raise ValueError("limit must be between 1 and 100")
+        return value
+
+    @staticmethod
+    def _offset(value: int) -> int:
+        if type(value) is not int or not 0 <= value <= _MAX_ADMIN_QUERY_OFFSET:
+            raise ValueError(
+                f"offset must be between 0 and {_MAX_ADMIN_QUERY_OFFSET}"
+            )
+        return value
+
+    @classmethod
+    def _pagination(cls, limit: int, offset: int) -> tuple[int, int]:
+        return cls._limit(limit), cls._offset(offset)
+
+    @staticmethod
+    def _entitlements_limit(value: int) -> int:
+        if (
+            type(value) is not int
+            or not 1 <= value <= _MAX_ADMIN_ENTITLEMENTS_PER_LICENSE
+        ):
+            raise ValueError(
+                "entitlements_limit must be between 1 and "
+                f"{_MAX_ADMIN_ENTITLEMENTS_PER_LICENSE}"
+            )
         return value
 
     def list_published_releases(
@@ -287,6 +325,173 @@ class SQLiteProductReadStore:
                 "Update candidate could not be read."
             ) from exc
 
+    def list_admin_accounts(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> AdminAccountPage:
+        """Return one deterministic, bounded account page for the admin UI."""
+
+        limit, offset = self._pagination(limit, offset)
+        try:
+            with self._connect() as connection:
+                total = int(
+                    connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
+                )
+                rows = connection.execute(
+                    "SELECT a.*, "
+                    "(SELECT COUNT(*) FROM licenses l "
+                    " WHERE l.account_id = a.id) AS license_count, "
+                    "(SELECT COUNT(*) FROM device_bindings d "
+                    " JOIN licenses l ON l.id = d.license_id "
+                    " WHERE l.account_id = a.id "
+                    " AND d.deactivated_at IS NULL) AS active_device_count "
+                    "FROM accounts a "
+                    "ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+            records = tuple(
+                AdminAccountSummary(
+                    self._account(row),
+                    int(row["license_count"]),
+                    int(row["active_device_count"]),
+                )
+                for row in rows
+            )
+            return AdminAccountPage(records, total, limit, offset)
+        except (sqlite3.Error, KeyError, TypeError, ValueError) as exc:
+            raise ProductReadNotAvailableError(
+                "Admin accounts could not be read."
+            ) from exc
+
+    def list_admin_licenses(
+        self,
+        *,
+        account_id: str | None,
+        limit: int,
+        offset: int,
+        entitlements_limit: int,
+    ) -> AdminLicensePage:
+        """Return licenses with active-device and bounded entitlement summaries."""
+
+        limit, offset = self._pagination(limit, offset)
+        entitlements_limit = self._entitlements_limit(entitlements_limit)
+        if account_id is not None:
+            account_id = validate_opaque_identifier(
+                account_id, field="account_id"
+            )
+        where = "" if account_id is None else "WHERE l.account_id = ?"
+        parameters: tuple[object, ...] = () if account_id is None else (account_id,)
+        try:
+            with self._connect() as connection:
+                total = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM licenses l " + where,
+                        parameters,
+                    ).fetchone()[0]
+                )
+                rows = connection.execute(
+                    "SELECT l.*, a.external_subject FROM licenses l "
+                    "JOIN accounts a ON a.id = l.account_id "
+                    f"{where} ORDER BY l.created_at DESC, l.id DESC "
+                    "LIMIT ? OFFSET ?",
+                    (*parameters, limit, offset),
+                ).fetchall()
+                if not rows:
+                    return AdminLicensePage((), total, limit, offset)
+
+                license_ids = tuple(str(row["id"]) for row in rows)
+                placeholders = ",".join("?" for _ in license_ids)
+                active_rows = connection.execute(
+                    "SELECT * FROM device_bindings "
+                    f"WHERE license_id IN ({placeholders}) "
+                    "AND deactivated_at IS NULL",
+                    license_ids,
+                ).fetchall()
+                active_devices = {
+                    str(row["license_id"]): self._device(row)
+                    for row in active_rows
+                }
+
+                entitlement_rows = connection.execute(
+                    "SELECT * FROM ("
+                    " SELECT e.*, r.version, "
+                    " COUNT(*) OVER (PARTITION BY e.license_id) "
+                    " AS entitlement_count, "
+                    " ROW_NUMBER() OVER (PARTITION BY e.license_id "
+                    " ORDER BY e.granted_at DESC, e.id DESC) "
+                    " AS entitlement_position "
+                    " FROM entitlements e "
+                    " JOIN releases r ON r.id = e.release_id "
+                    f" WHERE e.license_id IN ({placeholders})"
+                    ") WHERE entitlement_position <= ? "
+                    "ORDER BY license_id, entitlement_position",
+                    (*license_ids, entitlements_limit),
+                ).fetchall()
+
+            entitlement_map: dict[str, list[Entitlement]] = {
+                license_id: [] for license_id in license_ids
+            }
+            entitlement_counts: dict[str, int] = {
+                license_id: 0 for license_id in license_ids
+            }
+            for row in entitlement_rows:
+                license_id = str(row["license_id"])
+                entitlement_map[license_id].append(self._entitlement(row))
+                entitlement_counts[license_id] = int(row["entitlement_count"])
+
+            records = tuple(
+                AdminLicenseSummary(
+                    self._license(row),
+                    str(row["external_subject"]),
+                    active_devices.get(str(row["id"])),
+                    tuple(entitlement_map[str(row["id"])]),
+                    entitlement_counts[str(row["id"])],
+                )
+                for row in rows
+            )
+            return AdminLicensePage(records, total, limit, offset)
+        except (sqlite3.Error, KeyError, TypeError, ValueError) as exc:
+            raise ProductReadNotAvailableError(
+                "Admin licenses could not be read."
+            ) from exc
+
+    def list_admin_releases(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> AdminReleasePage:
+        """Return drafts and published releases without private artifact data."""
+
+        limit, offset = self._pagination(limit, offset)
+        try:
+            with self._connect() as connection:
+                total = int(
+                    connection.execute("SELECT COUNT(*) FROM releases").fetchone()[0]
+                )
+                rows = connection.execute(
+                    "SELECT r.*, "
+                    "(SELECT COUNT(*) FROM release_artifacts a "
+                    " WHERE a.release_id = r.id) AS artifact_count "
+                    "FROM releases r "
+                    "ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+            records = tuple(
+                AdminReleaseSummary(
+                    self._release(row),
+                    int(row["artifact_count"]),
+                )
+                for row in rows
+            )
+            return AdminReleasePage(records, total, limit, offset)
+        except (sqlite3.Error, KeyError, TypeError, ValueError) as exc:
+            raise ProductReadNotAvailableError(
+                "Admin releases could not be read."
+            ) from exc
+
     @staticmethod
     def _release(row: sqlite3.Row) -> Release:
         return Release(
@@ -301,6 +506,45 @@ class SQLiteProductReadStore:
             row["features_ru"],
             row["fixes_en"],
             row["fixes_ru"],
+        )
+
+    @staticmethod
+    def _account(row: sqlite3.Row) -> Account:
+        return Account(row["id"], row["external_subject"], row["created_at"])
+
+    @staticmethod
+    def _license(row: sqlite3.Row) -> License:
+        return License(
+            row["id"],
+            row["account_id"],
+            row["plan_code"],
+            row["created_at"],
+        )
+
+    @staticmethod
+    def _device(row: sqlite3.Row) -> DeviceBinding:
+        return DeviceBinding(
+            row["id"],
+            row["license_id"],
+            row["device_key_fingerprint"],
+            row["platform"],
+            row["architecture"],
+            row["device_label"],
+            row["activated_at"],
+            row["deactivated_at"],
+            row["replaced_by_binding_id"],
+            row["replacement_reason"],
+        )
+
+    @staticmethod
+    def _entitlement(row: sqlite3.Row) -> Entitlement:
+        return Entitlement(
+            row["id"],
+            row["license_id"],
+            row["release_id"],
+            row["version"],
+            row["granted_by_payment_id"],
+            row["granted_at"],
         )
 
     @staticmethod

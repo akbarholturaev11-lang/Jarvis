@@ -14,6 +14,10 @@ from .device_challenges import (
     DeviceChallengeResult,
 )
 from .models import (
+    Account,
+    DeviceBinding,
+    Entitlement,
+    License,
     PaymentSubmission,
     Release,
     ReleaseArtifact,
@@ -44,6 +48,56 @@ class ReleaseCatalogRecord:
 class PaymentStatusRecord:
     payment: PaymentSubmission
     version: str
+
+
+@dataclass(frozen=True, slots=True)
+class AdminAccountSummary:
+    account: Account
+    license_count: int
+    active_device_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdminAccountPage:
+    records: tuple[AdminAccountSummary, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdminLicenseSummary:
+    license: License
+    account_external_subject: str
+    active_device: DeviceBinding | None
+    entitlements: tuple[Entitlement, ...]
+    entitlement_count: int
+
+    @property
+    def entitlements_truncated(self) -> bool:
+        return len(self.entitlements) < self.entitlement_count
+
+
+@dataclass(frozen=True, slots=True)
+class AdminLicensePage:
+    records: tuple[AdminLicenseSummary, ...]
+    total: int
+    limit: int
+    offset: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdminReleaseSummary:
+    release: Release
+    artifact_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class AdminReleasePage:
+    records: tuple[AdminReleaseSummary, ...]
+    total: int
+    limit: int
+    offset: int
 
 
 @runtime_checkable
@@ -91,6 +145,29 @@ class ProductReadStore(Protocol):
         installed_version: str,
         installed_build: int,
     ) -> ReleaseArtifact | None: ...
+
+    def list_admin_accounts(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> AdminAccountPage: ...
+
+    def list_admin_licenses(
+        self,
+        *,
+        account_id: str | None,
+        limit: int,
+        offset: int,
+        entitlements_limit: int,
+    ) -> AdminLicensePage: ...
+
+    def list_admin_releases(
+        self,
+        *,
+        limit: int,
+        offset: int,
+    ) -> AdminReleasePage: ...
 
 
 @runtime_checkable
@@ -198,6 +275,12 @@ class ReleaseArtifactStore(Protocol):
 
 
 __all__ = [
+    "AdminAccountPage",
+    "AdminAccountSummary",
+    "AdminLicensePage",
+    "AdminLicenseSummary",
+    "AdminReleasePage",
+    "AdminReleaseSummary",
     "ArtifactTargetSummary",
     "ClientActivationPort",
     "DeviceChallengePort",
