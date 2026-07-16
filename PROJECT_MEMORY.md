@@ -313,6 +313,53 @@ runtimes. Production macOS remains honest `not_available` until the fixed helper
 has an audited safe-shutdown/privileged protocol, Developer ID signing,
 notarization and clean-Mac evidence.
 
+## Production Backend Deployment + Ops (2026-07-16, BOSQICH 8)
+
+The backend is prepared for a real HTTPS server without changing the entitlement
+model. New durable layers:
+
+- `product_backend/api_operational.py` installs an OUTERMOST ASGI
+  `OperationalMiddleware` (added last in `create_product_backend_app`, so it wraps
+  `TrustedHostMiddleware`). It serves `/healthz` (liveness, host-agnostic, no DB),
+  `/readyz` (readiness via a DB read probe over `reads`), and `/metrics`
+  (Bearer-gated by `JARVIS_METRICS_TOKEN`, else 404). It enforces the HTTPS policy
+  before the app runs (reject 400 or 308-redirect safe methods), sets HSTS on
+  HTTPS, echoes an `X-Request-ID`, and writes one JSON access log line per
+  request. `OperationalPolicy.from_env` reads `JARVIS_REQUIRE_HTTPS`,
+  `JARVIS_HTTPS_REDIRECT`, `JARVIS_HSTS_MAX_AGE`, `JARVIS_METRICS_TOKEN`. The
+  forwarded scheme (`X-Forwarded-Proto`) is honored ONLY from a
+  `JARVIS_TRUSTED_PROXIES` peer via `TrustedProxyConfig.is_trusted_peer`; never by
+  default. Health/readiness are exempt from the host check and the HTTPS policy so
+  infra probes on the instance IP still work.
+- `product_backend/observability.py` (stdlib only) provides JSON logging with
+  secret redaction, correlation-ID helpers, and a bounded `InMemoryMetrics`
+  Prometheus counter registry (`NullMetrics` when disabled). `runtime.py` wires
+  `configure_json_logging("jarvis.backend.access")` + metrics into the factory.
+- `product_backend/migrations.py`: commerce is the one versioned DB
+  (`user_version = 4`); others use idempotent `CREATE TABLE IF NOT EXISTS`.
+  `verify` fails closed; `migrate_commerce_database` applies the real repository
+  forward migration; a schema newer than the runtime is rejected.
+- `ops/` cross-platform tooling (stdlib + cryptography): `gen_secrets`,
+  `validate_config` (fail-closed; assembles the real app), `backup`/`restore`
+  (online SQLite `.backup` snapshot + SHA-256 `manifest.json`, verified restore
+  that refuses to overwrite without force), `migrate`, `rotate` (key rotation with
+  honest overlap/re-enrol side effects), `dev_tls` (self-signed cert + uvicorn
+  TLS for a local production-like environment). POSIX applies `0600`/`0700`;
+  Windows returns an honest `manual` NTFS-ACL status (never a faked mode), so the
+  hardened runtime host must be Linux/macOS (Windows via container), while the
+  tooling itself is cross-platform.
+- `deploy/` recipes: sandboxed systemd unit with `ExecStartPre` config
+  validation, slim non-root Docker image + compose (backend port unpublished),
+  nginx + Caddy TLS proxies (HSTS, trusted host, edge rate limit, admin IP
+  allowlist, health passthrough, `/metrics` denied publicly), and
+  `env/backend.env.example` (canonical config reference). `docs/PRODUCTION_DEPLOYMENT.md`
+  is the runbook (topology, config, retention, key rotation, single-process
+  constraint + multi-instance PostgreSQL/shared-state plan).
+
+Secrets stay outside the repo: `*.key`/`*.pem`/`*.sqlite3`/`.env*` are gitignored;
+only `*.example` templates are committed. This is deployment tooling, not a
+commercial-clearance claim — the `PRODUCT_RELEASE_CONTRACT.md` gates still apply.
+
 ## AI Assistant Rule
 
 Every AI assistant working on this repo must read:

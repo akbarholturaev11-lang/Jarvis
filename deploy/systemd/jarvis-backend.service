@@ -1,0 +1,45 @@
+[Unit]
+# JARVIS product backend (single-process SQLite runtime).
+# Runs the hardened ASGI factory on 127.0.0.1; a TLS reverse proxy (see
+# deploy/reverse-proxy) terminates HTTPS and forwards to this loopback port.
+Description=JARVIS product backend API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated non-login service account that OWNS the data dir and secret files.
+User=jarvis
+Group=jarvis
+# Owner-only environment file, materialized from the secret store before start.
+EnvironmentFile=/etc/jarvis/backend.env
+WorkingDirectory=/opt/jarvis
+ExecStartPre=/opt/jarvis/venv/bin/python -m ops.validate_config --env-file /etc/jarvis/backend.env
+ExecStart=/opt/jarvis/venv/bin/python -m uvicorn \
+    product_backend.runtime:create_app_from_environment \
+    --factory --host 127.0.0.1 --port 8080 \
+    --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+
+# --- Sandboxing (defense in depth) -----------------------------------------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# Only the data directory is writable; secrets and code stay read-only.
+ReadWritePaths=/var/lib/jarvis
+ReadOnlyPaths=/etc/jarvis /opt/jarvis
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

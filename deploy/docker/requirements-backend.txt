@@ -1,0 +1,7 @@
+# Minimal server-side dependencies for the JARVIS product backend container.
+# The desktop app's GUI/audio/vision packages are intentionally excluded.
+# Pin these to exact versions in a real deployment for reproducible builds.
+fastapi
+uvicorn[standard]
+cryptography
+python-multipart

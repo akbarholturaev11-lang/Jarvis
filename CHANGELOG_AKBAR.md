@@ -1,5 +1,72 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-16 - Hardened production backend deployment + ops tooling (BOSQICH 8)
+
+### Added
+
+- `product_backend/observability.py`: standard-library structured JSON logging
+  with secret redaction (`redact_text`/`redact_mapping`), correlation-ID helpers
+  (`resolve_request_id`), and a bounded in-process `InMemoryMetrics` counter
+  registry with Prometheus text exposition (`NullMetrics` when disabled).
+- `product_backend/api_operational.py`: an OUTERMOST ASGI `OperationalMiddleware`
+  serving `/healthz` (liveness, host-agnostic), `/readyz` (readiness via a DB
+  read probe), and `/metrics` (Bearer-gated, 404 when no token), plus HTTPS
+  enforcement (reject or 308-redirect), HSTS, correlation-ID echo, and a JSON
+  access log line per request. `OperationalPolicy.from_env` reads
+  `JARVIS_REQUIRE_HTTPS`, `JARVIS_HTTPS_REDIRECT`, `JARVIS_HSTS_MAX_AGE`,
+  `JARVIS_METRICS_TOKEN`. Forwarded scheme is trusted only from
+  `JARVIS_TRUSTED_PROXIES` peers (never by default).
+- `product_backend/migrations.py`: read-only schema inspection + fail-closed
+  `verify` + standalone commerce forward-migration via the real repository code
+  path (commerce is the one versioned DB, `user_version = 4`).
+- `ops/` cross-platform tooling (stdlib + cryptography): `gen_secrets`,
+  `validate_config` (fail-closed, assembles the real app), `backup`/`restore`
+  (online SQLite snapshot + SHA-256 manifest, verified restore), `migrate`,
+  `rotate` (session-secret/mfa-key/activation-pepper/entitlement-key/release-key
+  with honest overlap + re-enrol side effects), `dev_tls` (self-signed cert +
+  uvicorn TLS). POSIX applies `0600`/`0700`; Windows returns an honest `manual`
+  NTFS-ACL status, never a faked mode.
+- `deploy/`: systemd unit (sandboxed, `ExecStartPre` validation), slim non-root
+  Docker image + compose (backend port not published), nginx + Caddy TLS proxy
+  configs (HSTS, trusted host, edge rate limit, admin IP allowlist, health
+  passthrough, `/metrics` denied publicly), and `env/backend.env.example`.
+- `docs/PRODUCTION_DEPLOYMENT.md`: topology, config, HTTPS/forwarded policy,
+  operational endpoints, edge+app rate limit, backup/restore, migration,
+  payment-evidence + audit retention, key rotation, SQLite single-process
+  constraint, PostgreSQL/shared-state multi-instance plan, local TLS dev env,
+  cross-platform hosting note.
+- Wired the operational layer into `api_app.py` (new keyword args, installed as
+  the outermost middleware with a DB-backed readiness probe) and `runtime.py`
+  (`OperationalPolicy.from_env`, JSON access logger, metrics registry).
+
+### Why
+
+Stage 8: prepare the admin/backend for a real HTTPS server safely — HTTPS-only,
+trusted hosts, explicit trusted-proxy list, no default X-Forwarded trust, health
++ readiness, structured redacted logs, correlation IDs, metrics, backup/restore,
+migration, retention, key rotation, admin allowlist/VPN, edge+app rate limits,
+fail-closed config validation, secrets outside the repo, documented SQLite
+single-process mode + multi-instance migration plan, and a local TLS dev env.
+
+### Verification
+
+- `.venv/bin/python -m py_compile main.py product_backend/*.py ops/*.py` — OK.
+- Full suite: `730 passed, 473 subtests` (adds `test_backend_observability`,
+  `test_backend_operational`, `test_backend_migrations`, `test_ops_tooling`).
+- Local production-like smoke: uvicorn + factory over self-signed TLS on 8443 →
+  `/healthz` 200, `/readyz` 200, `/api/releases` 200 with HSTS + `X-Request-ID`;
+  plain HTTP with `JARVIS_REQUIRE_HTTPS=true` → probes 200 (exempt),
+  `/api/releases` 400 `https is required`; assembled app rejects a foreign Host
+  (400) while `/healthz` still answers.
+
+### Constraints kept
+
+- Secrets never enter the repo (`*.key`/`*.pem`/`*.sqlite3`/`.env*` gitignored);
+  only `*.example` templates are committed. No commercial-release claim; the
+  distribution gates in `PRODUCT_RELEASE_CONTRACT.md` still apply. Backend runtime
+  stays POSIX-hardened; Windows hosting is via container, tooling is
+  cross-platform with honest status. No entitlement/version model change.
+
 ## 2026-07-16 - Validated the local unsigned macOS app + DMG (BOSQICH 7)
 
 ### Real build result

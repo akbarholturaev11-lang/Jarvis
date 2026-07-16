@@ -80,6 +80,14 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Secure credential migration: `core/credential_service.py`,
      `core/secure_store.py`
    - Commerce/backend/admin UI: `product_backend/`
+   - Backend operational layer: `product_backend/api_operational.py`
+     (health/readiness/metrics/HTTPS/correlation-ID middleware),
+     `product_backend/observability.py` (JSON logging + redaction + metrics),
+     `product_backend/migrations.py` (schema versioning)
+   - Cross-platform ops tooling: `ops/` (`gen_secrets`, `validate_config`,
+     `backup`, `restore`, `migrate`, `rotate`, `dev_tls`)
+   - Deployment recipes: `deploy/` (systemd, Docker + compose, nginx/Caddy,
+     `env/backend.env.example`); runbook `docs/PRODUCTION_DEPLOYMENT.md`
    - macOS packaging plan: `packaging/macos/`,
      `scripts/build_macos_release.py`, `requirements-build.txt`
 
@@ -258,6 +266,17 @@ main.py
 - Real `config/product.json`, payment-instructions files, backend databases,
   signing keys, activation peppers and admin secrets are LOCAL/DEPLOYMENT data;
   never commit or print them.
+- `product_backend/api_operational.py` must stay the OUTERMOST middleware (added
+  last in `create_product_backend_app`) so health/readiness probes bypass the
+  trusted-host and HTTPS checks; the forwarded scheme stays trusted only from a
+  configured `JARVIS_TRUSTED_PROXIES` peer, never by default. `/metrics` must stay
+  Bearer-gated and off by default. `product_backend/observability.py` must keep
+  redacting secret-like fields before any log line.
+- `ops/*` tooling must never fake POSIX permissions on non-POSIX hosts — it
+  returns an honest `manual` status. Real generated secrets (`*.key`, `*.pem`,
+  `.env`, `*.sqlite3`) are gitignored; only `*.example` templates are committed.
+  `deploy/env/backend.env.example` and the reverse-proxy configs carry only
+  placeholders — never real hosts, keys, or tokens.
 - `config/macros.json` is LOCAL user data (gitignored) — user command macros; do not commit. `config/settings.json` is committed but non-secret; write it only through `core/app_settings.py` / `core/i18n.py` so unrelated keys are preserved.
 - `core/remote_tunnel.py` must never store cloudflared credentials in the repo (they live in `~/.cloudflared`) and must report honest `not_installed`/`failed` rather than a fake public URL.
 - `core/power_manager.py` + adapter `prevent_sleep`/`release_sleep` must return honest `unsupported` on OSes/tools that can't keep awake; never fake success.

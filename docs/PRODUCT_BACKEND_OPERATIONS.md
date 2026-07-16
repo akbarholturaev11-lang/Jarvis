@@ -1,5 +1,10 @@
 # JARVIS Product Backend Operations
 
+> For the full production runbook (topology, health/readiness/metrics, HTTPS
+> policy, backup/restore, migration, retention, key rotation, single-process
+> constraint, multi-instance plan, local TLS dev env, and the `ops/` +
+> `deploy/` tooling), see [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md).
+
 ## Runtime model
 
 Use the ASGI factory; importing the module does not create files or load keys:

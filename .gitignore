@@ -36,3 +36,7 @@ product_backend/runtime/
 .env
 .env.*
 !.env.example
+!deploy/env/backend.env.example
+devcerts/
+deploy/docker/certs/
+/secrets/

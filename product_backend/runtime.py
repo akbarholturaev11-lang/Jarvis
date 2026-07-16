@@ -32,7 +32,14 @@ from .api_auth import (
     BackendConfigurationError,
     TrustedProxyConfig,
 )
+from .api_operational import OperationalPolicy
 from .api_queries import SQLiteProductReadStore
+from .observability import (
+    InMemoryMetrics,
+    MetricsRegistry,
+    NullMetrics,
+    configure_json_logging,
+)
 from .api_signing import InjectedEd25519EntitlementSigner
 from .device_challenges import SQLiteDeviceChallengeService
 from .private_storage import LocalPrivateObjectStore
@@ -107,6 +114,14 @@ def create_app_from_environment(
     admin_ip_allowlist = AdminIpAllowlist.from_spec(
         source.get("JARVIS_ADMIN_ALLOWED_NETWORKS")
     )
+    operational_policy = OperationalPolicy.from_env(
+        source,
+        allowed_hosts=admin_settings.allowed_hosts,
+    )
+    request_logger = configure_json_logging(name="jarvis.backend.access")
+    metrics: MetricsRegistry = (
+        InMemoryMetrics() if operational_policy.metrics_enabled else NullMetrics()
+    )
     mfa_cipher = MfaSecretCipher(mfa_master_key)
     clock = lambda: datetime.now(timezone.utc)
     commerce_path = data_dir / "commerce.sqlite3"
@@ -169,6 +184,9 @@ def create_app_from_environment(
             trusted_proxy=trusted_proxy,
             admin_ip_allowlist=admin_ip_allowlist,
             admin_credential_store=credential_store,
+            operational_policy=operational_policy,
+            metrics=metrics,
+            request_logger=request_logger,
             clock=clock,
         )
     except BaseException:

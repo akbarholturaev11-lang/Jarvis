@@ -12,6 +12,19 @@ The admin panel is also an installable responsive PWA with an isolated MFA
 boundary, persistent customer/license/release reads and in-app notifications;
 native iOS/Android and background push remain `not_available`.
 
+Stage 8 (production backend deployment + ops tooling) is implemented: the ASGI
+factory has an operational layer (`/healthz`, `/readyz`, Bearer-gated `/metrics`,
+HTTPS-only policy + HSTS, correlation IDs, redacted structured JSON access logs),
+schema migration/verification (`product_backend/migrations.py`), cross-platform
+`ops/` tooling (secret generation, fail-closed config validation, backup/restore,
+migrate, key rotation, local TLS dev env), and `deploy/` recipes (systemd,
+Docker + compose, nginx/Caddy, env reference). See `docs/PRODUCTION_DEPLOYMENT.md`.
+What remains is operator-supplied and cannot be produced here: a real registered
+domain + valid TLS certificate, a provisioned server/VPN, and the real secret
+material in a managed secret store. Horizontal scale still needs the documented
+PostgreSQL/shared session-grant-rate-limit migration; the runtime is single
+SQLite process today.
+
 The following external gates must be cleared before any customer release:
 
 1. Obtain commercial rights for the upstream CC BY-NC code/assets and confirm the

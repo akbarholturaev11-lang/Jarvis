@@ -363,6 +363,17 @@ class TrustedProxyConfig:
             return False
         return any(address in network for network in self.networks)
 
+    def is_trusted_peer(self, value: object) -> bool:
+        """Public: is a direct socket peer a configured trusted proxy?
+
+        Returns ``False`` when no proxy networks are configured so forwarded
+        headers are never honored by default.
+        """
+
+        if not self.networks or not isinstance(value, str) or not value:
+            return False
+        return self._is_trusted(value)
+
     def client_ip(self, peer: object, forwarded_for: object) -> str:
         """Resolve the caller IP, honoring forwarded headers only from proxies."""
 

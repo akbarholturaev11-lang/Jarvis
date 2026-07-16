@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Annotated, Any
@@ -64,6 +65,12 @@ from .api_auth import (
     SessionAssurance,
     TrustedProxyConfig,
 )
+from .api_operational import (
+    OperationalMiddleware,
+    OperationalPolicy,
+    ReadinessResult,
+)
+from .observability import MetricsRegistry, NullMetrics
 from .api_ports import (
     ClientActivationPort,
     DeviceChallengePort,
@@ -666,6 +673,9 @@ def create_product_backend_app(
     admin_ip_allowlist: AdminIpAllowlist | None = None,
     admin_credential_store: AdminCredentialStore | None = None,
     allow_password_only_admin: bool = False,
+    operational_policy: OperationalPolicy | None = None,
+    metrics: MetricsRegistry | None = None,
+    request_logger: logging.Logger | None = None,
     clock: Any = None,
 ) -> FastAPI:
     """Create an API process from explicit dependencies and security config.
@@ -1932,6 +1942,37 @@ def create_product_backend_app(
         )
 
     mount_admin_web(app)
+
+    policy = (
+        OperationalPolicy() if operational_policy is None else operational_policy
+    )
+    if not isinstance(policy, OperationalPolicy):
+        raise BackendConfigurationError("operational policy is invalid")
+    if metrics is not None and not isinstance(metrics, MetricsRegistry):
+        raise BackendConfigurationError("metrics registry is invalid")
+    operational_metrics: MetricsRegistry = metrics or NullMetrics()
+    app.state.operational_metrics = operational_metrics
+
+    def _readiness_probe() -> ReadinessResult:
+        checks: dict[str, bool] = {}
+        try:
+            reads.list_published_releases(limit=1)
+            checks["database"] = True
+        except Exception:  # noqa: BLE001 - readiness must not raise
+            checks["database"] = False
+        return ReadinessResult(all(checks.values()), checks)
+
+    # Install as the OUTERMOST layer so health/readiness probes bypass the
+    # trusted-host and HTTPS checks, and the forwarded scheme is trusted only
+    # from a configured proxy.
+    app.add_middleware(
+        OperationalMiddleware,
+        policy=policy,
+        readiness_probe=_readiness_probe,
+        metrics=operational_metrics,
+        logger=request_logger,
+        proxy_config=proxy_config,
+    )
     return app
 
 
