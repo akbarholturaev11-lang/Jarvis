@@ -7,12 +7,21 @@ release.  The repository now has a platform-neutral release adapter contract and
 a macOS-first unsigned local PyInstaller/DMG plan.  It does not yet have a signed,
 notarized, commercially cleared, clean-device-verified DMG.
 
-| Target | Packaging status | Update installation status |
-| --- | --- | --- |
-| macOS | `available` only when the local unsigned prerequisites pass | `not_available` |
-| Windows | `not_available` | `not_available` |
-| Linux | `not_available` | `not_available` |
-| Unknown | `not_available` | `not_available` |
+**Scope:** only the **macOS** packaging pipeline is implemented (and validated
+locally as an unsigned/ad-hoc dev build).  This is **not** a cross-platform
+packaging deliverable.  The JARVIS desktop client needs a separate distributable
+per operating system, and only macOS exists today:
+
+| Target | Required distributable | Packaging status | Update install |
+| --- | --- | --- | --- |
+| macOS | `.app` + DMG | `available` only when the local unsigned prerequisites pass | `not_available` |
+| Windows | self-contained `.exe` + installer | `not_available` | `not_available` |
+| Linux | AppImage and/or `.deb` | `not_available` | `not_available` |
+| Unknown | — | `not_available` | `not_available` |
+
+Windows and Linux packaging are explicit later stages (see the roadmap below);
+their release adapters return `not_available` today and must never report a
+macOS artifact as a Windows or Linux build.
 
 No adapter reports update success.  A future updater may report success only
 after artifact identity, size, digest and signature checks; atomic replacement;
@@ -177,10 +186,42 @@ The following are not solved by the packaging skeleton:
 6. The upstream CC BY-NC, PyQt6 distribution and other commercial gates in
    `docs/PRODUCT_RELEASE_CONTRACT.md` remain blockers.
 
-## Windows and Linux contract
+## Windows and Linux packaging — roadmap and blockers (NOT implemented)
 
 Windows and Linux use the same semantic-version/build/artifact and entitlement
-contracts.  Their installers will be separate platform packages, but account,
-license, payment approval and exact-version entitlement remain neutral.  Until a
-toolchain and real install/rollback verification exist, their adapters return
-`not_available` with `verified=false`.
+contracts.  Account, license, payment approval and exact-version entitlement are
+platform-neutral, but the **distributable and installer for each OS are separate
+work that does not exist yet**.  `WindowsReleaseAdapter` and `LinuxReleaseAdapter`
+return `plan_build(...).status = not_available` (empty commands) and
+`install_update(...).verified = False` today; nothing here is done by the macOS
+pipeline.
+
+### Windows (next stage — `not_available`)
+
+Required distributable: a **self-contained `.exe`** (frozen PyInstaller build) plus
+an **installer** (e.g. Inno Setup or MSIX).  Blockers:
+
+- A Windows build host and a `WindowsReleaseAdapter.plan_build` implementation
+  (PyInstaller one-folder/one-file `.exe`, Windows hidden imports, PyQt6 plugins).
+- Windows writable-path routing already exists in `core/app_paths.py`
+  (`%APPDATA%` / `%LOCALAPPDATA%`); the installer must place data/logs/secure
+  store there, never inside the program files bundle.
+- Authenticode code-signing certificate + timestamping (the Windows equivalent of
+  Developer ID); SmartScreen reputation.
+- A Windows atomic-replacement + rollback updater helper.
+
+### Linux (next stage — `not_available`)
+
+Required distributable: an **AppImage** and/or a **`.deb` package**.  Blockers:
+
+- A Linux build host and a `LinuxReleaseAdapter.plan_build` implementation
+  (PyInstaller + `appimagetool`, or `dpkg-deb`/`.desktop` + icon), with XDG
+  writable paths already handled in `core/app_paths.py`.
+- Qt/xcb runtime dependencies (system libs, `libxcb*`, fontconfig) audited for a
+  portable AppImage; `.deb` dependency declarations for the apt path.
+- A signing/verification story (GPG-signed repo metadata for `.deb`; embedded
+  signature or detached `.sig` for AppImage) and an atomic update/rollback helper.
+
+Until each toolchain, build host and real install/rollback verification exist,
+these adapters stay `not_available` and no macOS artifact may be presented as a
+Windows or Linux build.

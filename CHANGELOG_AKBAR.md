@@ -38,6 +38,14 @@
   done (no Apple credentials); the artifact is an unsigned/ad-hoc dev build.
 - A clean-Mac `/Applications` install/activation/permission pass is still pending.
 
+### Scope (NOT cross-platform)
+
+- This is the **macOS-only** packaging pipeline. It is not a cross-platform
+  packaging deliverable. The desktop client still needs separate Windows
+  (self-contained `.exe` + installer) and Linux (AppImage and/or `.deb`)
+  distributables; those are explicit later stages (NEXT_STEPS 0.4, 0.5) and their
+  `WindowsReleaseAdapter`/`LinuxReleaseAdapter` return honest `not_available`.
+
 ## 2026-07-16 - Self-contained macOS app + DMG build/sign/CI pipeline (BOSQICH 7)
 
 ### Added

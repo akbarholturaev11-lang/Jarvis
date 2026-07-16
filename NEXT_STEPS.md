@@ -104,6 +104,25 @@ The following external gates must be cleared before any customer release:
    - Install the DMG to `/Applications` on a clean Mac user account and complete
      activation, permission, offline, payment, update, rollback and uninstall
      tests.
+   NOTE: this is macOS-only. It is NOT cross-platform packaging — the desktop
+   client still needs separate Windows and Linux distributables (0.4, 0.5).
+
+0.4 Windows packaging (NEXT STAGE — currently `not_available`). Deliver a
+   self-contained `.exe` (frozen PyInstaller build) plus an installer
+   (Inno Setup or MSIX). Implement `WindowsReleaseAdapter.plan_build` on a
+   Windows build host with Windows hidden imports and PyQt6 plugins; route
+   writable data to `%APPDATA%`/`%LOCALAPPDATA%` (already in `core/app_paths.py`),
+   never inside the program bundle; add an Authenticode signing cert + timestamp
+   and a Windows atomic-replacement/rollback updater helper. The adapter returns
+   honest `not_available` until this exists — see `docs/RELEASE_PACKAGING.md`.
+
+0.5 Linux packaging (NEXT STAGE — currently `not_available`). Deliver an AppImage
+   and/or a `.deb` package. Implement `LinuxReleaseAdapter.plan_build` on a Linux
+   build host (PyInstaller + `appimagetool`, or `dpkg-deb`), audit the Qt/xcb
+   runtime deps for a portable AppImage, use the XDG writable paths already in
+   `core/app_paths.py`, and add a signing story (GPG for `.deb`, embedded/detached
+   signature for AppImage) plus an atomic update/rollback helper. The adapter
+   returns honest `not_available` until this exists.
 
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.
