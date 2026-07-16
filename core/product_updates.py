@@ -123,6 +123,7 @@ class VerifiedUpdateCandidate:
         repr=False,
     )
     download_path: str | None = field(default=None, repr=False)
+    download_grant: str | None = field(default=None, repr=False)
     entitlement_verified: bool = False
 
     @property
@@ -229,6 +230,17 @@ def _download_api_path(value: object) -> str:
     ):
         raise ValueError("download path is invalid")
     return parsed.path
+
+
+def _download_grant(value: object) -> str:
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    if (
+        type(value) is not str
+        or not 20 <= len(value) <= 128
+        or any(character not in alphabet for character in value)
+    ):
+        raise ValueError("download grant is invalid")
+    return value
 
 
 def _display_text(value: object, *, maximum: int, empty: bool) -> str:
@@ -692,6 +704,7 @@ class ProductUpdateService:
             "release_id",
             "release_info",
             "download_path",
+            "download_grant",
             "entitlement_certificate",
         }:
             return _check_result(STATUS_INVALID, "Update response is invalid.")
@@ -705,6 +718,7 @@ class ProductUpdateService:
         certificate_input = authorized["entitlement_certificate"]
         try:
             download_path = _download_api_path(authorized["download_path"])
+            download_grant = _download_grant(authorized["download_grant"])
         except ValueError:
             return _check_result(STATUS_INVALID, "Update response is invalid.")
         if type(certificate_input) is not str:
@@ -728,6 +742,7 @@ class ProductUpdateService:
             release_id=release_id,
             release_info=release_info,
             download_path=download_path,
+            download_grant=download_grant,
             entitlement_verified=True,
         )
         return _check_result(STATUS_ENTITLED, "Update is authorized.", candidate)
@@ -757,6 +772,7 @@ class ProductUpdateService:
             not isinstance(candidate, VerifiedUpdateCandidate)
             or not candidate.entitlement_verified
             or candidate.download_path is None
+            or candidate.download_grant is None
         ):
             return _download_result(
                 STATUS_ENTITLEMENT_REQUIRED,
@@ -809,6 +825,7 @@ class ProductUpdateService:
                 candidate.download_path,
                 temporary,
                 maximum_bytes=min(claims.byte_size, MAX_ARTIFACT_BYTES),
+                headers={"X-Artifact-Grant": candidate.download_grant},
             )
             if (
                 receipt.byte_size != claims.byte_size

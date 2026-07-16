@@ -81,6 +81,12 @@ class OperationalPolicyConfigTests(unittest.TestCase):
         self.assertTrue(policy.https_redirect)
         self.assertTrue(policy.metrics_enabled)
 
+    def test_from_env_rejects_ambiguous_boolean_values(self) -> None:
+        with self.assertRaises(BackendConfigurationError):
+            OperationalPolicy.from_env({"JARVIS_REQUIRE_HTTPS": "truthy-ish"})
+        with self.assertRaises(BackendConfigurationError):
+            OperationalPolicy.from_env({"JARVIS_HTTPS_REDIRECT": "sometimes"})
+
 
 class HealthReadinessTests(unittest.TestCase):
     def _middleware(self, *, ready: bool = True, **policy_kwargs: Any) -> Any:
@@ -169,6 +175,25 @@ class HttpsEnforcementTests(unittest.TestCase):
         )
         self.assertEqual(status, 400)
 
+    def test_redirect_refuses_userinfo_authority_confusion(self) -> None:
+        app = OperationalMiddleware(
+            _echo_app,
+            policy=OperationalPolicy(
+                require_https=True,
+                https_redirect=True,
+                allowed_hosts=("product.example.com",),
+            ),
+        )
+        status, headers, _ = _call(
+            app,
+            "GET",
+            "/api/releases",
+            scheme="http",
+            headers=[(b"host", b"product.example.com:443@evil.example")],
+        )
+        self.assertEqual(status, 400)
+        self.assertNotIn(b"location", headers)
+
     def test_https_request_passes_and_sets_hsts(self) -> None:
         app = OperationalMiddleware(
             _echo_app, policy=OperationalPolicy(require_https=True)
@@ -237,6 +262,54 @@ class MetricsEndpointTests(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertIn(b"jarvis_backend_requests_total", body)
+
+    def test_metrics_cannot_bypass_https_and_secure_response_has_hsts(self) -> None:
+        token = "0123456789abcdef"
+        app = OperationalMiddleware(
+            _echo_app,
+            policy=OperationalPolicy(require_https=True, metrics_token=token),
+            metrics=InMemoryMetrics(),
+        )
+        auth = [(b"authorization", f"Bearer {token}".encode("ascii"))]
+        status, _, body = _call(
+            app, "GET", "/metrics", scheme="http", headers=auth
+        )
+        self.assertEqual(status, 400)
+        self.assertIn(b"https is required", body)
+        status, secure_headers, _ = _call(
+            app, "GET", "/metrics", scheme="https", headers=auth
+        )
+        self.assertEqual(status, 200)
+        self.assertIn(b"strict-transport-security", secure_headers)
+
+    def test_metrics_cannot_bypass_the_trusted_host_boundary(self) -> None:
+        token = "0123456789abcdef"
+        app = OperationalMiddleware(
+            _echo_app,
+            policy=OperationalPolicy(
+                require_https=True,
+                metrics_token=token,
+                allowed_hosts=("product.example.com",),
+            ),
+            metrics=InMemoryMetrics(),
+        )
+        auth = [(b"authorization", f"Bearer {token}".encode("ascii"))]
+        status, _, _ = _call(
+            app,
+            "GET",
+            "/metrics",
+            scheme="https",
+            headers=[*auth, (b"host", b"evil.example.net")],
+        )
+        self.assertEqual(status, 400)
+        status, _, _ = _call(
+            app,
+            "GET",
+            "/metrics",
+            scheme="https",
+            headers=[*auth, (b"host", b"product.example.com:443")],
+        )
+        self.assertEqual(status, 200)
 
 
 class CorrelationIdTests(unittest.TestCase):
@@ -315,6 +388,7 @@ def _runtime_environment(root: Path) -> dict[str, str]:
         "JARVIS_ADMIN_PBKDF2_ITERATIONS": str(credential.iterations),
         "JARVIS_ADMIN_SESSION_SECRET_B64URL": _b64(b"z" * 32),
         "JARVIS_API_ALLOWED_HOSTS": "product.example.com",
+        "JARVIS_REQUIRE_HTTPS": "true",
     }
 
 
@@ -335,10 +409,10 @@ class AssembledAppOperationalTests(unittest.TestCase):
                     self.assertEqual(client.get("/healthz").status_code, 200)
                     self.assertEqual(client.get("/readyz").status_code, 200)
                 # A real route is rejected for a foreign host by TrustedHost.
-                with TestClient(app, base_url="http://evil.example.net") as client:
+                with TestClient(app, base_url="https://evil.example.net") as client:
                     self.assertEqual(client.get("/api/releases").status_code, 400)
                 # The configured host is accepted.
-                with TestClient(app, base_url="http://product.example.com") as client:
+                with TestClient(app, base_url="https://product.example.com") as client:
                     response = client.get("/api/releases")
                     self.assertEqual(response.status_code, 200)
                     self.assertIn("x-request-id", response.headers)

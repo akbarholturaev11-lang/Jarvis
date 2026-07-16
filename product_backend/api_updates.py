@@ -139,7 +139,15 @@ class ArtifactDownloadGrantManager:
         return IssuedArtifactDownloadGrant(token, format_utc_timestamp(expires))
 
     def consume(self, token: object, *, artifact_id: str) -> ReleaseArtifact | None:
-        if not isinstance(token, str) or not 20 <= len(token) <= 128:
+        if (
+            not isinstance(token, str)
+            or not 20 <= len(token) <= 128
+            or any(
+                character
+                not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                for character in token
+            )
+        ):
             return None
         digest = self._digest(token)
         now = self._now()

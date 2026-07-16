@@ -25,9 +25,14 @@ COPY ops/ ./ops/
 
 # Run as a dedicated non-root user; the data volume is owned at runtime.
 RUN useradd --system --create-home --uid 10001 jarvis \
-    && mkdir -p /var/lib/jarvis/data /var/lib/jarvis/artifacts \
+    && mkdir -p /var/lib/jarvis/data /var/lib/jarvis/artifacts /run/jarvis-secrets \
+    && touch /run/jarvis-secrets/entitlement.key \
+             /run/jarvis-secrets/activation.pepper \
+             /run/jarvis-secrets/admin-mfa.key \
     && chown -R jarvis:jarvis /var/lib/jarvis \
-    && chmod 700 /var/lib/jarvis/data /var/lib/jarvis/artifacts
+    && chown -R jarvis:jarvis /run/jarvis-secrets \
+    && chmod 700 /var/lib/jarvis/data /var/lib/jarvis/artifacts /run/jarvis-secrets \
+    && chmod 600 /run/jarvis-secrets/*
 USER jarvis
 
 VOLUME ["/var/lib/jarvis"]
@@ -41,4 +46,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 CMD ["python", "-m", "uvicorn", \
      "product_backend.runtime:create_app_from_environment", "--factory", \
      "--host", "0.0.0.0", "--port", "8080", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+     "--no-access-log"]

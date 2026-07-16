@@ -57,6 +57,7 @@ _REQUIRED_RUNTIME_ENV: Final = (
     "JARVIS_ENTITLEMENT_PRIVATE_KEY_FILE",
     "JARVIS_ACTIVATION_PEPPER_FILE",
     "JARVIS_ADMIN_MFA_KEY_FILE",
+    "JARVIS_REQUIRE_HTTPS",
 )
 _TRUTHY: Final = frozenset({"1", "true", "yes", "on"})
 
@@ -86,6 +87,15 @@ def create_app_from_environment(
         raise BackendConfigurationError(
             "required backend runtime configuration is missing"
         )
+    admin_settings = AdminAuthSettings.from_env(source)
+    operational_policy = OperationalPolicy.from_env(
+        source,
+        allowed_hosts=admin_settings.allowed_hosts,
+    )
+    if not operational_policy.require_https:
+        raise BackendConfigurationError(
+            "JARVIS_REQUIRE_HTTPS must be enabled for the deployable runtime"
+        )
     data_dir = _ensure_private_directory(source["JARVIS_BACKEND_DATA_DIR"])
     artifact_root = _existing_private_directory(
         source["JARVIS_RELEASE_ARTIFACT_ROOT"]
@@ -106,17 +116,12 @@ def create_app_from_environment(
         minimum_bytes=32,
         maximum_bytes=128,
     )
-    admin_settings = AdminAuthSettings.from_env(source)
     mfa_settings = _admin_mfa_settings(source)
     trusted_proxy = TrustedProxyConfig.from_spec(
         source.get("JARVIS_TRUSTED_PROXIES")
     )
     admin_ip_allowlist = AdminIpAllowlist.from_spec(
         source.get("JARVIS_ADMIN_ALLOWED_NETWORKS")
-    )
-    operational_policy = OperationalPolicy.from_env(
-        source,
-        allowed_hosts=admin_settings.allowed_hosts,
     )
     request_logger = configure_json_logging(name="jarvis.backend.access")
     metrics: MetricsRegistry = (

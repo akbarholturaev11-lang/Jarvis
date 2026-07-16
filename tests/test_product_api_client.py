@@ -101,6 +101,19 @@ class ProductApiClientTests(unittest.TestCase):
                 {},
                 "https://api.example.test/v1/other",
             )
+
+        with self.assertRaises(ValueError):
+            handler.redirect_request(
+                Request(
+                    "https://api.example.test/v1/download",
+                    headers={"X-Artifact-Grant": "private-artifact-grant"},
+                ),
+                None,
+                307,
+                "redirect",
+                {},
+                "https://api.example.test/v1/download-redirected",
+            )
         redirected = handler.redirect_request(
             Request("https://api.example.test/v1/check"),
             None,

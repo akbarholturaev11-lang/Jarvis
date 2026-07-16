@@ -176,7 +176,9 @@ class JsonLogFormatter(logging.Formatter):
         for field in _LOG_EXTRA_FIELDS:
             if hasattr(record, field):
                 value = getattr(record, field)
-                if _key_is_secret(field):
+                if field == "request_id":
+                    payload[field] = sanitize_request_id(value) or _REDACTED
+                elif _key_is_secret(field):
                     payload[field] = _REDACTED
                 elif isinstance(value, str):
                     payload[field] = redact_text(value)

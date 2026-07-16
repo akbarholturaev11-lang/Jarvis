@@ -105,6 +105,22 @@ class JsonLoggingTests(unittest.TestCase):
         self.assertEqual(emitted["message"], "hello")
         self.assertEqual(emitted["request_id"], "req_aaaaaaaa")
 
+    def test_generated_request_id_is_not_mistaken_for_an_opaque_secret(self) -> None:
+        formatter = JsonLogFormatter()
+        request_id = new_request_id()
+        record = logging.LogRecord(
+            name="jarvis.backend.access",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="request",
+            args=(),
+            exc_info=None,
+        )
+        record.request_id = request_id
+        payload = json.loads(formatter.format(record))
+        self.assertEqual(payload["request_id"], request_id)
+
 
 class MetricsTests(unittest.TestCase):
     def test_counter_and_prometheus_rendering(self) -> None:

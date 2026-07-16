@@ -96,9 +96,9 @@ def _structural_checks(env: Mapping[str, str], report: ValidationReport) -> None
         report.error("JARVIS_API_ALLOWED_HOSTS must not contain a wildcard")
 
     if env.get("JARVIS_REQUIRE_HTTPS", "").strip().lower() not in _TRUTHY:
-        report.warn(
-            "JARVIS_REQUIRE_HTTPS is not enabled; the app will accept plain "
-            "HTTP unless the edge terminates and enforces TLS"
+        report.error(
+            "JARVIS_REQUIRE_HTTPS must be explicitly enabled; the deployable "
+            "runtime is HTTPS-only"
         )
     if env.get("JARVIS_ADMIN_MFA_ALLOW_PASSWORD_ONLY", "").strip().lower() in _TRUTHY:
         report.error(

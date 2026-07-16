@@ -126,6 +126,7 @@ class _SafeRedirectHandler(HTTPRedirectHandler):
             "x-csrf-token",
             "x-device-grant",
             "x-purchase-grant",
+            "x-artifact-grant",
         }
         supplied_headers = {
             str(name).casefold()

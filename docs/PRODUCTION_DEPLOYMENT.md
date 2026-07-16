@@ -13,7 +13,8 @@ commercial-distribution gates in the contract still apply.
  Internet ─HTTPS─▶  │ reverse proxy (nginx/Caddy) │ ─HTTP─▶ uvicorn (--factory)
                     │  TLS termination + HSTS      │        product_backend.runtime
                     │  trusted host (server_name)  │        :create_app_from_environment
-                    │  edge rate limit             │              │
+                    │  nginx edge rate limit;       │              │
+                    │  Caddy needs external limit   │              │
                     │  admin IP allowlist (opt)    │              ▼
                     └─────────────────────────────┘        SQLite databases +
                           loopback / internal net           payment evidence
@@ -50,9 +51,44 @@ every runtime guard, and closes it. The systemd unit runs it as `ExecStartPre`,
 so a misconfiguration prevents the service from starting.
 
 Secrets live **outside the repository** in a managed secret store, materialized
-as owner-only files immediately before start. `.gitignore` already excludes
-`*.key`, `*.pem`, `*.sqlite3`, `.env`/`.env.*`, and the payment-instructions and
-product config files.
+as owner-only files immediately before start. `.gitignore` explicitly excludes
+`deploy/env/backend.env` in addition to `*.key`, `*.pem`, `*.sqlite3`,
+`.env`/`.env.*`, and the payment-instructions and product config files. The root
+`.dockerignore` is a deny-by-default allowlist, so the Docker daemon receives
+only `product_backend/`, `core/`, `ops/`, the Dockerfile and the backend
+dependency manifest — never the rest of the repository.
+
+### Docker Compose path and secret boundary
+
+The Compose recipe requires five `JARVIS_COMPOSE_*` variables containing
+**absolute host paths**: the owner-only backend env file, entitlement key,
+activation pepper, MFA key and TLS certificate directory. It overrides the
+corresponding runtime values with fixed in-container paths. Only the entitlement
+key, activation pepper and MFA key are mounted read-only into the backend. The
+release-signing private key is an offline signing asset and must never be mounted
+or copied into this online service.
+
+The backend dependency manifest pins the six directly tested packages. The
+transitive dependency graph and container base images are not hash/digest locked
+yet, so rebuilds are not claimed bit-for-bit reproducible; add a reviewed hash
+lock and immutable base-image digests before a production supply-chain sign-off.
+
+On the Linux production host, the three backend secret files must be mode `0600`
+and owned by container UID `10001`. First render and inspect the fully substituted
+configuration, then validate the assembled runtime **inside** the one-shot
+container where `/var/lib/jarvis` and `/run/jarvis-secrets` exist:
+
+```bash
+docker compose -f deploy/docker/docker-compose.yml config --quiet
+docker compose -f deploy/docker/docker-compose.yml build backend
+docker compose -f deploy/docker/docker-compose.yml run --rm --no-deps backend \
+    python -m ops.validate_config
+docker compose -f deploy/docker/docker-compose.yml up -d
+```
+
+Host-side validation of that Compose env is invalid because the fixed container
+paths do not exist on the host. For systemd, by contrast, continue to run the
+host-side `ExecStartPre` validation against `/etc/jarvis/backend.env`.
 
 ## 3. HTTPS-only policy and forwarded headers
 
@@ -63,8 +99,10 @@ product config files.
   (`X-Forwarded-For`) are trusted **only** when the direct socket peer is in
   `JARVIS_TRUSTED_PROXIES`. With no configured proxy the forwarded headers are
   ignored and the socket peer is authoritative, so a client cannot spoof HTTPS or
-  its rate-limit identity. Set `JARVIS_TRUSTED_PROXIES` to your proxy's CIDR (or
-  use uvicorn `--proxy-headers --forwarded-allow-ips` for the loopback proxy).
+  its rate-limit identity. The recipes pin this to exactly `172.30.250.2/32`
+  (Compose nginx) or `127.0.0.1/32` (systemd proxy). Do not enable uvicorn's
+  proxy-header rewriting: the app must receive the raw socket peer so its own
+  explicit trust policy can decide whether forwarded headers are authoritative.
 - Health/readiness probes are exempt from the HTTPS policy and the trusted-host
   check, so a plain-HTTP liveness probe on the instance IP still works.
 
@@ -83,33 +121,61 @@ by `product_backend.observability`. Point the systemd/container log pipeline at
 your log aggregator; the JSON includes `request_id`, `method`, `path`, `status`,
 `client_ip`, `scheme`, and `duration_ms`.
 
+Uvicorn's raw access log is disabled in both recipes to avoid a second,
+unredacted request-target log. Artifact download grants are carried in the
+`X-Artifact-Grant` request header; proxies must forward that header but must not
+log it. A grant is never placed in a query string or public artifact URL.
+
 ## 5. Rate limiting (edge + app)
 
 The app enforces bounded in-process limits on admin login, MFA, activation, and
-purchase flows. These are **not** a DDoS defense. Add an **edge** limit at the
-proxy (`limit_req` in nginx, `rate_limit` in Caddy) — the shipped configs cap
-auth-sensitive paths tighter than general traffic — plus your provider's network
-protection.
+purchase flows. These are **not** a DDoS defense. The shipped nginx recipe adds
+`limit_req` limits and caps the payment multipart body at 11 MiB (10 MiB image
+plus bounded framing). Stock Caddy has no built-in request-rate limiter: the
+shipped Caddyfile therefore requires a provider/WAF limit or a separately
+reviewed rate-limit module before public use. Do not claim the stock Caddy recipe
+provides an edge limiter.
 
 ## 6. Backup and restore
 
 ```bash
-# Consistent online snapshot (safe while the service runs).
-python -m ops.backup  --data-dir /var/lib/jarvis/data \
-    --backup-dir /var/backups/jarvis/$(date -u +%Y%m%dT%H%M%SZ)
-# Verified restore into a fresh data dir (refuses to overwrite without --force).
+# A cross-database backup requires a real maintenance window.
+sudo systemctl stop jarvis-backend
+python -m ops.backup --data-dir /var/lib/jarvis/data \
+    --backup-dir /var/backups/jarvis/20260717T120000Z \
+    --confirm-service-stopped
+sudo systemctl start jarvis-backend
+
+# Restore only into a fresh sibling while the service remains stopped.
+sudo systemctl stop jarvis-backend
 python -m ops.restore --backup-dir /var/backups/jarvis/<stamp> \
-    --data-dir /var/lib/jarvis/data
+    --data-dir /var/lib/jarvis/restored-<stamp>
 ```
 
-- `ops.backup` copies every SQLite database with the online backup API
-  (transaction-consistent) and every payment-evidence object, hashing each into
-  `manifest.json`.
-- `ops.restore` re-verifies each file's SHA-256 against the manifest before
-  copying; a corrupted or tampered backup fails closed.
+- `ops.backup` refuses to run without explicit stopped-service confirmation. It
+  requires all five SQLite stores and the private `payment-evidence/` root,
+  validates each database's application schema, copies evidence through
+  no-follow bounded reads, and hashes every file into `manifest.json`.
+- The source must remain the backend-created, owner-controlled `0700` data
+  directory throughout the maintenance window. Never point backup at a
+  world-writable or attacker-controlled tree; the confirmation flag cannot
+  prove that the service really stopped or establish an external process lock.
+- `ops.restore` requires a fresh nonexistent target. It verifies the complete
+  evidence tree, strict manifest, hashes, SQLite integrity and schema, stages the
+  whole tree on the target filesystem, then publishes it with one directory
+  rename. Overlay/`--force` restore is intentionally `not_available`.
+- Manifest SHA-256 values detect corruption but are **not an authenticity
+  signature**. Backup storage is therefore a trusted boundary: keep each backup
+  owner-only and immutable or add an independently managed signature/MAC before
+  transporting it. Do not restore an operator-supplied untrusted archive.
 - **Restore drills:** after restore, confirm account/license/release/payment/
-  entitlement rows and activation one-time state (see below) and that private
-  evidence bytes match.
+  entitlement rows, activation one-time state and private evidence bytes; run
+  `ops.migrate verify` against the restored directory. Only then switch the
+  service data path and restart. Keep the old tree read-only until the drill and
+  health check pass.
+- Secure backup/restore mutation is implemented only with POSIX no-follow
+  primitives on Linux/macOS. Native Windows execution returns honest
+  `not_available`; use the reviewed Linux container/host path instead.
 
 ## 7. Database migration
 
@@ -148,11 +214,11 @@ steps and honest side effects. It never silently replaces live material.
 
 | Key | Command | Side effect |
 | --- | --- | --- |
-| Session secret | `ops.rotate session-secret` | All admin sessions/grants invalidated on restart; operators re-login. |
-| MFA master key | `ops.rotate mfa-key` | Every admin must re-enrol their second factor. |
-| Activation pepper | `ops.rotate activation-pepper` | Pending/unused activation codes must be re-issued; activated devices keep working (their cached certificate is entitlement-key signed). |
-| Entitlement signing key | `ops.rotate entitlement-key --key-id …` | **Overlap required:** ship the new public key + id to clients alongside the old, then switch signing, then retire the old. Cached certificates stay valid while the old id is still pinned. |
-| Release signing key | `ops.rotate release-key --key-id …` | **Overlap required:** add the new public key + id to `JARVIS_RELEASE_PUBLIC_KEYS_JSON` (up to 16), sign new artifacts with it, retire the old id only when nothing served depends on it. |
+| Session secret | `ops.rotate session-secret --out-dir /secure/rotation` | All admin sessions/grants invalidated on restart; operators re-login. |
+| MFA master key | `ops.rotate mfa-key --out-dir /secure/rotation` | **`not_available`:** stored TOTP secrets and recovery authenticators need an authenticated transactional re-encryption workflow; generating and switching a fresh key would lock out every admin. |
+| Activation pepper | `ops.rotate activation-pepper --out-dir /secure/rotation` | Pending/unused activation codes must be re-issued; activated devices keep working (their cached certificate is entitlement-key signed). |
+| Entitlement signing key | `ops.rotate entitlement-key --out-dir /secure/rotation --key-id …` | **Overlap required:** ship the new public key + id to clients alongside the old, then switch signing, then retire the old. Cached certificates stay valid while the old id is still pinned. |
+| Release signing key | `ops.rotate release-key --out-dir /secure/rotation --key-id …` | **Overlap required:** add the new public key + id to `JARVIS_RELEASE_PUBLIC_KEYS_JSON` (up to 16), sign new artifacts with it, retire the old id only when nothing served depends on it. |
 
 Never reuse an entitlement/release key id for different key material; never
 remotely disable a purchased older version during any rotation.
@@ -203,7 +269,9 @@ convenience, not a production certificate.
 ## 13. Cross-platform hosting
 
 The backend runtime enforces POSIX owner-only permissions on secret files and
-the data directory, so the hardened service must run on **Linux or macOS** (or a
-Linux container). The `ops/*` tooling runs on macOS, Windows, and Linux; on
-Windows it returns an honest `manual` status with NTFS ACL guidance instead of
-faking `0600`. To host on Windows, run the Docker image (Linux container).
+the data directory. The shipped Compose recipe is production-targeted at Linux,
+where the three bind-mounted backend secrets can be owned by UID `10001`.
+Docker Desktop bind-mount ownership behavior has not been production-verified
+on macOS or Windows and is not claimed ready. Secure mutating `ops/*` commands
+use POSIX owner/no-follow primitives on Linux/macOS; native Windows returns
+honest `not_available` instead of writing first or faking `0600`.

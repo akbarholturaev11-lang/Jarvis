@@ -1,0 +1,28 @@
+# Deny the repository-root Docker build context by default.  The backend image
+# needs only these server-side Python packages and its dependency manifest.
+**
+!.dockerignore
+!core/
+!core/**
+!product_backend/
+!product_backend/**
+!ops/
+!ops/**
+!deploy/
+!deploy/docker/
+!deploy/docker/Dockerfile
+!deploy/docker/requirements-backend.txt
+
+# Re-deny local/runtime material even when it appears below an allowed source
+# directory. Later rules win, so these cannot ride into the daemon context.
+product_backend/runtime/
+**/__pycache__/
+**/*.py[cod]
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.key
+**/*.pem
+**/*.p12
+**/*.pfx
+**/*.log
+**/.DS_Store

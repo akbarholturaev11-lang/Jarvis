@@ -522,7 +522,26 @@ class ProductBackendMvpTests(unittest.TestCase):
                     self.assertEqual(
                         entitled["release_info"], offered["release_info"]
                     )
-                    downloaded = client.get(entitled["download_path"])
+                    download_headers = {
+                        "X-Artifact-Grant": entitled["download_grant"]
+                    }
+                    self.assertNotIn(
+                        entitled["download_grant"], entitled["download_path"]
+                    )
+                    self.assertEqual(
+                        client.get(entitled["download_path"]).status_code,
+                        401,
+                    )
+                    self.assertEqual(
+                        client.get(
+                            entitled["download_path"],
+                            headers={"X-Artifact-Grant": "invalid grant value"},
+                        ).status_code,
+                        401,
+                    )
+                    downloaded = client.get(
+                        entitled["download_path"], headers=download_headers
+                    )
                     self.assertEqual(downloaded.status_code, 200)
                     self.assertEqual(
                         downloaded.headers["content-length"],
@@ -530,7 +549,9 @@ class ProductBackendMvpTests(unittest.TestCase):
                     )
                     self.assertEqual(downloaded.content, update_bytes)
                     self.assertEqual(
-                        client.get(entitled["download_path"]).status_code,
+                        client.get(
+                            entitled["download_path"], headers=download_headers
+                        ).status_code,
                         401,
                     )
             finally:

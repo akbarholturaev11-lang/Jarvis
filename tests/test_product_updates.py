@@ -306,6 +306,7 @@ class ProductUpdateServiceTests(unittest.TestCase):
                 "release_id": "rel_update_001",
                 "release_info": _release_info(),
                 "download_path": "/v1/client/updates/download",
+                "download_grant": "artifact-download-grant-test-001",
                 "entitlement_certificate": _entitlement(
                     certificate_key or self.entitlement_key,
                     TARGET_VERSION,
@@ -418,6 +419,14 @@ class ProductUpdateServiceTests(unittest.TestCase):
             self.assertEqual(downloaded.staged.path.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(str(self.staging), repr(downloaded))
         self.assertFalse(any(path.suffix == ".part" for path in self.staging.iterdir()))
+        self.assertEqual(
+            transport.requests[4]["headers"]["X-Artifact-Grant"],
+            "artifact-download-grant-test-001",
+        )
+        self.assertNotIn(
+            "artifact-download-grant-test-001",
+            transport.requests[4]["url"],
+        )
 
     def test_signed_rollback_incompatible_source_and_tamper_are_rejected(self):
         valid = _release_manifest(self.release_key)
@@ -500,6 +509,22 @@ class ProductUpdateServiceTests(unittest.TestCase):
 
         self.assertEqual(checked.status, STATUS_ENTITLEMENT_REQUIRED)
         self.assertIsNone(checked.candidate)
+
+    def test_entitled_response_requires_a_bounded_header_grant(self):
+        manifest = _release_manifest(self.release_key)
+        for grant in (None, "short", "bad grant with spaces", "x" * 129):
+            with self.subTest(grant=grant):
+                responses = self._proof_responses(manifest, entitled=True)
+                authorized = json.loads(responses[-1].raw.decode("utf-8"))
+                if grant is None:
+                    authorized.pop("download_grant")
+                else:
+                    authorized["download_grant"] = grant
+                responses[-1] = FakeResponse.json(authorized)
+                service, _ = self._service(responses)
+                checked = self._check(service)
+                self.assertEqual(checked.status, STATUS_INVALID)
+                self.assertIsNone(checked.candidate)
 
 
 if __name__ == "__main__":

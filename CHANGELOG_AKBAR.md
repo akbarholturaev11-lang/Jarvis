@@ -1,5 +1,72 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-17 - Release/deployment security audit corrections (BOSQICH 7-8)
+
+### Corrected release truth boundary
+
+- Production Developer ID signing execution is now mechanically
+  `not_available`: the local tool emits only a readiness plan and can never mark
+  an artifact signed/notarized. The unaudited CI credential job was removed.
+- Signing planning now requires an exact Developer ID Application label with a
+  matching Team ID, notary profile, real app/DMG inputs and all Apple tools.
+  The plan still reports `signed=false`, `notarized=false`, and
+  `distribution_ready=false`.
+- Removed the JIT and DYLD-environment hardened-runtime entitlements. The two
+  remaining PyInstaller exceptions are provisional until a signed clean-Mac
+  run proves the minimum set. Structural bundle smoke no longer claims that
+  system Python or Terminal independence was observed.
+
+### Corrected backend and deployment boundaries
+
+- The deployable factory requires explicit HTTPS before creating runtime files;
+  ambiguous boolean configuration fails closed. `/metrics` can no longer bypass
+  HTTPS, HSTS, metrics accounting, or the configured Host allowlist. Redirect
+  authority parsing rejects user-info/open-redirect confusion. Valid request IDs
+  remain useful in redacted JSON logs.
+- Short-lived artifact download grants moved from logged URLs to the
+  `X-Artifact-Grant` header. The client rejects credential-bearing redirects,
+  and grant inputs remain bounded, single-use, and secret-safe in repr/errors.
+- Docker now uses a repository-root deny-by-default context, a non-root/read-only
+  backend, three explicit read-only online secret mounts, a fixed private proxy
+  subnet, no published backend port, no uvicorn proxy rewriting/access log, and
+  exact direct dependency pins. The offline release-signing key is excluded.
+  nginx carries the real edge limit and upload bound; stock Caddy is documented
+  as requiring an external rate limiter.
+
+### Corrected operations safety
+
+- Secret generation, rotation, backup and restore use POSIX owner-only,
+  no-follow, create-only/atomic primitives and reject all repository/worktree
+  outputs, including case-insensitive macOS and symlink aliases. Native Windows
+  mutation is honest `not_available` until native ACL/no-follow support exists.
+- Backup requires a stopped-service maintenance window, every backend database,
+  the complete private payment-evidence tree, bounded stable copies and the
+  exact application database schema. Restore verifies the strict manifest,
+  complete evidence tree, hashes, SQLite/schema contracts, stages a full fresh
+  tree, and publishes it with one directory rename; overlay restore is
+  `not_available`.
+- MFA master-key rotation is deliberately `not_available` until an authenticated
+  transactional re-encryption path exists; generating a fresh key would lock
+  every administrator out. Backup SHA-256 detects corruption but is not an
+  authenticity signature, so owner-only/immutable backup storage remains an
+  explicit operator trust boundary.
+
+### Verification
+
+- Targeted release/signing/deployment, HTTPS/observability, API download-grant,
+  ops negative-path, backup/restore and schema-contract suites pass locally.
+- Shell syntax, plist syntax, Python compilation, full pytest, staged-diff and
+  secret-boundary checks are run again on the isolated commit before push.
+
+### Honest remaining blockers
+
+- Apple Developer ID/notarization credentials, an audited production updater
+  helper, a signed final DMG and a clean-Mac run remain unavailable.
+- Docker/nginx/systemd recipes are locally contract-tested but have not been
+  started on an operator-owned production host/domain. PostgreSQL/shared state,
+  automated retention, authenticated backup manifests and MFA-key re-encryption
+  remain internal follow-up work.
+
 ## 2026-07-16 - Hardened production backend deployment + ops tooling (BOSQICH 8)
 
 ### Added

@@ -1,27 +1,17 @@
-"""Generate new key material and print the safe rotation procedure.
+"""Generate create-only rotation material and print only non-secret guidance.
 
-This tool does the mechanical, error-prone part of a rotation (generating fresh
-material) and prints the exact cutover steps and honest side effects.  It never
-silently replaces live material: the operator applies the new values through the
-managed secret store and restarts the service.
-
-Supported key types::
-
-    session-secret      rotate the admin session HMAC secret
-    mfa-key             rotate the admin MFA master key (forces MFA re-enrolment)
-    activation-pepper   rotate the activation pepper (invalidates pending codes)
-    entitlement-key     rotate the entitlement signing key (overlap required)
-    release-key         rotate the release signing key (overlap required)
-
-Usage::
-
-    python -m ops.rotate entitlement-key --out-dir /etc/jarvis/rotate --key-id v2
+Private values are written to owner-only files.  In particular, session-secret
+rotation emits a private dotenv fragment instead of returning or printing the
+new HMAC secret.  Operators perform the documented managed-secret-store cutover;
+the tool never silently mutates live deployment state.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import json
+import re
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,7 +19,18 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from ._common import emit, eprint, write_secret_bytes
+from ._common import (
+    OpsNotAvailableError,
+    emit,
+    ensure_private_directory,
+    eprint,
+    reject_repository_output_path,
+    require_permission_applied,
+    require_secure_ops_platform,
+    validate_write_target,
+    write_secret_bytes,
+    write_secret_text,
+)
 
 KEY_TYPES = (
     "session-secret",
@@ -38,6 +39,8 @@ KEY_TYPES = (
     "entitlement-key",
     "release-key",
 )
+SESSION_SECRET_FILENAME = "session-secret.env"
+_KEY_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 
 
 def _b64url(raw: bytes) -> str:
@@ -62,11 +65,27 @@ def _raw_public(key: Ed25519PrivateKey) -> bytes:
 @dataclass(frozen=True, slots=True)
 class RotationResult:
     key_type: str
-    env_updates: dict[str, str] = field(default_factory=dict)
+    env_updates: dict[str, str] = field(default_factory=dict, repr=False)
     files: dict[str, Path] = field(default_factory=dict)
     public_values: dict[str, str] = field(default_factory=dict)
     steps: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+
+def _prepare_output(out_dir: Path, path: Path, *, write_files: bool) -> None:
+    if not write_files:
+        return
+    require_permission_applied(
+        ensure_private_directory(out_dir),
+        label="rotation output directory",
+    )
+    validate_write_target(path)
+
+
+def _validated_key_id(value: str) -> str:
+    if not _KEY_ID_PATTERN.fullmatch(value):
+        raise ValueError("key id must be 1-64 portable filename characters")
+    return value
 
 
 def rotate(
@@ -76,42 +95,47 @@ def rotate(
     key_id: str | None = None,
     write_files: bool = True,
 ) -> RotationResult:
-    out_dir = Path(out_dir)
+    require_secure_ops_platform()
+    if key_type == "mfa-key":
+        raise OpsNotAvailableError(
+            "admin MFA master-key rotation is not_available until stored TOTP "
+            "secrets and recovery-code authenticators can be transactionally "
+            "re-encrypted without locking out every administrator"
+        )
+    out_dir = reject_repository_output_path(Path(out_dir))
     if key_type == "session-secret":
+        if not write_files:
+            raise ValueError("session secret rotation requires an owner-only output file")
+        path = out_dir / SESSION_SECRET_FILENAME
+        _prepare_output(out_dir, path, write_files=write_files)
         secret = _b64url(secrets.token_bytes(32))
+        require_permission_applied(
+            write_secret_text(
+                path,
+                "JARVIS_ADMIN_SESSION_SECRET_B64URL=" + json.dumps(secret) + "\n",
+            ),
+            label="session secret file",
+        )
+        secret = ""
         return RotationResult(
             key_type,
-            env_updates={"JARVIS_ADMIN_SESSION_SECRET_B64URL": secret},
+            files={"session_secret_env": path},
             steps=[
-                "Store the new JARVIS_ADMIN_SESSION_SECRET_B64URL in the secret "
-                "store and restart the service.",
+                "Import the private session-secret.env value into the managed "
+                "secret store, remove the fragment, and restart the service.",
                 "All active admin sessions and device-action grants are "
                 "invalidated on restart; admins simply log in again.",
             ],
         )
 
-    if key_type == "mfa-key":
-        path = out_dir / "admin-mfa.key"
-        if write_files:
-            write_secret_bytes(path, secrets.token_bytes(32))
-        return RotationResult(
-            key_type,
-            files={"admin_mfa_key": path},
-            steps=[
-                "Point JARVIS_ADMIN_MFA_KEY_FILE at the new admin-mfa.key and "
-                "restart the service.",
-            ],
-            notes=[
-                "The MFA master key encrypts stored TOTP secrets and recovery "
-                "codes. After rotation every admin MUST re-enrol their second "
-                "factor; existing authenticator entries stop verifying.",
-            ],
-        )
-
     if key_type == "activation-pepper":
         path = out_dir / "activation.pepper"
+        _prepare_output(out_dir, path, write_files=write_files)
         if write_files:
-            write_secret_bytes(path, secrets.token_bytes(32))
+            require_permission_applied(
+                write_secret_bytes(path, secrets.token_bytes(32)),
+                label="activation pepper file",
+            )
         return RotationResult(
             key_type,
             files={"activation_pepper": path},
@@ -128,11 +152,15 @@ def rotate(
         )
 
     if key_type == "entitlement-key":
-        new_id = key_id or "entitlement-key-002"
+        new_id = _validated_key_id(key_id or "entitlement-key-002")
         key = Ed25519PrivateKey.generate()
         path = out_dir / f"{new_id}.key"
+        _prepare_output(out_dir, path, write_files=write_files)
         if write_files:
-            write_secret_bytes(path, _raw_private(key))
+            require_permission_applied(
+                write_secret_bytes(path, _raw_private(key)),
+                label="entitlement private-key file",
+            )
         return RotationResult(
             key_type,
             env_updates={
@@ -158,11 +186,15 @@ def rotate(
         )
 
     if key_type == "release-key":
-        new_id = key_id or "release-key-002"
+        new_id = _validated_key_id(key_id or "release-key-002")
         key = Ed25519PrivateKey.generate()
         path = out_dir / f"{new_id}.key"
+        _prepare_output(out_dir, path, write_files=write_files)
         if write_files:
-            write_secret_bytes(path, _raw_private(key))
+            require_permission_applied(
+                write_secret_bytes(path, _raw_private(key)),
+                label="release private-key file",
+            )
         return RotationResult(
             key_type,
             files={"release_signing_key": path},
@@ -189,18 +221,34 @@ def rotate(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Rotate a JARVIS backend key.")
     parser.add_argument("key_type", choices=KEY_TYPES)
-    parser.add_argument("--out-dir", type=Path, default=Path("."))
+    parser.add_argument("--out-dir", type=Path, required=True)
     parser.add_argument("--key-id", default=None)
     args = parser.parse_args(argv)
 
-    result = rotate(args.key_type, args.out_dir, key_id=args.key_id)
+    try:
+        result = rotate(args.key_type, args.out_dir, key_id=args.key_id)
+    except OpsNotAvailableError:
+        if args.key_type == "mfa-key":
+            eprint(
+                "[not_available] admin MFA master-key rotation requires an "
+                "authenticated transactional re-encryption workflow"
+            )
+        else:
+            eprint(
+                "[not_available] native owner-only rotation output is not "
+                "implemented on this platform"
+            )
+        return 1
+    except Exception:  # noqa: BLE001 - private exception values must not reach logs
+        eprint("[fail] rotation material was not created; no secret value was printed")
+        return 1
     emit(f"[rotate] {result.key_type}")
-    for name, value in result.env_updates.items():
-        emit(f"  env: {name}={value}")
+    for name in result.env_updates:
+        emit(f"  env-key-to-update: {name} (value intentionally not printed)")
     for label, path in result.files.items():
-        emit(f"  file: {label} -> {path}")
-    for key_id, public in result.public_values.items():
-        emit(f"  public-key: {key_id} = {public}")
+        emit(f"  private-file: {label} -> {path}")
+    for public_key_id, public in result.public_values.items():
+        emit(f"  public-key: {public_key_id} = {public}")
     emit("  steps:")
     for index, step in enumerate(result.steps, start=1):
         emit(f"    {index}. {step}")

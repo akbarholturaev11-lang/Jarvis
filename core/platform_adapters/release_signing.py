@@ -1,20 +1,24 @@
 """macOS Developer ID signing / notarization planner for JARVIS.app.
 
 This module is deliberately side-effect free.  It only *plans* the argv-only
-commands required to sign, verify, notarize and staple a locally built
-``JARVIS.app`` / DMG.  It never runs them, never loads a private key, and never
-embeds a credential.
+commands that a future audited implementation would need to sign, verify,
+notarize and staple a locally built ``JARVIS.app`` / DMG.  It never runs them,
+never loads a private key, and never embeds a credential.  A ready plan is not
+evidence that either artifact has actually been signed or notarized.
 
 The signing identity, team id and notarytool keychain-profile name are read from
 the environment.  Those values are public labels — the actual Developer ID
 private key and the app-specific/App Store Connect credentials stay inside the
-macOS keychain and are referenced only by name.  When they are absent, the
-planner honestly reports :data:`ReleaseCapabilityStatus.NOT_AVAILABLE` and marks
-the artifact as an unsigned development build; it never fabricates a signed or
-notarized result.
+macOS keychain and are referenced only by name.  The planner requires the exact
+``Developer ID Application`` label, its matching Team ID, a notary profile, and
+both built artifacts.  Missing or inconsistent input is reported as
+:data:`ReleaseCapabilityStatus.NOT_AVAILABLE`; the artifact always remains an
+unsigned development build until a separate audited executor proves otherwise.
 
-Signing order follows Apple's rule: sign nested Mach-O code inner-first, then the
-outer ``.app`` bundle, then verify, then notarize the container, then staple.
+The review plan covers only inner-before-outer app signing and subsequent
+verification/notarization commands.  It deliberately does not pretend to be a
+complete executor: rebuilding the DMG from the signed app, signing that DMG,
+parsing an ``Accepted`` notary result, and final verification remain missing.
 """
 
 from __future__ import annotations
@@ -37,11 +41,13 @@ _CODESIGN = "/usr/bin/codesign"
 _SPCTL = "/usr/sbin/spctl"
 _XCRUN = "/usr/bin/xcrun"
 
-# A Developer ID Application identity looks like:
-#   "Developer ID Application: Example Corp (AB12CD34EF)"
-# but codesign also accepts a 40-hex SHA-1 identity.  Accept both shapes while
-# refusing obviously empty / whitespace-only values.
+# Production distribution requires the human-readable Developer ID Application
+# certificate label so the configured Team ID can be matched mechanically.  A
+# bare hash is deliberately not accepted by this planner.
 _TEAM_ID_RE = re.compile(r"[A-Z0-9]{10}")
+_DEVELOPER_ID_RE = re.compile(
+    r"Developer ID Application: [^\r\n]{1,200} \(([A-Z0-9]{10})\)"
+)
 _NOTARY_PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,127}")
 
 # Inner Mach-O code that must be signed before the outer bundle.  Directories
@@ -61,11 +67,17 @@ class SigningConfig:
 
     @property
     def can_sign(self) -> bool:
-        return bool(self.identity)
+        identity_team_id = _identity_team_id(self.identity)
+        return (
+            identity_team_id is not None
+            and self.team_id is not None
+            and identity_team_id == self.team_id
+        )
 
     @property
     def can_notarize(self) -> bool:
-        return bool(self.identity) and bool(self.notary_profile)
+        cleaned = _clean_notary_profile(self.notary_profile)
+        return self.can_sign and cleaned is not None and cleaned == self.notary_profile
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> SigningConfig:
@@ -91,14 +103,35 @@ class SigningPlan:
 
     @property
     def signed(self) -> bool:
-        return self.status is ReleaseCapabilityStatus.AVAILABLE and not self.unsigned_dev_build
+        """Planning never proves that a filesystem artifact was signed."""
+
+        return False
+
+    @property
+    def plan_ready(self) -> bool:
+        """Whether all public inputs for the non-executing plan are present."""
+
+        return (
+            self.status is ReleaseCapabilityStatus.AVAILABLE
+            and bool(self.codesign_commands)
+            and bool(self.verify_commands)
+            and bool(self.notarize_commands)
+            and not self.missing_requirements
+        )
+
+
+def _identity_team_id(value: object) -> str | None:
+    if type(value) is not str:
+        return None
+    match = _DEVELOPER_ID_RE.fullmatch(value)
+    return None if match is None else match.group(1)
 
 
 def _clean_identity(value: object) -> str | None:
     if type(value) is not str:
         return None
     cleaned = value.strip()
-    return cleaned or None
+    return cleaned if _identity_team_id(cleaned) is not None else None
 
 
 def _clean_team_id(value: object) -> str | None:
@@ -188,22 +221,49 @@ def plan_macos_signing(
     package_path: Path | None = None,
     config: SigningConfig | None = None,
     codesign_tool: Path = Path(_CODESIGN),
+    spctl_tool: Path = Path(_SPCTL),
+    xcrun_tool: Path = Path(_XCRUN),
 ) -> SigningPlan:
     """Plan Developer ID signing, verification, notarization and stapling.
 
-    Returns an honest ``NOT_AVAILABLE`` unsigned-dev-build plan when no signing
-    identity is configured or when the required tooling / entitlements are
-    missing.  Produces no commands that contain secret material.
+    Returns an honest ``NOT_AVAILABLE`` unsigned-dev-build plan unless every
+    public planning input exists and agrees.  Even a complete plan has
+    ``signed == False``: it produces no filesystem mutations and no commands
+    containing secret material.
     """
 
     signing = SigningConfig.from_env() if config is None else config
     missing: list[str] = []
-    if not signing.can_sign:
-        missing.append(f"{ENV_SIGN_IDENTITY} (Developer ID signing identity)")
+    identity_team_id = _identity_team_id(signing.identity)
+    if identity_team_id is None:
+        missing.append(
+            f"{ENV_SIGN_IDENTITY} (exact Developer ID Application identity label)"
+        )
+    if signing.team_id is None:
+        missing.append(f"{ENV_TEAM_ID} (10-character Apple Team ID)")
+    elif identity_team_id is not None and identity_team_id != signing.team_id:
+        missing.append("Developer ID identity and configured Team ID must match")
+    notary_profile = _clean_notary_profile(signing.notary_profile)
+    if notary_profile is None or notary_profile != signing.notary_profile:
+        missing.append(f"{ENV_NOTARY_PROFILE} (notarytool keychain profile)")
+    if app_path.suffix != ".app" or app_path.is_symlink() or not app_path.is_dir():
+        missing.append("built JARVIS.app bundle")
+    if (
+        package_path is None
+        or package_path.suffix.lower() != ".dmg"
+        or package_path.is_symlink()
+        or not package_path.is_file()
+        or package_path.stat().st_size <= 0
+    ):
+        missing.append("built JARVIS DMG")
     if not entitlements_path.is_file():
         missing.append("hardened-runtime entitlements plist")
     if not Path(codesign_tool).is_file():
         missing.append("codesign tool")
+    if not Path(spctl_tool).is_file():
+        missing.append("spctl tool")
+    if not Path(xcrun_tool).is_file():
+        missing.append("xcrun tool")
 
     if missing:
         return SigningPlan(
@@ -214,9 +274,9 @@ def plan_macos_signing(
             notarize_commands=(),
             missing_requirements=tuple(missing),
             message=(
-                "No Developer ID signing credentials are configured; the build "
-                "remains an unsigned local development artifact and is not "
-                "distribution ready."
+                "Production signing planning requirements are incomplete; the "
+                "artifacts remain unsigned local development artifacts and are "
+                "not distribution ready."
             ),
         )
 
@@ -269,69 +329,59 @@ def plan_macos_signing(
         ),
     )
 
-    notarize_commands: tuple[ReleaseCommand, ...] = ()
-    notarize_missing: list[str] = []
-    if package_path is not None:
-        if not signing.can_notarize:
-            notarize_missing.append(
-                f"{ENV_NOTARY_PROFILE} (notarytool keychain profile)"
-            )
-        else:
-            profile = signing.notary_profile
-            assert profile is not None  # guarded by can_notarize
-            notarize_commands = (
-                ReleaseCommand(
-                    name="notarytool_submit",
-                    argv=(
-                        _XCRUN,
-                        "notarytool",
-                        "submit",
-                        str(package_path),
-                        "--keychain-profile",
-                        profile,
-                        "--wait",
-                    ),
-                    cwd=resource_root,
-                ),
-                ReleaseCommand(
-                    name="stapler_staple",
-                    argv=(_XCRUN, "stapler", "staple", str(package_path)),
-                    cwd=resource_root,
-                ),
-                ReleaseCommand(
-                    name="stapler_validate",
-                    argv=(_XCRUN, "stapler", "validate", str(package_path)),
-                    cwd=resource_root,
-                ),
-                ReleaseCommand(
-                    name="spctl_assess_install",
-                    argv=(
-                        _SPCTL,
-                        "--assess",
-                        "--type",
-                        "install",
-                        "--verbose=4",
-                        str(package_path),
-                    ),
-                    cwd=resource_root,
-                ),
-            )
-
-    message = "Developer ID signing plan is ready."
-    if notarize_missing:
-        message = (
-            "Developer ID signing is available, but notarization is not "
-            "configured; the artifact can be signed but not notarized/stapled."
-        )
+    profile = notary_profile
+    assert profile is not None  # guarded by the complete requirement check
+    assert package_path is not None  # guarded by the complete requirement check
+    notarize_commands: tuple[ReleaseCommand, ...] = (
+        ReleaseCommand(
+            name="notarytool_submit",
+            argv=(
+                _XCRUN,
+                "notarytool",
+                "submit",
+                str(package_path),
+                "--keychain-profile",
+                profile,
+                "--wait",
+            ),
+            cwd=resource_root,
+        ),
+        ReleaseCommand(
+            name="stapler_staple",
+            argv=(_XCRUN, "stapler", "staple", str(package_path)),
+            cwd=resource_root,
+        ),
+        ReleaseCommand(
+            name="stapler_validate",
+            argv=(_XCRUN, "stapler", "validate", str(package_path)),
+            cwd=resource_root,
+        ),
+        ReleaseCommand(
+            name="spctl_assess_install",
+            argv=(
+                _SPCTL,
+                "--assess",
+                "--type",
+                "install",
+                "--verbose=4",
+                str(package_path),
+            ),
+            cwd=resource_root,
+        ),
+    )
 
     return SigningPlan(
         status=ReleaseCapabilityStatus.AVAILABLE,
-        unsigned_dev_build=False,
+        unsigned_dev_build=True,
         codesign_commands=tuple(codesign_commands),
         verify_commands=verify_commands,
         notarize_commands=notarize_commands,
-        missing_requirements=tuple(notarize_missing),
-        message=message,
+        missing_requirements=(),
+        message=(
+            "Developer ID signing/notarization planning inputs are complete. "
+            "Execution remains unavailable until the production sequence is "
+            "implemented and independently audited."
+        ),
     )
 
 

@@ -6,11 +6,11 @@ name: macOS release pipeline
 #   unit-tests      Packaging/signing/manifest/app-paths unit tests (no secrets).
 #   build-unsigned  Freeze JARVIS.app, build the DMG, generate the manifest,
 #                   verify the bundle, run the structural smoke check, upload it.
-#   sign-notarize   Developer ID signing + notarization. Runs ONLY when the
-#                   protected signing secrets are present. Never echoes secrets.
 #
-# Secrets are optional. Without them, this workflow still produces and uploads an
-# honest UNSIGNED development artifact and never claims distribution readiness.
+# This workflow accepts no production signing secrets.  It produces and uploads
+# only an honest UNSIGNED development artifact and never claims distribution
+# readiness.  Production signing execution remains mechanically not_available
+# until the final app-before-DMG order and notarization verification are audited.
 
 on:
   workflow_dispatch:
@@ -135,59 +135,3 @@ jobs:
             ${{ steps.locate.outputs.workspace }}/build_manifest.json
           if-no-files-found: error
           retention-days: 7
-
-  sign-notarize:
-    needs: build-unsigned
-    runs-on: macos-14
-    # Runs only when the protected signing identity secret is configured.
-    if: ${{ secrets.JARVIS_MACOS_SIGN_IDENTITY != '' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: jarvis-macos-unsigned
-          path: ${{ runner.temp }}/artifact
-      - name: Import Developer ID certificate into a temporary keychain
-        env:
-          CERT_P12_BASE64: ${{ secrets.JARVIS_MACOS_CERT_P12_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.JARVIS_MACOS_CERT_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.JARVIS_MACOS_KEYCHAIN_PASSWORD }}
-        run: |
-          # Secrets are auto-masked in logs; do not print them and do not enable
-          # shell tracing in this step.
-          set +x
-          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          printf '%s' "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" \
-            -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
-          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
-          rm -f "$RUNNER_TEMP/cert.p12"
-      - name: Store notary credentials in the keychain profile
-        env:
-          NOTARY_PROFILE: ${{ secrets.JARVIS_MACOS_NOTARY_PROFILE }}
-          NOTARY_APPLE_ID: ${{ secrets.JARVIS_MACOS_NOTARY_APPLE_ID }}
-          NOTARY_TEAM_ID: ${{ secrets.JARVIS_MACOS_TEAM_ID }}
-          NOTARY_PASSWORD: ${{ secrets.JARVIS_MACOS_NOTARY_PASSWORD }}
-        run: |
-          set +x
-          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
-            --apple-id "$NOTARY_APPLE_ID" \
-            --team-id "$NOTARY_TEAM_ID" \
-            --password "$NOTARY_PASSWORD"
-      - name: Sign, verify, notarize, staple
-        env:
-          JARVIS_MACOS_SIGN_IDENTITY: ${{ secrets.JARVIS_MACOS_SIGN_IDENTITY }}
-          JARVIS_MACOS_TEAM_ID: ${{ secrets.JARVIS_MACOS_TEAM_ID }}
-          JARVIS_MACOS_NOTARY_PROFILE: ${{ secrets.JARVIS_MACOS_NOTARY_PROFILE }}
-          JARVIS_BUILD_PYTHON: ${{ runner.temp }}/build-venv/bin/python
-          JARVIS_TARGET_ARCH: arm64
-          JARVIS_OUTPUT_ROOT: ${{ runner.temp }}/local-release
-        run: |
-          # NOTE: a full signing run rebuilds the app in this job (the .app is not
-          # a portable artifact). This step is the credential-gated entry point.
-          echo "Developer ID signing credentials detected; running signed pipeline."
-          bash packaging/macos/sign_artifact.sh --execute

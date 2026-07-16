@@ -8,6 +8,7 @@ from core.platform_adapters.release_base import ReleaseCapabilityStatus
 from core.platform_adapters.release_signing import (
     ENV_NOTARY_PROFILE,
     ENV_SIGN_IDENTITY,
+    ENV_TEAM_ID,
     SigningConfig,
     enumerate_signable_paths,
     plan_macos_signing,
@@ -46,8 +47,37 @@ class SigningConfigTests(unittest.TestCase):
         self.assertEqual(config.team_id, "AB12CD34EF")
 
     def test_malformed_team_id_is_rejected(self):
-        config = SigningConfig.from_env({"JARVIS_MACOS_TEAM_ID": "short"})
+        config = SigningConfig.from_env({ENV_TEAM_ID: "short"})
         self.assertIsNone(config.team_id)
+
+    def test_non_developer_id_identity_and_team_mismatch_cannot_sign(self):
+        wrong_kind = SigningConfig.from_env(
+            {
+                ENV_SIGN_IDENTITY: "Apple Development: JARVIS Test (AB12CD34EF)",
+                ENV_TEAM_ID: "AB12CD34EF",
+                ENV_NOTARY_PROFILE: "jarvis-notary",
+            }
+        )
+        mismatch = SigningConfig.from_env(
+            {
+                ENV_SIGN_IDENTITY: IDENTITY,
+                ENV_TEAM_ID: "ZZ98YX76WV",
+                ENV_NOTARY_PROFILE: "jarvis-notary",
+            }
+        )
+        self.assertIsNone(wrong_kind.identity)
+        self.assertFalse(wrong_kind.can_sign)
+        self.assertFalse(mismatch.can_sign)
+        self.assertFalse(mismatch.can_notarize)
+
+    def test_direct_malformed_notary_profile_cannot_notarize(self):
+        config = SigningConfig(
+            identity=IDENTITY,
+            team_id="AB12CD34EF",
+            notary_profile="../../notary-profile",
+        )
+        self.assertTrue(config.can_sign)
+        self.assertFalse(config.can_notarize)
 
 
 class SigningPlanTests(unittest.TestCase):
@@ -64,10 +94,13 @@ class SigningPlanTests(unittest.TestCase):
                 package_path=root / "JARVIS.dmg",
                 config=SigningConfig(identity=None, team_id=None, notary_profile=None),
                 codesign_tool=entitlements,  # any existing file stands in for the tool
+                spctl_tool=entitlements,
+                xcrun_tool=entitlements,
             )
         self.assertEqual(plan.status, ReleaseCapabilityStatus.NOT_AVAILABLE)
         self.assertTrue(plan.unsigned_dev_build)
         self.assertFalse(plan.signed)
+        self.assertFalse(plan.plan_ready)
         self.assertEqual(plan.codesign_commands, ())
         self.assertTrue(any(ENV_SIGN_IDENTITY in item for item in plan.missing_requirements))
 
@@ -102,11 +135,14 @@ class SigningPlanTests(unittest.TestCase):
                     notary_profile="jarvis-notary",
                 ),
                 codesign_tool=entitlements,
+                spctl_tool=entitlements,
+                xcrun_tool=entitlements,
             )
 
         self.assertEqual(plan.status, ReleaseCapabilityStatus.AVAILABLE)
-        self.assertTrue(plan.signed)
-        self.assertFalse(plan.unsigned_dev_build)
+        self.assertTrue(plan.plan_ready)
+        self.assertFalse(plan.signed)
+        self.assertTrue(plan.unsigned_dev_build)
         # Outer bundle is signed last.
         self.assertEqual(plan.codesign_commands[-1].argv[-1], str(app))
         # Every codesign command uses the hardened runtime and timestamp.
@@ -130,28 +166,105 @@ class SigningPlanTests(unittest.TestCase):
         self.assertNotIn("PRIVATE KEY", flat)
         self.assertNotIn("password", flat.lower())
 
-    def test_signing_available_but_notarization_missing_profile(self):
+    def test_missing_notary_profile_is_fail_closed(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             app = _fake_app(root)
             entitlements = root / "entitlements.plist"
             entitlements.write_text("<plist/>", encoding="utf-8")
+            package = root / "JARVIS.dmg"
+            package.write_bytes(b"dmg")
             plan = plan_macos_signing(
                 app_path=app,
                 entitlements_path=entitlements,
                 resource_root=root,
-                package_path=root / "JARVIS.dmg",
+                package_path=package,
                 config=SigningConfig(
                     identity=IDENTITY, team_id="AB12CD34EF", notary_profile=None
                 ),
                 codesign_tool=entitlements,
+                spctl_tool=entitlements,
+                xcrun_tool=entitlements,
             )
-        self.assertEqual(plan.status, ReleaseCapabilityStatus.AVAILABLE)
-        self.assertTrue(plan.signed)
+        self.assertEqual(plan.status, ReleaseCapabilityStatus.NOT_AVAILABLE)
+        self.assertFalse(plan.plan_ready)
+        self.assertFalse(plan.signed)
+        self.assertEqual(plan.codesign_commands, ())
         self.assertEqual(plan.notarize_commands, ())
         self.assertTrue(
             any(ENV_NOTARY_PROFILE in item for item in plan.missing_requirements)
         )
+
+    def test_identity_team_mismatch_and_missing_artifacts_are_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tool = root / "tool"
+            tool.write_bytes(b"tool")
+            entitlements = root / "entitlements.plist"
+            entitlements.write_text("<plist/>", encoding="utf-8")
+            plan = plan_macos_signing(
+                app_path=root / "missing.app",
+                entitlements_path=entitlements,
+                resource_root=root,
+                package_path=root / "missing.dmg",
+                config=SigningConfig(
+                    identity=IDENTITY,
+                    team_id="ZZ98YX76WV",
+                    notary_profile="jarvis-notary",
+                ),
+                codesign_tool=tool,
+                spctl_tool=tool,
+                xcrun_tool=tool,
+            )
+        self.assertEqual(plan.status, ReleaseCapabilityStatus.NOT_AVAILABLE)
+        self.assertFalse(plan.plan_ready)
+        self.assertFalse(plan.signed)
+        self.assertTrue(
+            any("must match" in item for item in plan.missing_requirements)
+        )
+        self.assertTrue(
+            any("JARVIS.app" in item for item in plan.missing_requirements)
+        )
+        self.assertTrue(any("DMG" in item for item in plan.missing_requirements))
+
+    def test_symlink_artifacts_and_malformed_profile_are_fail_closed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            real_app = _fake_app(root / "real")
+            linked_app = root / "JARVIS.app"
+            linked_app.symlink_to(real_app, target_is_directory=True)
+            real_package = root / "real.dmg"
+            real_package.write_bytes(b"dmg")
+            linked_package = root / "JARVIS.dmg"
+            linked_package.symlink_to(real_package)
+            tool = root / "tool"
+            tool.write_bytes(b"tool")
+            entitlements = root / "entitlements.plist"
+            entitlements.write_text("<plist/>", encoding="utf-8")
+            plan = plan_macos_signing(
+                app_path=linked_app,
+                entitlements_path=entitlements,
+                resource_root=root,
+                package_path=linked_package,
+                config=SigningConfig(
+                    identity=IDENTITY,
+                    team_id="AB12CD34EF",
+                    notary_profile="../../notary-profile",
+                ),
+                codesign_tool=tool,
+                spctl_tool=tool,
+                xcrun_tool=tool,
+            )
+        self.assertEqual(plan.status, ReleaseCapabilityStatus.NOT_AVAILABLE)
+        self.assertFalse(plan.plan_ready)
+        self.assertEqual(plan.codesign_commands, ())
+        self.assertTrue(
+            any(ENV_NOTARY_PROFILE in item for item in plan.missing_requirements)
+        )
+        self.assertTrue(
+            any("JARVIS.app" in item for item in plan.missing_requirements)
+        )
+        self.assertTrue(any("DMG" in item for item in plan.missing_requirements))
 
 
 if __name__ == "__main__":

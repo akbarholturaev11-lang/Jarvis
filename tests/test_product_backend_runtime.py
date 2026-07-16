@@ -69,6 +69,7 @@ class ProductBackendRuntimeTests(unittest.TestCase):
             "JARVIS_ADMIN_PBKDF2_ITERATIONS": str(credential.iterations),
             "JARVIS_ADMIN_SESSION_SECRET_B64URL": _b64(b"z" * 32),
             "JARVIS_API_ALLOWED_HOSTS": "product.example.com",
+            "JARVIS_REQUIRE_HTTPS": "true",
         }
 
     def test_factory_assembles_and_closes_explicit_dependencies(self) -> None:
@@ -101,6 +102,18 @@ class ProductBackendRuntimeTests(unittest.TestCase):
             environment["JARVIS_ADMIN_ALLOWED_NETWORKS"] = "not-a-network"
             with self.assertRaises(BackendConfigurationError):
                 create_app_from_environment(environment)
+
+    def test_missing_false_or_ambiguous_https_policy_fails_closed(self) -> None:
+        for value in (None, "false", "sometimes"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp).resolve()
+                environment = self._environment(root)
+                if value is None:
+                    environment.pop("JARVIS_REQUIRE_HTTPS")
+                else:
+                    environment["JARVIS_REQUIRE_HTTPS"] = value
+                with self.assertRaises(BackendConfigurationError):
+                    create_app_from_environment(environment)
 
 
 if __name__ == "__main__":

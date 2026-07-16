@@ -3,9 +3,10 @@
 <!--
   Hardened-runtime entitlements for a Developer ID signed, notarized JARVIS.app.
 
-  A PyInstaller-frozen CPython + PyQt6 bundle requires the JIT / unsigned-memory /
-  library-validation exceptions below to run under the hardened runtime.  Device
-  and network entitlements are limited to capabilities the app already uses:
+  The current local PyInstaller-frozen CPython + PyQt6 bundle retains only the
+  unsigned-memory and library-validation exceptions still awaiting clean-Mac
+  proof.  JIT and DYLD-environment exceptions are intentionally not granted.
+  Device and network entitlements are limited to capabilities the app already uses:
   microphone (voice), camera (only on explicit request), Apple Events automation,
   and the local network server for the explicitly enabled mobile remote control.
 
@@ -14,13 +15,9 @@
 <plist version="1.0">
 <dict>
     <!-- CPython / PyInstaller runtime requirements under the hardened runtime. -->
-    <key>com.apple.security.cs.allow-jit</key>
-    <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
     <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
     <true/>
 
     <!-- Capabilities the app actually uses; each maps to a usage string in Info.plist. -->

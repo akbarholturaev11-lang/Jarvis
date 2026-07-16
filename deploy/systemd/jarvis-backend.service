@@ -13,12 +13,18 @@ User=jarvis
 Group=jarvis
 # Owner-only environment file, materialized from the secret store before start.
 EnvironmentFile=/etc/jarvis/backend.env
+# The proxy connects only over the IPv4 loopback socket below. Uvicorn keeps the
+# raw peer/scheme intact; application middleware alone evaluates forwarded data.
 WorkingDirectory=/opt/jarvis
-ExecStartPre=/opt/jarvis/venv/bin/python -m ops.validate_config --env-file /etc/jarvis/backend.env
-ExecStart=/opt/jarvis/venv/bin/python -m uvicorn \
+# /usr/bin/env makes this recipe-owned /32 authoritative even if the external
+# environment file accidentally contains a broader proxy range.
+ExecStartPre=/usr/bin/env JARVIS_TRUSTED_PROXIES=127.0.0.1/32 \
+    /opt/jarvis/venv/bin/python -m ops.validate_config
+ExecStart=/usr/bin/env JARVIS_TRUSTED_PROXIES=127.0.0.1/32 \
+    /opt/jarvis/venv/bin/python -m uvicorn \
     product_backend.runtime:create_app_from_environment \
     --factory --host 127.0.0.1 --port 8080 \
-    --proxy-headers --forwarded-allow-ips 127.0.0.1
+    --no-access-log
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20

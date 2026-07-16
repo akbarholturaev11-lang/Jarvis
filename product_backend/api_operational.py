@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .api_auth import BackendConfigurationError, TrustedProxyConfig
 from .observability import (
@@ -35,6 +35,7 @@ from .observability import (
 )
 
 _TRUTHY: Final = frozenset({"1", "true", "yes", "on"})
+_FALSEY: Final = frozenset({"0", "false", "no", "off"})
 _SAFE_METHODS: Final = frozenset({"GET", "HEAD"})
 _DEFAULT_HSTS_MAX_AGE: Final = 63_072_000  # two years
 _MIN_HSTS_MAX_AGE: Final = 300
@@ -131,7 +132,14 @@ class OperationalPolicy:
 
 
 def _env_flag(source: Mapping[str, str], name: str) -> bool:
-    return source.get(name, "").strip().lower() in _TRUTHY
+    raw = source.get(name, "").strip().lower()
+    if not raw:
+        return False
+    if raw in _TRUTHY:
+        return True
+    if raw in _FALSEY:
+        return False
+    raise BackendConfigurationError(f"{name} must be a boolean")
 
 
 def _header_value(headers: list[tuple[bytes, bytes]], name: bytes) -> str | None:
@@ -195,11 +203,6 @@ class OperationalMiddleware:
             status = await self._respond_readiness(send, request_id)
             self._log(request_id, method, path, status, client_ip, scheme, 0.0)
             return
-        if path == policy.metrics_path:
-            status = await self._respond_metrics(send, request_id, headers)
-            self._log(request_id, method, path, status, client_ip, scheme, 0.0)
-            return
-
         if policy.require_https and scheme != "https":
             status = await self._reject_insecure(
                 send, request_id, method, headers, path, scope
@@ -208,6 +211,17 @@ class OperationalMiddleware:
                 request_id, method, path, status, client_ip, scheme, 0.0,
                 reason="https_required",
             )
+            record_request_metric(self._metrics, method=method, status=status)
+            return
+
+        if path == policy.metrics_path:
+            status = await self._respond_metrics(
+                send,
+                request_id,
+                headers,
+                hsts=policy.require_https and scheme == "https",
+            )
+            self._log(request_id, method, path, status, client_ip, scheme, 0.0)
             record_request_metric(self._metrics, method=method, status=status)
             return
 
@@ -282,23 +296,91 @@ class OperationalMiddleware:
         send: Any,
         request_id: str,
         headers: list[tuple[bytes, bytes]],
+        *,
+        hsts: bool,
     ) -> int:
         policy = self._policy
+        security_headers = (
+            ((
+                b"strict-transport-security",
+                f"max-age={policy.hsts_max_age}; includeSubDomains".encode(
+                    "latin-1"
+                ),
+            ),)
+            if hsts
+            else ()
+        )
+        if not self._request_host_allowed(headers):
+            await _send_json(
+                send,
+                400,
+                {"detail": "invalid host header"},
+                request_id,
+                extra_headers=security_headers,
+            )
+            return 400
         if not policy.metrics_enabled:
-            await _send_json(send, 404, {"detail": "not found"}, request_id)
+            await _send_json(
+                send,
+                404,
+                {"detail": "not found"},
+                request_id,
+                extra_headers=security_headers,
+            )
             return 404
         provided = _header_value(headers, b"authorization") or ""
         expected = f"Bearer {policy.metrics_token}"
         if not secrets.compare_digest(provided, expected):
             await _send_json(
-                send, 401, {"detail": "metrics authentication required"}, request_id
+                send,
+                401,
+                {"detail": "metrics authentication required"},
+                request_id,
+                extra_headers=security_headers,
             )
             return 401
         body = self._metrics.render_prometheus().encode("utf-8")
         await _send_bytes(
-            send, 200, body, b"text/plain; version=0.0.4; charset=utf-8", request_id
+            send,
+            200,
+            body,
+            b"text/plain; version=0.0.4; charset=utf-8",
+            request_id,
+            extra_headers=security_headers,
         )
         return 200
+
+    def _request_host_allowed(
+        self,
+        headers: list[tuple[bytes, bytes]],
+    ) -> bool:
+        allowed = self._policy.allowed_hosts
+        if not allowed:
+            return True
+        host = _header_value(headers, b"host")
+        if (
+            not host
+            or "\r" in host
+            or "\n" in host
+            or len(host) > 261
+        ):
+            return False
+        try:
+            parsed = urlsplit(f"//{host}")
+            hostname = parsed.hostname
+            _ = parsed.port
+        except ValueError:
+            return False
+        if (
+            hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            return False
+        return hostname.casefold() in {item.casefold() for item in allowed}
 
     async def _reject_insecure(
         self,
@@ -326,18 +408,32 @@ class OperationalMiddleware:
         scope: dict[str, Any],
     ) -> str | None:
         host = _header_value(headers, b"host")
-        if not host or "\r" in host or "\n" in host or len(host) > 253:
+        # Redirects are enabled only with an explicit trusted-host allowlist.
+        # Parse/rebuild the authority so user-info and delimiter tricks can
+        # never turn an allowed prefix into an external redirect target.
+        if (
+            not self._policy.allowed_hosts
+            or not self._request_host_allowed(headers)
+            or host is None
+        ):
             return None
-        # Avoid an open redirect: only redirect to a configured allowed host.
-        bare_host = host.split(":", 1)[0]
-        if self._policy.allowed_hosts and bare_host not in self._policy.allowed_hosts:
+        try:
+            parsed = urlsplit(f"//{host}")
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
             return None
+        if hostname is None:
+            return None
+        authority = f"[{hostname}]" if ":" in hostname else hostname
+        if port is not None:
+            authority = f"{authority}:{port}"
         safe_path = quote(path, safe="/%:@!$&'()*+,;=~-._")
         query = scope.get("query_string", b"")
         suffix = ""
         if isinstance(query, (bytes, bytearray)) and query:
             suffix = "?" + query.decode("latin-1")
-        return f"https://{host}{safe_path}{suffix}"
+        return f"https://{authority}{safe_path}{suffix}"
 
     def _log(
         self,
@@ -371,9 +467,18 @@ async def _send_json(
     status: int,
     body: dict[str, Any],
     request_id: str,
+    *,
+    extra_headers: tuple[tuple[bytes, bytes], ...] = (),
 ) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode("utf-8")
-    await _send_bytes(send, status, payload, b"application/json", request_id)
+    await _send_bytes(
+        send,
+        status,
+        payload,
+        b"application/json",
+        request_id,
+        extra_headers=extra_headers,
+    )
 
 
 async def _send_bytes(
@@ -382,6 +487,8 @@ async def _send_bytes(
     body: bytes,
     content_type: bytes,
     request_id: str,
+    *,
+    extra_headers: tuple[tuple[bytes, bytes], ...] = (),
 ) -> None:
     await send({
         "type": "http.response.start",
@@ -391,6 +498,7 @@ async def _send_bytes(
             (b"content-length", str(len(body)).encode("latin-1")),
             (b"cache-control", b"no-store"),
             (b"x-request-id", request_id.encode("latin-1")),
+            *extra_headers,
         ],
     })
     await send({"type": "http.response.body", "body": body})

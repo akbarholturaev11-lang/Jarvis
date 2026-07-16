@@ -1,9 +1,11 @@
 # JARVIS product backend — TLS reverse proxy (Caddy alternative).
 #
 # Caddy obtains and renews a real certificate automatically for the named host.
-# It forwards the real scheme/client to the backend and applies an edge rate
-# limit. Replace api.example.com and the upstream address as needed. For a
-# native (systemd) deployment use 127.0.0.1:8080 as the upstream.
+# It forwards the real scheme/client to the backend. Stock Caddy has no built-in
+# request-rate limiter, so this recipe requires a provider/WAF rate limit or a
+# separately reviewed Caddy module before public production use. Replace
+# api.example.com and the upstream address as needed. For a native (systemd)
+# deployment use 127.0.0.1:8080 as the upstream.
 
 api.example.com {
 	encode gzip

@@ -16,8 +16,8 @@ Subcommands:
     build-dmg     Create the versioned drag-to-Applications DMG.
     manifest      Write a non-secret local build manifest (sha256 + size).
     verify-app    Structurally verify the bundle and its secret boundary.
-    sign          Plan (or, with --execute, run) Developer ID signing.
-    smoke         Check the bundle is self-contained (no system Python).
+    sign          Print the non-executing Developer ID signing plan.
+    smoke         Check bundle structure without inferring runtime dependencies.
     cleanup       Remove intermediate work/staging, keep dist + dmg + manifest.
 """
 
@@ -85,6 +85,10 @@ _PRIVATE_KEY_MARKER = b"PRIVATE KEY"
 
 class PipelineError(RuntimeError):
     """A truthful pipeline failure that never claims partial success."""
+
+
+class PipelineNotAvailable(PipelineError):
+    """A deliberately unavailable production capability (CLI exit status 2)."""
 
 
 def _make_plan(args: argparse.Namespace) -> ReleaseBuildPlan:
@@ -276,11 +280,25 @@ def _signing_plan(args: argparse.Namespace) -> tuple[ReleaseBuildPlan, SigningPl
 
 
 def _cmd_sign(args: argparse.Namespace) -> dict[str, object]:
-    plan, signing = _signing_plan(args)
+    if args.execute:
+        # Mechanical fail-closed boundary: do not even construct a plan before
+        # refusing the unaudited production mutation path.  The local unsigned
+        # build remains usable; production signing requires a separately audited
+        # sequence that signs the app before building/signing the final DMG and
+        # verifies the notarization response.
+        raise PipelineNotAvailable(
+            "production signing execution is not_available until the final "
+            "app/DMG signing order and notarization result verification are "
+            "implemented and independently audited"
+        )
+
+    _plan, signing = _signing_plan(args)
     document: dict[str, object] = {
         "step": "sign",
         "status": signing.status.value,
+        "plan_ready": signing.plan_ready,
         "signed": signing.signed,
+        "notarized": False,
         "unsigned_dev_build": signing.unsigned_dev_build,
         "missing_requirements": list(signing.missing_requirements),
         "codesign_commands": [list(c.argv) for c in signing.codesign_commands],
@@ -289,19 +307,6 @@ def _cmd_sign(args: argparse.Namespace) -> dict[str, object]:
         "message": signing.message,
         "distribution_ready": False,
     }
-    if not args.execute:
-        return document
-    if not signing.signed:
-        raise PipelineError(signing.message)
-    if plan.app_path is None or not plan.app_path.is_dir():
-        raise PipelineError("build JARVIS.app before signing it")
-    for command in (
-        *signing.codesign_commands,
-        *signing.verify_commands,
-        *signing.notarize_commands,
-    ):
-        _run(command.argv, cwd=command.cwd, environment=None)
-    document["status"] = "success"
     return document
 
 
@@ -312,18 +317,18 @@ def _cmd_smoke(args: argparse.Namespace) -> dict[str, object]:
         raise PipelineError("build JARVIS.app before the smoke launch")
     executable = app_path / "Contents" / "MacOS" / "JARVIS"
     if not executable.is_file():
-        raise PipelineError("bundle has no self-contained interpreter")
-    # The presence of an embedded Mach-O launcher proves the app does not depend
-    # on a system Python interpreter or a terminal.  A full interactive launch is
-    # a manual/CI step on a real user session and is intentionally not forced
-    # here (it would start the live assistant).
+        raise PipelineError("bundle has no expected JARVIS executable")
+    # File presence proves only the expected bundle shape.  It cannot prove that
+    # dyld resolves every embedded dependency, that system Python is never used,
+    # or that no terminal is opened.  Those claims require an observed launch on
+    # a representative clean Mac.
     return {
         "step": "smoke",
-        "status": "self_contained",
-        "bundled_interpreter": str(executable),
-        "requires_system_python": False,
-        "requires_terminal": False,
-        "interactive_launch": "manual_or_ci_on_built_app",
+        "status": "structural_only",
+        "bundled_executable": str(executable),
+        "requires_system_python": "not_verified",
+        "requires_terminal": "not_verified",
+        "interactive_launch": "not_run",
     }
 
 
@@ -372,7 +377,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="For 'sign': actually run the planned signing commands.",
+        help=(
+            "Reserved for 'sign'; production execution currently returns "
+            "not_available without mutating artifacts."
+        ),
     )
     return parser
 
@@ -382,6 +390,20 @@ def main(argv: list[str] | None = None) -> int:
     handler = _COMMANDS[args.command]
     try:
         result = handler(args)
+    except PipelineNotAvailable as exc:
+        print(
+            json.dumps(
+                {
+                    "step": args.command,
+                    "status": "not_available",
+                    "message": str(exc),
+                    "distribution_ready": False,
+                },
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 2
     except (PipelineError, OSError, RuntimeError, TypeError, ValueError) as exc:
         print(
             json.dumps(

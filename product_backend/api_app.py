@@ -1493,20 +1493,24 @@ def create_product_backend_app(
             "artifact_id": artifact.id,
             "release_id": artifact.release_id,
             "release_info": release_info,
-            "download_path": (
-                f"/v1/client/updates/download/{artifact.id}/"
-                f"{download_grant.token}"
-            ),
+            "download_path": f"/v1/client/updates/download/{artifact.id}",
+            # Keep the short-lived credential out of the URL. Request targets
+            # are routinely captured by reverse proxies, browser history and
+            # infrastructure error logs; a dedicated header is not.
+            "download_grant": download_grant.token,
             "entitlement_certificate": certificate,
         }
 
-    @app.get("/v1/client/updates/download/{artifact_id}/{download_token}")
+    @app.get("/v1/client/updates/download/{artifact_id}")
     def client_update_download(
         artifact_id: str,
-        download_token: str,
+        download_grant: Annotated[
+            str | None,
+            Header(alias="X-Artifact-Grant"),
+        ] = None,
     ) -> Response:
         artifact = artifact_grants.consume(
-            download_token,
+            download_grant,
             artifact_id=artifact_id,
         )
         if artifact is None:

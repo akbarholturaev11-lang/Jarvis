@@ -1,7 +1,12 @@
 # Minimal server-side dependencies for the JARVIS product backend container.
 # The desktop app's GUI/audio/vision packages are intentionally excluded.
-# Pin these to exact versions in a real deployment for reproducible builds.
-fastapi
-uvicorn[standard]
-cryptography
-python-multipart
+# Direct versions are pinned to the locally verified Stage 8 baseline. A fully
+# reproducible production image still needs a reviewed transitive hash lock and
+# pinned base-image digest; the runbook does not claim those external inputs are
+# already frozen.
+fastapi==0.139.0
+uvicorn[standard]==0.51.0
+cryptography==49.0.0
+python-multipart==0.0.32
+qrcode==8.2
+Pillow==12.3.0

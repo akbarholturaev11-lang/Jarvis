@@ -5,6 +5,7 @@ import plistlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import scripts.release_pipeline as pipeline
 from core.platform_adapters.release_base import ReleaseBuildRequest
@@ -160,9 +161,42 @@ class PipelineCommandTests(unittest.TestCase):
                 os.environ.pop(key, None)
             result = pipeline._cmd_sign(args)
         self.assertEqual(result["status"], "not_available")
+        self.assertIs(result["plan_ready"], False)
+        self.assertIs(result["signed"], False)
+        self.assertIs(result["notarized"], False)
         self.assertTrue(result["unsigned_dev_build"])
         self.assertIs(result["distribution_ready"], False)
         self.assertEqual(result["codesign_commands"], [])
+
+    def test_sign_execute_is_mechanically_not_available_before_planning(self):
+        with tempfile.TemporaryDirectory() as temp:
+            args = _args(Path(temp), execute=True)
+            with mock.patch.object(pipeline, "_signing_plan") as signing_plan:
+                with mock.patch.object(pipeline, "_run") as runner:
+                    with self.assertRaises(pipeline.PipelineNotAvailable):
+                        pipeline._cmd_sign(args)
+            signing_plan.assert_not_called()
+            runner.assert_not_called()
+
+    def test_sign_execute_cli_returns_not_available_exit_two(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with mock.patch.object(pipeline, "_signing_plan") as signing_plan:
+                code = pipeline.main(
+                    [
+                        "sign",
+                        "--version",
+                        VERSION,
+                        "--build",
+                        str(BUILD),
+                        "--architecture",
+                        ARCH,
+                        "--output-root",
+                        temp,
+                        "--execute",
+                    ]
+                )
+            signing_plan.assert_not_called()
+        self.assertEqual(code, 2)
 
     def test_venv_python_symlink_is_not_followed_out_of_the_venv(self):
         # A venv's bin/python is a symlink to the base interpreter; resolving it
@@ -188,14 +222,15 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertEqual(request.python_executable, venv_python)
         self.assertTrue(str(request.python_executable).endswith("venv/bin/python"))
 
-    def test_smoke_reports_self_contained_bundle(self):
+    def test_smoke_reports_only_structural_evidence(self):
         with tempfile.TemporaryDirectory() as temp:
             output_root = Path(temp)
             _fake_built_app(output_root)
             result = pipeline._cmd_smoke(_args(output_root))
-        self.assertEqual(result["status"], "self_contained")
-        self.assertIs(result["requires_system_python"], False)
-        self.assertIs(result["requires_terminal"], False)
+        self.assertEqual(result["status"], "structural_only")
+        self.assertEqual(result["requires_system_python"], "not_verified")
+        self.assertEqual(result["requires_terminal"], "not_verified")
+        self.assertEqual(result["interactive_launch"], "not_run")
 
 
 if __name__ == "__main__":

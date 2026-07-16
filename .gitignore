@@ -37,6 +37,12 @@ product_backend/runtime/
 .env.*
 !.env.example
 !deploy/env/backend.env.example
+backend.env
+initial-admin-password.txt
+session-secret.env
+activation.pepper
+payment-evidence/
 devcerts/
 deploy/docker/certs/
+/deploy/env/backend.env
 /secrets/
