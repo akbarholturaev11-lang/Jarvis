@@ -1,5 +1,43 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-16 - Validated the local unsigned macOS app + DMG (BOSQICH 7)
+
+### Real build result
+
+- Built a real `JARVIS.app` (624 MB) and `JARVIS-0.1.0-build1-macos-arm64.dmg`
+  (240 MB, SHA-256 `fab1c73e…220f`) with the pinned PyInstaller 6.21.0 in an
+  isolated build venv (the customer runtime venv was never modified).
+- The frozen app launches from its embedded interpreter with no system Python,
+  no `.venv`, and no Terminal, reaches the Qt event loop, and shows the product
+  **license gate** UI (`ТРЕБУЕТСЯ ЛИЦЕНЗИЯ ПРОДУКТА`, `Версия 0.1.0 · сборка 1`).
+  PyQt6 cocoa plugin loads; a copy of the app run from a second location also
+  launches cleanly.
+- The DMG mounts with `JARVIS.app` + an `/Applications` shortcut; verify-app
+  reports the bundled interpreter and **no secret files**; nothing is written
+  into the bundle at runtime.
+
+### Honest signing status
+
+- `codesign -dv`: `Signature=adhoc`, `TeamIdentifier=not set` (PyInstaller ad-hoc
+  signature, required for Apple Silicon local run — **not** Developer ID).
+- `codesign --verify --deep --strict`: valid on disk (ad-hoc is structurally
+  valid). `spctl --assess`: **rejected** — not notarized, not distribution ready.
+
+### Fixes found during validation
+
+- `core/platform_adapters/release_base.py`: absolutize the build interpreter
+  without following its final symlink, so a virtualenv `bin/python` is preserved
+  instead of resolving out to the base interpreter (which broke the build).
+- `scripts/release_pipeline.py`: the bundle secret scan now flags `.pem`/`.key`
+  only when they contain a PRIVATE KEY block, so legitimate public CA trust
+  stores (certifi `cacert.pem`, grpc `roots.pem`) are not false-positives.
+
+### Remaining blockers
+
+- Developer ID signing, notarization, stapling and Gatekeeper acceptance are not
+  done (no Apple credentials); the artifact is an unsigned/ad-hoc dev build.
+- A clean-Mac `/Applications` install/activation/permission pass is still pending.
+
 ## 2026-07-16 - Self-contained macOS app + DMG build/sign/CI pipeline (BOSQICH 7)
 
 ### Added

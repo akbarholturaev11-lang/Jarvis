@@ -74,7 +74,13 @@ _FORBIDDEN_BUNDLE_NAMES = frozenset(
         "payment-instructions.json",
     }
 )
-_FORBIDDEN_BUNDLE_SUFFIXES = (".key", ".pem", ".p12", ".pfx")
+# Private-key containers are always secret. ``.pem``/``.key`` are ambiguous:
+# frozen apps legitimately ship public CA trust stores (certifi ``cacert.pem``,
+# grpc ``roots.pem``), so those suffixes are only flagged when the file actually
+# contains a PRIVATE KEY block.
+_ALWAYS_SECRET_SUFFIXES = (".p12", ".pfx")
+_KEY_MATERIAL_SUFFIXES = (".pem", ".key")
+_PRIVATE_KEY_MARKER = b"PRIVATE KEY"
 
 
 class PipelineError(RuntimeError):
@@ -197,15 +203,28 @@ def _cmd_manifest(args: argparse.Namespace) -> dict[str, object]:
     return document
 
 
+def _looks_like_private_key(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return _PRIVATE_KEY_MARKER in handle.read(65536)
+    except OSError:
+        return False
+
+
 def _scan_bundle_secrets(app_path: Path) -> list[str]:
     findings: list[str] = []
     for path in app_path.rglob("*"):
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
+        rel = str(path.relative_to(app_path))
         if path.name in _FORBIDDEN_BUNDLE_NAMES:
-            findings.append(str(path.relative_to(app_path)))
-        elif path.suffix in _FORBIDDEN_BUNDLE_SUFFIXES:
-            findings.append(str(path.relative_to(app_path)))
+            findings.append(rel)
+        elif "/config/certs/" in "/" + rel.replace("\\", "/"):
+            findings.append(rel)
+        elif path.suffix in _ALWAYS_SECRET_SUFFIXES:
+            findings.append(rel)
+        elif path.suffix in _KEY_MATERIAL_SUFFIXES and _looks_like_private_key(path):
+            findings.append(rel)
     return sorted(findings)
 
 

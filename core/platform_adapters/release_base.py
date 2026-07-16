@@ -43,6 +43,21 @@ class ReleasePackageFormat(StrEnum):
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
+def _normalize_executable(value: str | Path) -> Path:
+    """Absolutize an interpreter path without following its final symlink.
+
+    A virtualenv's ``bin/python`` is a symlink whose full resolution escapes the
+    venv (into the base interpreter), which would run PyInstaller outside the
+    build environment.  We resolve intermediate symlinks in the parent directory
+    but keep the final component so the venv interpreter is preserved.
+    """
+
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.parent.resolve(strict=False) / path.name
+
+
 @dataclass(frozen=True, slots=True)
 class ReleaseBuildRequest:
     """Validated inputs shared by every platform release adapter."""
@@ -90,7 +105,7 @@ class ReleaseBuildRequest:
             version=product_version.version,
             build=product_version.build,
             architecture=normalized_architecture,
-            python_executable=Path(python_executable).expanduser().resolve(strict=False),
+            python_executable=_normalize_executable(python_executable),
         )
 
     @property

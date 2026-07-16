@@ -158,11 +158,12 @@ result. With them, it plans nested-code-first `codesign --options runtime
 
 The following are not solved by the packaging skeleton:
 
-1. The PyInstaller version is pinned in `requirements-build.txt`, but PyInstaller
-   is not installed in the current build environment, so **no `JARVIS.app`/DMG has
-   been produced**; dependency closure, native libraries, audio, camera,
-   dashboard, optional Playwright browsers and optional remote-tunnel tools also
-   need a real frozen-runtime audit on a controlled macOS build host.
+1. The pinned PyInstaller 6.21.0 build was run locally on 2026-07-16 in an
+   isolated build venv and produced a working unsigned `JARVIS.app` (624 MB) and
+   DMG (240 MB) that launches from its embedded interpreter to the license gate
+   with the PyQt6 cocoa plugin. A full frozen-runtime audit of every optional
+   path (audio, camera, Playwright browsers, remote-tunnel tools) on a clean Mac
+   user account is still advisable before release.
 2. A final product icon/name/bundle identifier requires cleared branding rights;
    `make_icns.sh` only produces a provisional dev icon from the committed PWA art.
 3. The Developer ID signing / hardened-runtime / notarization / stapling /

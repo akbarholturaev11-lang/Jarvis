@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import scripts.release_pipeline as pipeline
+from core.platform_adapters.release_base import ReleaseBuildRequest
 from core.product_version import BUNDLE_ID
 
 
@@ -95,6 +96,28 @@ class PipelineCommandTests(unittest.TestCase):
             with self.assertRaises(pipeline.PipelineError):
                 pipeline._cmd_verify_app(_args(output_root))
 
+    def test_verify_app_allows_public_ca_pem_but_rejects_private_key(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output_root = Path(temp)
+            app = _fake_built_app(output_root)
+            certifi_dir = app / "Contents" / "Resources" / "certifi"
+            certifi_dir.mkdir(parents=True)
+            # Public CA trust store: legitimate, must NOT be flagged.
+            (certifi_dir / "cacert.pem").write_text(
+                "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+                encoding="utf-8",
+            )
+            result = pipeline._cmd_verify_app(_args(output_root))
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["secret_files_in_bundle"], [])
+            # A real private key IS a secret and must be rejected.
+            (app / "Contents" / "Resources" / "leaked.key").write_text(
+                "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(pipeline.PipelineError):
+                pipeline._cmd_verify_app(_args(output_root))
+
     def test_verify_app_rejects_version_mismatch(self):
         with tempfile.TemporaryDirectory() as temp:
             output_root = Path(temp)
@@ -140,6 +163,30 @@ class PipelineCommandTests(unittest.TestCase):
         self.assertTrue(result["unsigned_dev_build"])
         self.assertIs(result["distribution_ready"], False)
         self.assertEqual(result["codesign_commands"], [])
+
+    def test_venv_python_symlink_is_not_followed_out_of_the_venv(self):
+        # A venv's bin/python is a symlink to the base interpreter; resolving it
+        # fully would run PyInstaller outside the build venv. The final component
+        # must be preserved.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp).resolve()
+            base = root / "base" / "python3.12"
+            base.parent.mkdir(parents=True)
+            base.write_text("#!/bin/sh\n", encoding="utf-8")
+            venv_bin = root / "venv" / "bin"
+            venv_bin.mkdir(parents=True)
+            venv_python = venv_bin / "python"
+            venv_python.symlink_to(base)  # mimic a venv symlink to the base
+            request = ReleaseBuildRequest.create(
+                project_root=root,
+                output_root=root / "out",
+                version=VERSION,
+                build=BUILD,
+                architecture=ARCH,
+                python_executable=venv_python,
+            )
+        self.assertEqual(request.python_executable, venv_python)
+        self.assertTrue(str(request.python_executable).endswith("venv/bin/python"))
 
     def test_smoke_reports_self_contained_bundle(self):
         with tempfile.TemporaryDirectory() as temp:

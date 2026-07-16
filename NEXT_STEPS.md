@@ -90,18 +90,20 @@ The following external gates must be cleared before any customer release:
    shows no previously loaded admin data. This is a PWA check and must not be
    recorded as native iOS/Android verification.
 
-0.3 Verify the self-contained macOS build (BOSQICH 7) on a controlled macOS build
-   host that has PyInstaller installed. Create an isolated build venv
-   (`requirements.txt` + `requirements-build.txt`), export
-   `JARVIS_BUILD_VERSION`/`JARVIS_BUILD_NUMBER` and a validated non-secret
-   `JARVIS_PRODUCT_CONFIG`, then run `bash packaging/macos/build_all.sh`. Confirm a
-   `JARVIS.app` + versioned DMG are produced, `verify_app.sh` reports no secret
-   files and the bundled interpreter, the DMG opens with a drag-to-Applications
-   shortcut, and the app double-click-launches on a clean Mac account with no
-   Python/Terminal/pip/`.venv`. With real Developer ID credentials, run
-   `bash packaging/macos/sign_artifact.sh --execute` and confirm
-   `codesign`/`spctl`/`notarytool`/`stapler` all pass. Until then, the freeze is
-   blocked by missing PyInstaller and is not recorded as a build success.
+0.3 Self-contained macOS build (BOSQICH 7) — LOCAL UNSIGNED BUILD VALIDATED on
+   2026-07-16. A real `JARVIS.app` (624 MB) + `JARVIS-0.1.0-build1-macos-arm64.dmg`
+   (240 MB) were built with the pinned PyInstaller 6.21.0 in an isolated build
+   venv; the frozen app launched with no system Python/`.venv`/Terminal, showed
+   the license gate, loaded the PyQt6 cocoa plugin, wrote nothing into the bundle
+   and shipped no secrets; the DMG mounts with a drag-to-Applications shortcut and
+   the copied app also runs. `codesign` shows an ad-hoc signature (`spctl:
+   rejected`), so it is NOT distribution ready. Still required:
+   - Run the signed path with real Developer ID credentials
+     (`bash packaging/macos/sign_artifact.sh --execute`) and confirm
+     `codesign`/`spctl`/`notarytool`/`stapler` all pass.
+   - Install the DMG to `/Applications` on a clean Mac user account and complete
+     activation, permission, offline, payment, update, rollback and uninstall
+     tests.
 
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.
