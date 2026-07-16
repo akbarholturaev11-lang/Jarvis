@@ -137,6 +137,40 @@ class ProductGateUiContractTests(unittest.TestCase):
         self.assertIn("product_runtime.submit_initial_purchase", main_source)
         self.assertIn("product_runtime.poll_initial_purchase", main_source)
 
+    def test_purchase_screen_renders_server_release_and_payment_fields(self) -> None:
+        source = (ROOT / "ui.py").read_text(encoding="utf-8")
+        constructor = ast.unparse(
+            _function(source, "ProductGateOverlay", "__init__")
+        )
+        offer_renderer = ast.unparse(
+            _function(source, "ProductGateOverlay", "apply_purchase_offer")
+        )
+        for required in (
+            "self._purchase_details = QTextEdit()",
+            "self._purchase = QPushButton(t('product.gate.purchase'))",
+            "self._upload_payment = QPushButton(t('product.gate.upload_payment'))",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, constructor)
+        for required in (
+            "features_",
+            "fixes_",
+            "price_minor",
+            "currency",
+            "method_",
+            "instructions_",
+            "recipient",
+            "product.gate.offer",
+            "product.gate.features",
+            "product.gate.fixes",
+            "product.gate.payment_destination",
+            "product.gate.payment_steps",
+            "self._purchase_details.setPlainText",
+            "self._upload_payment.setEnabled(configured)",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, offer_renderer)
+
     def test_update_install_is_explicit_and_startup_recovery_precedes_gate(self) -> None:
         source = (ROOT / "ui.py").read_text(encoding="utf-8")
         main_source = (ROOT / "main.py").read_text(encoding="utf-8")

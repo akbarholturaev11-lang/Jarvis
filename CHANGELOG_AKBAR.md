@@ -1,5 +1,44 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-17 - Deterministic product-release E2E validation (BOSQICH 9)
+
+### Added
+
+- Added a fixed 30-scenario catalog mapped to 13 deduplicated pytest evidence
+  groups, a bounded argv-only runner, private atomic JSON/Markdown reports and a
+  closed `pass`/`fail`/`not_available`/`not_run` vocabulary.
+- Local automated PASS can never clear an implementation, production, external
+  or legal blocker: every scenario and gate keeps `production_verified=false`,
+  and the report itself keeps `production_ready=false`.
+- Upgraded the initial-purchase integration test to use a valid PNG through the
+  real private POSIX object store and actual MFA enrollment, logout, password +
+  TOTP login, private review, reject, resubmit and idempotent approval.
+- Added `docs/E2E_PRODUCT_VALIDATION.md` with the exact scenario matrix,
+  evidence map, negative/replay/interruption coverage and manual follow-up.
+- Hardened the truth gate after adversarial review: partial skip/xfail/
+  deselection is never PASS, xpass/no-passing-evidence is FAIL, child test
+  environments are credential-scrubbed, and raw pytest output is never stored.
+  Scenario 7 remains honest `not_available` until browser notification delivery
+  is exercised rather than inferred from static source checks.
+
+### Manual browser smoke
+
+- Real Chromium over local self-signed HTTPS at 390×844 verified the
+  unauthenticated boundary, MFA-backed session restore, CSRF read-only fallback,
+  EN/RU switching, no horizontal overflow, external-navigation denial and the
+  offline notice. Temporary secret/session files were owner-only and deleted.
+- The self-signed certificate could not establish production service-worker
+  trust; real domain TLS and iOS/Android device browsers remain explicitly
+  `not_available` rather than being inferred from this run.
+
+### Verification
+
+- 13/13 evidence groups: `262 passed, 279 subtests passed`.
+- Scenario report: 21 PASS, 9 `not_available`, 0 FAIL, 0 `not_run`.
+- Harness self-tests + integrated fresh-purchase E2E: 12 PASS + 5 subtests.
+- Full repository suite: 813 PASS + 527 subtests; Python compilation and
+  `git diff --check` PASS.
+
 ## 2026-07-17 - Release/deployment security audit corrections (BOSQICH 7-8)
 
 ### Corrected release truth boundary

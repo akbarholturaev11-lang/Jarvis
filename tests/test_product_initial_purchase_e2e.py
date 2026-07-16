@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import os
+import struct
 import tempfile
 import unittest
-from datetime import datetime, timezone
+import zlib
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -30,19 +32,25 @@ from core.secure_store import (
     SecureStore,
     SecureStoreResult,
 )
+from product_backend.admin_mfa import (
+    AdminMfaSettings,
+    MfaSecretCipher,
+    SQLiteAdminMfaManager,
+)
 from product_backend.api_activation import SQLiteClientActivationService
 from product_backend.api_app import create_product_backend_app
 from product_backend.api_artifact_storage import LocalReadOnlyReleaseArtifactStore
 from product_backend.api_auth import AdminAuthSettings, AdminPasswordCredential
 from product_backend.api_queries import SQLiteProductReadStore
 from product_backend.api_signing import InjectedEd25519EntitlementSigner
+from product_backend.api_totp import decode_base32_secret, totp_code
 from product_backend.device_challenges import SQLiteDeviceChallengeService
 from product_backend.models import ArtifactVerificationReceipt
 from product_backend.payment_instructions import (
     PAYMENT_INSTRUCTIONS_SCHEMA,
     load_payment_instructions,
 )
-from product_backend.private_storage import PrivateObjectMetadata
+from product_backend.private_storage import LocalPrivateObjectStore
 from product_backend.sqlite_repository import SQLiteCommerceRepository
 
 
@@ -52,7 +60,31 @@ PURCHASE_ID = "purchase_" + ("1" * 32)
 FIRST_SUBMISSION_ID = "purchase_" + ("2" * 32)
 SECOND_SUBMISSION_ID = "purchase_" + ("3" * 32)
 PAID_AT = "2026-07-14T03:59:00Z"
-EVIDENCE = b"sanitized-private-test-image"
+
+
+def _png_chunk(kind: bytes, content: bytes) -> bytes:
+    return (
+        len(content).to_bytes(4, "big")
+        + kind
+        + content
+        + zlib.crc32(kind + content).to_bytes(4, "big")
+    )
+
+
+def _valid_test_png() -> bytes:
+    width, height = 16, 12
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    pixel = bytes((12, 120, 210, 180))
+    scanlines = b"".join(b"\x00" + pixel * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", zlib.compress(scanlines))
+        + _png_chunk(b"IEND", b"")
+    )
+
+
+EVIDENCE = _valid_test_png()
 
 
 class _MemorySecureStore(SecureStore):
@@ -80,28 +112,6 @@ class _ReceiptVerifier:
             "2026-07-14T04:00:00Z",
             candidate.signing_key_id,
         )
-
-
-class _MemoryEvidenceStore:
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
-
-    def store_payment_screenshot(self, content, *, content_type, now=None):
-        key = f"payments/private/evidence-{len(self.objects) + 1}.png"
-        self.objects[key] = content
-        return PrivateObjectMetadata(
-            key,
-            hashlib.sha256(content).hexdigest(),
-            len(content),
-            content_type,
-            "2026-07-14T04:00:00Z",
-        )
-
-    def read_private_object(self, metadata, *, maximum_bytes):
-        return self.objects[metadata.storage_key]
-
-    def discard_payment_screenshot(self, metadata):
-        self.objects.pop(metadata.storage_key, None)
 
 
 class _ResponseAdapter:
@@ -141,6 +151,10 @@ class _ASGITransport:
 
 
 class ProductInitialPurchaseE2ETests(unittest.TestCase):
+    @unittest.skipUnless(
+        os.name == "posix",
+        "the hardened local backend evidence store is POSIX-only",
+    )
     def test_fresh_purchase_reject_resubmit_approve_and_signed_poll(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -188,7 +202,9 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
             )
             artifact_root = root / "artifacts"
             artifact_root.mkdir(mode=0o700)
-            evidence_store = _MemoryEvidenceStore()
+            evidence_store = LocalPrivateObjectStore(
+                root / "payment-evidence"
+            ).ensure()
             payment_path = root / "payment-instructions.json"
             payment_path.write_text(
                 json.dumps(
@@ -219,6 +235,13 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                 b"initial-e2e-session-secret-32bytes",
                 ("testserver",),
             )
+            mfa_clock = {"now": NOW}
+            mfa = SQLiteAdminMfaManager(
+                MfaSecretCipher(b"m" * 32),
+                root / "admin-mfa.sqlite3",
+                settings=AdminMfaSettings(mandatory=True),
+                clock=lambda: mfa_clock["now"],
+            )
             app = create_product_backend_app(
                 commerce=commerce,
                 reads=SQLiteProductReadStore(root / "commerce.sqlite3"),
@@ -230,7 +253,7 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                     maximum_artifact_bytes=2048,
                 ),
                 auth_settings=settings,
-                allow_password_only_admin=True,
+                mfa=mfa,
                 payment_instructions=load_payment_instructions(payment_path),
                 clock=lambda: NOW,
             )
@@ -268,9 +291,24 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                     assert prepared.offer is not None
                     self.assertEqual(prepared.offer.price_minor, 125_000)
                     self.assertEqual(prepared.offer.currency, "UZS")
+                    self.assertEqual(prepared.offer.features_en, "Fresh release")
+                    self.assertEqual(prepared.offer.features_ru, "Новый выпуск")
+                    self.assertEqual(prepared.offer.fixes_en, "Verified fixes")
+                    self.assertEqual(prepared.offer.fixes_ru, "Проверенные исправления")
+                    self.assertTrue(prepared.offer.configured)
+                    self.assertEqual(prepared.offer.method_en, "Test transfer")
+                    self.assertEqual(prepared.offer.method_ru, "Тестовый перевод")
                     self.assertEqual(
                         prepared.offer.recipient,
                         "TEST-DESTINATION-NOT-REAL",
+                    )
+                    self.assertEqual(
+                        prepared.offer.instructions_en,
+                        "Use only the local fixture.",
+                    )
+                    self.assertEqual(
+                        prepared.offer.instructions_ru,
+                        "Используйте только локальный тест.",
                     )
 
                     # MIME rejection must release, not consume, the reserved grant.
@@ -328,7 +366,16 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                     self.assertEqual(retried.status, STATUS_SUBMITTED)
                     self.assertEqual(retried.payment_id, submitted.payment_id)
                     self.assertEqual(retried.license_id, submitted.license_id)
-                    self.assertEqual(len(evidence_store.objects), 1)
+                    evidence_files = [
+                        path
+                        for path in evidence_store.root.rglob("*")
+                        if path.is_file()
+                    ]
+                    self.assertEqual(len(evidence_files), 1)
+                    self.assertEqual(
+                        evidence_files[0].stat().st_mode & 0o777,
+                        0o600,
+                    )
 
                     pending = purchase.poll_status(
                         license_id=submitted.license_id,
@@ -348,8 +395,52 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                         },
                     )
                     self.assertEqual(login.status_code, 200, login.text)
+                    self.assertEqual(login.json()["assurance"], "mfa_pending")
+                    enrollment = client.post(
+                        "/api/admin/mfa/enrollment",
+                        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+                    )
+                    self.assertEqual(enrollment.status_code, 201, enrollment.text)
+                    secret = decode_base32_secret(
+                        enrollment.json()["secret_base32"]
+                    )
+                    activated = client.post(
+                        "/api/admin/mfa/enrollment/activate",
+                        json={"totp": totp_code(secret, NOW.timestamp())},
+                        headers={"X-CSRF-Token": login.json()["csrf_token"]},
+                    )
+                    self.assertEqual(activated.status_code, 200, activated.text)
+                    self.assertEqual(
+                        activated.json()["assurance"], "mfa_satisfied"
+                    )
+                    signed_out = client.delete(
+                        "/api/admin/session",
+                        headers={
+                            "X-CSRF-Token": activated.json()["csrf_token"]
+                        },
+                    )
+                    self.assertEqual(
+                        signed_out.status_code,
+                        200,
+                        signed_out.text,
+                    )
+                    mfa_clock["now"] += timedelta(seconds=60)
+                    mfa_login = client.post(
+                        "/api/admin/session",
+                        json={
+                            "subject": "admin:initial-e2e",
+                            "password": "strong-initial-e2e-password",
+                            "totp": totp_code(
+                                secret, mfa_clock["now"].timestamp()
+                            ),
+                        },
+                    )
+                    self.assertEqual(mfa_login.status_code, 200, mfa_login.text)
+                    self.assertEqual(
+                        mfa_login.json()["assurance"], "mfa_satisfied"
+                    )
                     admin_headers = {
-                        "X-CSRF-Token": login.json()["csrf_token"]
+                        "X-CSRF-Token": mfa_login.json()["csrf_token"]
                     }
                     queue = client.get("/api/admin/payments")
                     self.assertEqual(queue.status_code, 200, queue.text)
@@ -360,6 +451,22 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                     self.assertNotIn(
                         "storage_key",
                         queue.text,
+                    )
+                    authenticated_evidence = client.get(
+                        f"/api/admin/payments/{submitted.payment_id}/evidence"
+                    )
+                    self.assertEqual(
+                        authenticated_evidence.status_code,
+                        200,
+                        authenticated_evidence.text,
+                    )
+                    self.assertEqual(
+                        authenticated_evidence.headers["content-type"],
+                        "image/png",
+                    )
+                    self.assertEqual(
+                        authenticated_evidence.content,
+                        evidence_files[0].read_bytes(),
                     )
                     reviewed = client.post(
                         f"/api/admin/payments/{submitted.payment_id}/review",
@@ -471,6 +578,7 @@ class ProductInitialPurchaseE2ETests(unittest.TestCase):
                     self.assertEqual(abuse_statuses[-1], 429)
                     self.assertIn(201, abuse_statuses)
             finally:
+                mfa.close()
                 activation.close()
                 challenges.close()
                 commerce.close()

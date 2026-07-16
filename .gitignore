@@ -27,6 +27,7 @@ memory/long_term.json
 *.log
 logs/
 build/
+/output/playwright/
 dist/
 *.dmg
 *.app/
