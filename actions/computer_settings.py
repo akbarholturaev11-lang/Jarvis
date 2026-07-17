@@ -615,9 +615,10 @@ Rules:
 # possible outcomes are: verified success, "requested, unverified", and failed.
 
 _ACCESSIBILITY_HINT = (
-    "macOS Accessibility permission is required. Enable it for Terminal "
-    "(or the JARVIS app) in System Settings > Privacy & Security > Accessibility, "
-    "then fully quit and restart the app."
+    "macOS blocked the keystroke. Grant Accessibility to the app that launches "
+    "JARVIS (Terminal or the JARVIS app) in System Settings > Privacy & Security > "
+    "Accessibility, and start JARVIS directly from that app — not in the background "
+    "or a detached shell — then fully restart it."
 )
 _AUTOMATION_HINT = (
     "macOS Automation permission is required. Allow Terminal (or the JARVIS app) "
@@ -647,11 +648,21 @@ _accessibility_cache: dict = {"checked": False, "value": None}
 
 
 def _classify_permission_error(returncode, stderr: str):
-    """Return 'accessibility' | 'automation' | None for an osascript failure."""
+    """Return 'accessibility' | 'automation' | None for an osascript failure.
+
+    Matches numeric codes as well as text so localized macOS errors are still
+    classified: error 1002 is "not allowed to send keystrokes" (an Accessibility /
+    keystroke-posting block), -25211 is assistive access."""
     if returncode == 0:
         return None
     s = (stderr or "").lower()
-    if "-25211" in s or "assistive access" in s or "accessibility" in s:
+    if (
+        "-25211" in s
+        or "assistive access" in s
+        or "accessibility" in s
+        or "1002" in s                     # "not allowed to send keystrokes" (any language)
+        or "send keystroke" in s
+    ):
         return "accessibility"
     if (
         "-1743" in s

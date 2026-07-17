@@ -254,6 +254,44 @@ class ActionNormalizationTests(unittest.TestCase):
         self.assertEqual(infer_result_status("computer_settings", result), ("failed", False))
 
 
+class PermissionClassificationTests(unittest.TestCase):
+    """Error 1002 ('not allowed to send keystrokes') and localized errors must be
+    classified as an Accessibility block, not left as a raw error."""
+
+    def test_error_1002_localized_is_accessibility(self):
+        russian = (
+            "execution error: Получена "
+            "ошибка от «System Events»: "
+            "Отправка нажатий "
+            "клавиш для «osascript» "
+            "не разрешена. (1002)"
+        )
+        self.assertEqual(cs._classify_permission_error(1, russian), "accessibility")
+        self.assertEqual(mc._permission_from_text(russian), "accessibility")
+
+    def test_error_1002_english_is_accessibility(self):
+        eng = "System Events got an error: osascript is not allowed to send keystrokes."
+        self.assertEqual(cs._classify_permission_error(1, eng), "accessibility")
+
+    def test_apple_events_is_automation(self):
+        s = "Not authorized to send Apple events to System Events. (-1743)"
+        self.assertEqual(cs._classify_permission_error(1, s), "automation")
+        self.assertEqual(mc._permission_from_text(s), "automation")
+
+    def test_success_returncode_is_no_permission_error(self):
+        self.assertIsNone(cs._classify_permission_error(0, ""))
+
+    def test_brightness_1002_end_to_end_failed_with_hint(self):
+        russian = "execution error: не разрешена. (1002)"
+        with mock.patch.object(cs, "_OS", "Darwin"), \
+             mock.patch.object(cs.subprocess, "run", make_fake_run({
+                 "key code 144": FakeCompleted(1, "", russian),
+             })):
+            result = cs.computer_settings(parameters={"action": "brightness_up"})
+        self.assertIn("accessibility", result.lower())
+        self.assertEqual(infer_result_status("computer_settings", result), ("failed", False))
+
+
 class InferStatusVocabularyTests(unittest.TestCase):
     """The three states must be distinguishable by the shared classifier."""
 
