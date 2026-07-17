@@ -54,9 +54,14 @@ from core.app_paths import resolve_app_paths
 from core.product_runtime import ProductRuntimeService
 from core.power_manager import KeepAwakeManager
 from core.remote_tunnel import CloudflareTunnel, TailscaleFunnel
+from core.autostart_manager import autostart_status, set_autostart
 from core.app_settings import (
+    get_assistant_config,
+    get_clipboard_actions_enabled,
     get_keep_awake_enabled,
     get_tunnel_config,
+    save_assistant_config,
+    set_clipboard_actions_enabled,
     set_keep_awake_enabled,
     set_tunnel_enabled,
 )
@@ -1140,7 +1145,23 @@ class JarvisLive:
             f"Use this to calculate exact times for reminders.\n\n"
         )
 
-        parts = [time_ctx]
+        # Identity injection — the user-configurable assistant name and how the
+        # assistant addresses the user override any hardcoded name in prompt.txt.
+        assistant_cfg = get_assistant_config()
+        asst_name = assistant_cfg["assistant_name"]
+        user_name = assistant_cfg["user_name"]
+        addr = (
+            f"ADDRESS: Always call the user '{user_name}'."
+            if user_name
+            else "ADDRESS: Use natural, language-appropriate addressing for the user."
+        )
+        identity_ctx = (
+            f"[IDENTITY]\n"
+            f"Your name is {asst_name}. Always refer to yourself as {asst_name}.\n"
+            f"{addr}\n\n"
+        )
+
+        parts = [time_ctx, identity_ctx]
         if mem_str:
             parts.append(mem_str)
         parts.append(self.session_context.build_prompt_context())
@@ -2657,6 +2678,32 @@ class JarvisLive:
                 return self.set_remote_tunnel(bool(kwargs.get("enabled")))
             if action == "toggle_keep_awake":
                 return self._set_keep_awake_enabled(bool(kwargs.get("enabled")))
+            if action == "toggle_autostart":
+                enabled = bool(kwargs.get("enabled"))
+                result, detail = set_autostart(enabled)
+                if result is True:
+                    self.ui.write_log(
+                        f"SYS: {t('autostart.on') if enabled else t('autostart.off')}"
+                    )
+                else:
+                    self.ui.write_log(f"SYS: {t('autostart.failed')} — {detail}")
+                return {"status": result, "detail": detail}
+            if action == "toggle_clipboard_actions":
+                enabled = bool(kwargs.get("enabled"))
+                set_clipboard_actions_enabled(enabled)
+                self.ui.write_log(
+                    f"SYS: {t('clipboard.on') if enabled else t('clipboard.off')}"
+                )
+                return {"status": True, "enabled": enabled}
+            if action == "get_assistant_config":
+                return get_assistant_config()
+            if action == "save_assistant_config":
+                cfg = save_assistant_config(
+                    str(kwargs.get("assistant_name") or ""),
+                    str(kwargs.get("user_name") or ""),
+                )
+                self.ui.write_log(f"SYS: {t('assistant.saved')}")
+                return {"status": True, **cfg}
             if action == "set_language":
                 lang = str(kwargs.get("lang") or "").strip()
                 try:
@@ -2778,6 +2825,11 @@ class JarvisLive:
             product_build = "—"
             product_status = "failed"
             product_device_id = ""
+        try:
+            autostart_state, _ = autostart_status()
+        except Exception:
+            autostart_state = None
+        assistant_cfg = get_assistant_config()
         return {
             "tunnel_enabled": bool(tunnel_cfg.get("enabled")),
             "tunnel_status": self._tunnel.status if self._tunnel else "stopped",
@@ -2785,6 +2837,11 @@ class JarvisLive:
             "lan_url": (d.get_lan_url() if d else ""),
             "keep_awake_enabled": get_keep_awake_enabled(),
             "keep_awake_active": self._keep_awake.active,
+            "autostart_supported": autostart_state is not None,
+            "autostart_enabled": bool(autostart_state),
+            "clipboard_actions_enabled": get_clipboard_actions_enabled(),
+            "assistant_name": assistant_cfg["assistant_name"],
+            "user_name": assistant_cfg["user_name"],
             "language": active_lang(),
             "device_count": (d.device_count() if d else 0),
             "client_count": (d.client_count() if d else 0),

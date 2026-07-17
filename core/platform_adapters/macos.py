@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import (
+    AUTOSTART_LABEL,
     AVAILABLE,
     BROWSER_CATALOG,
     MESSAGING_CATALOG,
@@ -249,6 +250,64 @@ class MacOSAdapter(PlatformAdapter):
             return proc, "macOS idle sleep prevented (caffeinate)."
         except Exception as e:
             return None, f"Failed to start caffeinate: {e}"
+
+    # ── auto-start (LaunchAgent) ──────────────────────────────────────────────
+    def autostart_status(self, label: str = AUTOSTART_LABEL) -> tuple[bool | None, str]:
+        plist = self._launch_agent_path(label)
+        if plist.exists():
+            return True, f"LaunchAgent registered at {plist.name}."
+        return False, "Auto-start LaunchAgent is not registered."
+
+    def set_autostart(
+        self,
+        enabled: bool,
+        command: list[str],
+        label: str = AUTOSTART_LABEL,
+    ) -> tuple[bool | None, str]:
+        plist = self._launch_agent_path(label)
+        try:
+            if enabled:
+                if not command:
+                    return False, "No launch command available for auto-start."
+                plist.parent.mkdir(parents=True, exist_ok=True)
+                plist.write_text(
+                    self._build_launch_agent_plist(label, command), encoding="utf-8"
+                )
+                # Best-effort load; RunAtLoad still fires at next login even if this
+                # fails (e.g. running headless), so a load failure is not fatal.
+                self._run(["launchctl", "load", "-w", str(plist)], timeout=4.0)
+                if plist.exists():
+                    return True, f"Auto-start enabled (LaunchAgent {plist.name})."
+                return None, "LaunchAgent write could not be verified."
+            self._run(["launchctl", "unload", "-w", str(plist)], timeout=4.0)
+            plist.unlink(missing_ok=True)
+            if not plist.exists():
+                return True, "Auto-start disabled (LaunchAgent removed)."
+            return None, "LaunchAgent removal could not be verified."
+        except Exception as e:
+            return False, f"Auto-start change failed: {e}"
+
+    def _launch_agent_path(self, label: str) -> Path:
+        return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+
+    def _build_launch_agent_plist(self, label: str, command: list[str]) -> str:
+        from xml.sax.saxutils import escape
+
+        args_xml = "\n".join(
+            f"    <string>{escape(str(arg))}</string>" for arg in command
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+            '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+            '<plist version="1.0"><dict>\n'
+            f'  <key>Label</key><string>{escape(label)}</string>\n'
+            '  <key>ProgramArguments</key><array>\n'
+            f'{args_xml}\n'
+            '  </array>\n'
+            '  <key>RunAtLoad</key><true/>\n'
+            '</dict></plist>\n'
+        )
 
     def _mac_app_exists(self, app_name: str) -> bool:
         candidates = [

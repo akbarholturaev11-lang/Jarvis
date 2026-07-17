@@ -607,6 +607,230 @@ Rules:
         print(f"[Settings] Intent detection failed: {e}")
         return {"action": description.lower().replace(" ", "_"), "value": None}
 
+
+# ── Honest execution helpers ────────────────────────────────────────────────
+# These verify real OS outcomes instead of assuming success, and surface the
+# macOS Accessibility / Automation permission requirement clearly. The three
+# possible outcomes are: verified success, "requested, unverified", and failed.
+
+_ACCESSIBILITY_HINT = (
+    "macOS Accessibility permission is required. Enable it for Terminal "
+    "(or the JARVIS app) in System Settings > Privacy & Security > Accessibility, "
+    "then fully quit and restart the app."
+)
+_AUTOMATION_HINT = (
+    "macOS Automation permission is required. Allow Terminal (or the JARVIS app) "
+    "to control the target app in System Settings > Privacy & Security > Automation, "
+    "then restart the app."
+)
+
+# macOS ACTION_MAP entries that drive the screen through pyautogui or a
+# "System Events" keystroke, so they need Accessibility permission and cannot
+# be verified after the fact.
+_ACCESSIBILITY_ACTIONS = {
+    "pause_video", "play_pause",
+    "close_app", "close_window",
+    "full_screen", "fullscreen",
+    "minimize", "maximize",
+    "switch_window", "show_desktop",
+    "focus_search", "refresh_page", "reload",
+    "close_tab", "new_tab", "next_tab", "prev_tab",
+    "go_back", "go_forward",
+    "zoom_in", "zoom_out", "zoom_reset", "find_on_page",
+    "scroll_top", "scroll_bottom", "page_up", "page_down",
+    "copy", "paste", "cut", "undo", "redo", "select_all", "save",
+    "enter", "escape", "screenshot",
+}
+
+_accessibility_cache: dict = {"checked": False, "value": None}
+
+
+def _classify_permission_error(returncode, stderr: str):
+    """Return 'accessibility' | 'automation' | None for an osascript failure."""
+    if returncode == 0:
+        return None
+    s = (stderr or "").lower()
+    if "-25211" in s or "assistive access" in s or "accessibility" in s:
+        return "accessibility"
+    if (
+        "-1743" in s
+        or "-1744" in s
+        or "not authori" in s          # "not authorised/authorized to send Apple events"
+        or "not allowed to send apple events" in s
+    ):
+        return "automation"
+    return None
+
+
+def _osa(script: str, timeout: float = 5.0) -> dict:
+    """Run an osascript command and report the real outcome."""
+    try:
+        proc = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        stderr = (proc.stderr or "").strip()
+        return {
+            "ok": proc.returncode == 0,
+            "returncode": proc.returncode,
+            "stdout": (proc.stdout or "").strip(),
+            "stderr": stderr,
+            "timed_out": False,
+            "permission": _classify_permission_error(proc.returncode, stderr),
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "returncode": None, "stdout": "", "stderr": "timed out",
+                "timed_out": True, "permission": None}
+    except Exception as e:
+        return {"ok": False, "returncode": None, "stdout": "", "stderr": str(e),
+                "timed_out": False, "permission": None}
+
+
+def _accessibility_available():
+    """True/False/None whether this process may drive UI on macOS (cached).
+
+    On non-macOS, pyautogui does not depend on the macOS Accessibility TCC
+    grant, so the gate is a no-op (returns True).
+    """
+    if _OS != "Darwin":
+        return True
+    if _accessibility_cache["checked"]:
+        return _accessibility_cache["value"]
+    res = _osa('tell application "System Events" to get name of first process', timeout=3.0)
+    if res["ok"]:
+        value = True
+    elif res["permission"] == "accessibility":
+        value = False
+    else:
+        value = None  # unknown: automation prompt pending, timeout, or other error
+    _accessibility_cache["checked"] = True
+    _accessibility_cache["value"] = value
+    return value
+
+
+def _read_output_volume():
+    if _OS != "Darwin":
+        return None
+    res = _osa("output volume of (get volume settings)", timeout=3.0)
+    if res["ok"] and res["stdout"].lstrip("-").isdigit():
+        return int(res["stdout"])
+    return None
+
+
+def _read_output_muted():
+    if _OS != "Darwin":
+        return None
+    res = _osa("output muted of (get volume settings)", timeout=3.0)
+    if res["ok"]:
+        v = res["stdout"].strip().lower()
+        if v in ("true", "false"):
+            return v == "true"
+    return None
+
+
+def _accessibility_gate(action: str):
+    """Return a permission-failure message if Accessibility is denied, else None."""
+    if _OS == "Darwin" and _accessibility_available() is False:
+        return f"Could not run '{action}': {_ACCESSIBILITY_HINT}"
+    return None
+
+
+def _verified_or_unverified(success_msg: str, action: str) -> str:
+    """Downgrade an unverifiable pyautogui success to an honest unverified status
+    when Accessibility cannot be confirmed granted."""
+    if _OS == "Darwin" and _accessibility_available() is not True:
+        return (
+            f"{action} requested, unverified: the key event was sent but the "
+            "on-screen effect could not be confirmed."
+        )
+    return success_msg
+
+
+def _handle_volume(action: str, value) -> str:
+    """Change volume and verify the real output level changed (macOS)."""
+    if _OS != "Darwin":
+        try:
+            if action == "volume_set":
+                target = max(0, min(100, int(value if value is not None else 50)))
+                volume_set(target)
+                return f"Volume set to {target}%."
+            ACTION_MAP[action]()
+            return f"Done: {action}."
+        except Exception as e:
+            return f"Could not change volume ({action}): {e}"
+
+    if action in ("mute", "unmute", "toggle_mute"):
+        before = _read_output_muted()
+        want = True if action == "mute" else False if action == "unmute" else (not before if before is not None else True)
+        script = "set volume with output muted" if want else "set volume without output muted"
+        res = _osa(script, timeout=3.0)
+        if not res["ok"]:
+            reason = res["stderr"] or "osascript error"
+            return f"Could not change mute state: {reason}."
+        after = _read_output_muted()
+        if after is None:
+            return "Mute command sent but could not confirm the state (requested, unverified)."
+        if after == want:
+            return f"Done: {'mute' if want else 'unmute'} (verified: muted={after})."
+        return "Mute command sent but the state did not change (requested, unverified)."
+
+    before = _read_output_volume()
+    if action == "volume_set":
+        target = max(0, min(100, int(value if value is not None else 50)))
+        res = _osa(f"set volume output volume {target}", timeout=3.0)
+        if not res["ok"]:
+            return f"Could not set volume: {res['stderr'] or 'osascript error'}."
+        after = _read_output_volume()
+        if after is None:
+            return "Volume command sent but could not confirm the level (requested, unverified)."
+        if abs(after - target) <= 3:
+            return f"Volume set to {after}% (verified)."
+        return (
+            f"Volume command sent but the level is {after}% instead of {target}% "
+            "(requested, unverified)."
+        )
+
+    up = action == "volume_up"
+    delta = "+ 10" if up else "- 10"
+    res = _osa(
+        f"set volume output volume ((output volume of (get volume settings)) {delta})",
+        timeout=3.0,
+    )
+    if not res["ok"]:
+        return f"Could not change volume: {res['stderr'] or 'osascript error'}."
+    after = _read_output_volume()
+    if before is None or after is None:
+        return "Volume command sent but could not confirm the change (requested, unverified)."
+    if after != before:
+        return f"Volume set to {after}% (verified: {before}% -> {after}%)."
+    if (up and before >= 100) or (not up and before <= 0):
+        return f"Volume set to {after}% (verified: already at the limit)."
+    return "Volume command sent but the level did not change (requested, unverified)."
+
+
+def _handle_brightness(action: str) -> str:
+    """Change brightness; brightness cannot be reliably read back on macOS."""
+    if _OS != "Darwin":
+        try:
+            ACTION_MAP[action]()
+            return f"Done: {action}."
+        except Exception as e:
+            return f"Could not change brightness ({action}): {e}"
+
+    key = 144 if action == "brightness_up" else 145
+    res = _osa(f'tell application "System Events" to key code {key}', timeout=3.0)
+    if res["ok"]:
+        return (
+            "Brightness change requested, unverified: the key was sent but macOS "
+            "does not expose a reliable brightness value to confirm the change."
+        )
+    if res["permission"] == "accessibility" or _accessibility_available() is False:
+        return f"Could not change brightness: {_ACCESSIBILITY_HINT}"
+    if res["timed_out"]:
+        return "Could not change brightness: the command timed out."
+    return f"Could not change brightness: {res['stderr'] or 'osascript error'}."
+
+
 def computer_settings(
     parameters: dict = None,
     response=None,
@@ -644,50 +868,73 @@ def computer_settings(
                 f"Please confirm by calling again with confirmed=yes."
             )
 
-    if action == "volume_set":
-        try:
-            volume_set(int(value or 50))
-            return f"Volume set to {value}%."
-        except Exception as e:
-            return f"Could not set volume: {e}"
+    if action in ("volume_up", "volume_down", "volume_set", "mute", "unmute", "toggle_mute"):
+        return _handle_volume(action, value)
+
+    if action in ("brightness_up", "brightness_down"):
+        return _handle_brightness(action)
 
     if action in ("type_text", "write_on_screen", "type", "write"):
         text = str(value or params.get("text", "")).strip()
         if not text:
             return "No text provided to type."
+        gate = _accessibility_gate("type_text")
+        if gate:
+            return gate
         enter_after = str(params.get("press_enter", "false")).lower() in ("true", "1", "yes")
         type_text(text, press_enter_after=enter_after)
-        return f"Typed: {text[:80]}"
+        return _verified_or_unverified(f"Typed: {text[:80]}", "type_text")
 
     if action == "press_key":
         key = str(value or params.get("key", "")).strip()
         if not key:
             return "No key specified."
+        gate = _accessibility_gate("press_key")
+        if gate:
+            return gate
         press_key(key)
-        return f"Pressed: {key}"
+        return _verified_or_unverified(f"Pressed: {key}", "press_key")
 
     if action in ("reload_n", "refresh_n", "reload_page_n"):
+        gate = _accessibility_gate("reload_n")
+        if gate:
+            return gate
         try:
             reload_page_n(int(value or 1))
-            return f"Reloaded {value or 1} time(s)."
+            return _verified_or_unverified(f"Reloaded {value or 1} time(s).", "reload_n")
         except Exception as e:
             return f"Reload failed: {e}"
 
     if action == "scroll_up":
+        gate = _accessibility_gate("scroll_up")
+        if gate:
+            return gate
         scroll_up(int(value or 500))
-        return "Scrolled up."
+        return _verified_or_unverified("Scrolled up.", "scroll_up")
 
     if action == "scroll_down":
+        gate = _accessibility_gate("scroll_down")
+        if gate:
+            return gate
         scroll_down(int(value or 500))
-        return "Scrolled down."
+        return _verified_or_unverified("Scrolled down.", "scroll_down")
 
     func = ACTION_MAP.get(action)
     if not func:
         return f"Unknown action: '{raw_action}'."
 
+    requires_accessibility = action in _ACCESSIBILITY_ACTIONS
+    if requires_accessibility:
+        gate = _accessibility_gate(action)
+        if gate:
+            return gate
+
     try:
         func()
-        return f"Done: {action}."
     except Exception as e:
         print(f"[Settings] Action failed ({action}): {e}")
         return f"Action failed ({action}): {e}"
+
+    if requires_accessibility:
+        return _verified_or_unverified(f"Done: {action}.", action)
+    return f"Done: {action}."

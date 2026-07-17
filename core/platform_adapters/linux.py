@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import (
+    AUTOSTART_LABEL,
     AVAILABLE,
     BROWSER_CATALOG,
     MESSAGING_CATALOG,
@@ -247,3 +248,51 @@ class LinuxAdapter(PlatformAdapter):
             return proc, "Linux sleep inhibited (systemd-inhibit)."
         except Exception as e:
             return None, f"Failed to start systemd-inhibit: {e}"
+
+    # ── auto-start (XDG ~/.config/autostart/<label>.desktop) ──────────────────
+    def autostart_status(self, label: str = AUTOSTART_LABEL) -> tuple[bool | None, str]:
+        entry = self._autostart_entry_path(label)
+        if entry.exists():
+            return True, f"Auto-start entry registered at {entry.name}."
+        return False, "Auto-start .desktop entry is not registered."
+
+    def set_autostart(
+        self,
+        enabled: bool,
+        command: list[str],
+        label: str = AUTOSTART_LABEL,
+    ) -> tuple[bool | None, str]:
+        entry = self._autostart_entry_path(label)
+        try:
+            if enabled:
+                if not command:
+                    return False, "No launch command available for auto-start."
+                entry.parent.mkdir(parents=True, exist_ok=True)
+                exec_line = " ".join(self._shell_quote(arg) for arg in command)
+                entry.write_text(
+                    "[Desktop Entry]\n"
+                    "Type=Application\n"
+                    "Name=JARVIS\n"
+                    f"Exec={exec_line}\n"
+                    "Terminal=false\n"
+                    "X-GNOME-Autostart-enabled=true\n",
+                    encoding="utf-8",
+                )
+                if entry.exists():
+                    return True, f"Auto-start enabled ({entry.name})."
+                return None, "Auto-start entry write could not be verified."
+            entry.unlink(missing_ok=True)
+            if not entry.exists():
+                return True, "Auto-start disabled (.desktop entry removed)."
+            return None, "Auto-start entry removal could not be verified."
+        except Exception as e:
+            return False, f"Auto-start change failed on Linux: {e}"
+
+    def _autostart_entry_path(self, label: str) -> Path:
+        return Path.home() / ".config" / "autostart" / f"{label}.desktop"
+
+    @staticmethod
+    def _shell_quote(arg: str) -> str:
+        import shlex
+
+        return shlex.quote(str(arg))

@@ -1,5 +1,153 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-17 - Mobile remote control: fix frozen dashboard + QR "Link Expired"
+
+### Problem
+
+On the phone the remote dashboard was unusable in two ways:
+
+- **Frozen screen, nothing tappable.** The always-present settings sheet
+  `#set-sheet` (`.sheet-back`) is `position:fixed; inset:0; z-index:50; opacity:0`
+  but had no `pointer-events:none`. An `opacity:0` element still receives pointer
+  events, so the invisible full-screen backdrop swallowed every tap on the
+  header/feed/footer/quick-bar beneath it.
+- **QR scan -> "Link Expired".** The `/auto-login` pairing key was one-time
+  (deleted on first GET). iOS Camera / Safari opens the link more than once
+  (prefetch / double-open / reload / back), so the first hit consumed the key and
+  the page the user actually saw hit a dead-end "Link Expired".
+
+### Fix
+
+- `dashboard/static/app.html`: `.sheet-back` gets `pointer-events:none` when
+  closed and `pointer-events:auto` on `.show`, so a closed sheet passes taps
+  through to the app and an open sheet stays interactive.
+- `dashboard/server.py`: `/auto-login` no longer consumes the key on first hit —
+  it stays valid for its full TTL (raised 600->900s), so repeated iOS opens all
+  land in the app. Invalid/expired keys on `/auto-login` are now rate-limited per
+  IP (same guard as `/login`) because the endpoint is reachable over the public
+  tunnel; valid keys are checked before the limiter, so a real key still works
+  during a lockout. The PIN `/login` path is unchanged (still one-time, manual).
+
+### Constraints kept
+
+- No new user-facing UI strings (the server error pages are internal English HTML).
+- Platform-neutral change (web asset + FastAPI logic; no OS-specific code).
+- Verified: `py_compile` OK; TestClient `/auto-login` checks ALL_PASS (double-open
+  succeeds, key survives its TTL, invalid -> Link Expired, brute-force -> 429);
+  full test suite 456 passed.
+
+## 2026-07-17 - Honest verified reporting for macOS system control
+
+### Problem
+
+Volume, brightness, media-stop and other single-command system controls always
+reported success (`computer_settings` returned `"Done: {action}."` and
+`"Volume set to X%"` without checking the `osascript`/pyautogui outcome). On a Mac
+where the launcher (Terminal/iTerm) lacked **Accessibility**/**Automation**
+permission, the underlying command silently failed but Jarvis still said
+"Bajarildi" — a fake success. This also violated the repo's truthful-reporting
+rule.
+
+### Fix
+
+- `actions/computer_settings.py`: added honest execution helpers — `_osa()` (runs
+  osascript and returns `{ok, returncode, stdout, stderr, timed_out, permission}`;
+  classifies `-25211/assistive access` → accessibility, `-1743/Apple events` →
+  automation), a cached `_accessibility_available()` probe, and
+  `_read_output_volume()`/`_read_output_muted()`.
+  - **Volume/mute** now read the real level/mute state before+after and only claim
+    success when it actually changed (or is at the 0/100 limit); otherwise
+    `requested, unverified`.
+  - **Brightness** checks the `key code` returncode: permission error →
+    `failed` + Accessibility hint; sent OK → `requested, unverified` (macOS exposes
+    no reliable brightness read).
+  - **Accessibility gate** for pyautogui/`System Events` keystroke actions: denied
+    → `failed` + permission hint; unknown → `requested, unverified`; granted →
+    `Done`. Working commands are unchanged when permission is present.
+- `actions/media_control.py`: detects Accessibility denial on the `key code 16`
+  path and returns the permission hint instead of letting the silent pyautogui
+  fallback fake a success.
+- `core/session_context.py`: added `"requested, unverified"` to
+  `_UNCERTAIN_PATTERNS` so the three states (verified success / requested,
+  unverified / failed) are distinguished by the shared `infer_result_status`
+  classifier that `main.py` already feeds to Gemini.
+
+### Constraints kept
+
+- `main.py` untouched — the fix rides the existing
+  `infer_result_status` → `result_status`/`verified` → FunctionResponse pipeline.
+- Windows/Linux paths unchanged (macOS-only verification gate); cross-platform
+  parity preserved with honest statuses.
+- New `tests/test_computer_settings.py` (17 tests): successful osascript, non-zero
+  returncode, timeout, Accessibility denied, volume before/after verification,
+  no false "Done", and unchanged Windows/Linux behavior. Full suite: 489 passed.
+
+## 2026-07-17 - Port three "What's New in XLIX" features from upstream Mark-XLIX
+
+### Added
+
+Ported and adapted three features from `FatihMakes/Mark-XLIX` (upstream's newer
+release) into our architecture — cross-platform through adapters, bilingual, and
+honest by construction. Not a blind copy of upstream ui.py.
+
+- **Auto-start on login** (cross-platform, through `core/platform_adapters`):
+  - `base.py` defines the contract `autostart_status()` /
+    `set_autostart(enabled, command, label)` returning `(state, detail)` where
+    `None` = unsupported (honest fallback, never a fake success).
+  - macOS adapter uses a `~/Library/LaunchAgents/<label>.plist` (RunAtLoad);
+    Windows adapter uses the HKCU `...\Run` registry value; Linux adapter uses a
+    `~/.config/autostart/<label>.desktop` entry.
+  - New facade `core/autostart_manager.py` builds the relaunch argv (frozen build
+    → executable; source run → interpreter + main.py, preferring pythonw.exe on
+    Windows) and routes to the active adapter.
+  - Settings overlay shows a toggle only when the OS supports it; otherwise an
+    honest "not supported" note. A failed/unverified change reverts the switch.
+- **Clipboard intelligence** (`ui.py`, Qt cross-platform): copying 10+ chars shows
+  a floating `ClipboardPanel` with Translate / Summarise / Explain / Fix. Text is
+  sent to the assistant only when a button is clicked; the panel auto-dismisses
+  after 8s. Gated by a `clipboard_actions_enabled` setting toggle (default on) for
+  privacy. Labels and command templates are bilingual (localized to active UI
+  language).
+- **Assistant customization**: `config/settings.json` now stores an optional
+  `assistant` block (`assistant_name`, default `Jarvis`; `user_name`, default
+  empty). `main.py::_build_config()` injects an `[IDENTITY]` block into the Gemini
+  system instruction. Editable from the settings overlay (two fields + Save); the
+  name fully applies to the Gemini identity after a restart.
+
+### Why
+
+- Akbar asked to compare upstream Mark-XLIX with our fork and pull in the useful
+  new features. The four XLIX deltas are auto-start, clipboard intelligence,
+  assistant customization, and a morning-brief toggle; Akbar chose the first
+  three. The morning-brief toggle was intentionally NOT ported because upstream's
+  briefing is generic world news, which conflicts with our Personal Operations
+  Briefing route.
+
+### Constraints kept
+
+- Cross-platform parity: auto-start lives in the adapters with an honest
+  unsupported status; no silent macOS-only behavior.
+- Bilingual EN+RU for every new visible string (`core/i18n.py`).
+- Truthful reporting: auto-start toggle reflects the verified OS state; nothing is
+  faked. Clipboard content is only sent on explicit click.
+- No secret files touched. `user_name` is stored in the committed non-secret
+  `config/settings.json` and defaults to empty (Akbar's choice).
+- Upstream is CC BY-NC; this is personal, non-commercial use. No change to the
+  commercial-release gates.
+
+### Verification
+
+- `python -m py_compile` on all changed files → OK.
+- `python -m pytest tests/test_autostart.py tests/test_assistant_config.py -q`
+  → 16 passed (facade routing, each OS round-trip, unsupported/off-platform path,
+  config defaults/trim/preserve-other-keys).
+- `python -m pytest tests/ -q` → 472 passed, 341 subtests.
+- Offscreen Qt smoke test: `ClipboardPanel` emits the correctly-localized command;
+  `SettingsOverlay` builds the new rows (toggle when supported, honest note when
+  not); toggle/save handlers dispatch the right actions.
+- Live full-Mac GUI verification (real LaunchAgent at login, on-screen clipboard
+  panel, rename applied after restart) NOT yet run — pending, see NEXT_STEPS.
+
 ## 2026-07-13 - ChatGPT Atlas: open URLs in Atlas (Playwright can't automate it)
 
 ### Problem

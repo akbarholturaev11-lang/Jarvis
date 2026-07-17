@@ -7,12 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from .base import (
+    AUTOSTART_LABEL,
     AVAILABLE,
     BROWSER_CATALOG,
     MESSAGING_CATALOG,
     UNKNOWN,
     PlatformAdapter,
 )
+
+
+_WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
 _BROWSER_EXES = {
@@ -236,6 +240,48 @@ class WindowsAdapter(PlatformAdapter):
                 pass
             return
         super().release_sleep(token)
+
+    # ── auto-start (HKCU Run registry entry) ──────────────────────────────────
+    def autostart_status(self, label: str = AUTOSTART_LABEL) -> tuple[bool | None, str]:
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _WINDOWS_RUN_KEY, 0, winreg.KEY_READ
+            ) as key:
+                try:
+                    winreg.QueryValueEx(key, label)
+                    return True, "Auto-start Run entry is registered."
+                except FileNotFoundError:
+                    return False, "Auto-start Run entry is not registered."
+        except Exception as e:
+            return None, f"Auto-start status unavailable on Windows: {e}"
+
+    def set_autostart(
+        self,
+        enabled: bool,
+        command: list[str],
+        label: str = AUTOSTART_LABEL,
+    ) -> tuple[bool | None, str]:
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, _WINDOWS_RUN_KEY, 0, winreg.KEY_ALL_ACCESS
+            ) as key:
+                if enabled:
+                    if not command:
+                        return False, "No launch command available for auto-start."
+                    value = " ".join(f'"{arg}"' for arg in command)
+                    winreg.SetValueEx(key, label, 0, winreg.REG_SZ, value)
+                    return True, "Auto-start enabled (Run registry entry)."
+                try:
+                    winreg.DeleteValue(key, label)
+                except FileNotFoundError:
+                    pass
+                return True, "Auto-start disabled (Run registry entry removed)."
+        except Exception as e:
+            return False, f"Auto-start change failed on Windows: {e}"
 
     def _find_windows_app(self, candidates: tuple[str, ...]) -> str:
         for candidate in candidates:

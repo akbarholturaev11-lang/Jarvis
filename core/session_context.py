@@ -126,6 +126,7 @@ _PRIVATE_TEXT_KEYS = {
 _UNCERTAIN_PATTERNS = (
     "could not confirm",
     "not verified",
+    "requested, unverified",
     "without a detailed verification",
     "exact status is uncertain",
     "exact outcome is uncertain",

@@ -16,6 +16,10 @@ AVAILABLE = "available"
 BLOCKED = "blocked"
 PERMISSION_REQUIRED = "permission_required"
 
+# Stable identifier used across OSes for the app's auto-start registration
+# (macOS LaunchAgent Label, Windows Run value name, Linux .desktop stem).
+AUTOSTART_LABEL = "com.jarvis.assistant"
+
 
 BROWSER_CATALOG: dict[str, dict[str, Any]] = {
     "safari": {
@@ -324,6 +328,30 @@ class PlatformAdapter:
 
     def release_sleep(self, token: object) -> None:
         self._terminate_proc(token)
+
+    # ── auto-start on login (register the app to launch at OS startup) ─────────
+    # Contract:
+    #   autostart_status(label) returns (state, detail):
+    #     state True  → auto-start is currently registered for this app.
+    #     state False → auto-start is not registered.
+    #     state None  → the capability is unsupported/undetectable on this OS.
+    #   set_autostart(enabled, command, label) returns (result, detail):
+    #     result True  → the change was applied and verified.
+    #     result None  → attempted but the result could not be verified.
+    #     result False → failed or unsupported on this OS.
+    # `command` is the argv used to relaunch the app (e.g. [python, main.py] for a
+    # source run, or [executable] for a frozen build). Per-OS adapters override
+    # these; the base is the honest unsupported fallback — never a fake success.
+    def autostart_status(self, label: str = AUTOSTART_LABEL) -> tuple[bool | None, str]:
+        return None, f"Auto-start is unsupported on {self.os_key}."
+
+    def set_autostart(
+        self,
+        enabled: bool,
+        command: list[str],
+        label: str = AUTOSTART_LABEL,
+    ) -> tuple[bool | None, str]:
+        return None, f"Auto-start is unsupported on {self.os_key}."
 
     def _terminate_proc(self, token: object) -> None:
         """Best-effort terminate for adapters whose token is a subprocess handle."""

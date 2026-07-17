@@ -45,7 +45,7 @@ from core.i18n import (
 from core.capabilities import list_capabilities
 from core.credential_service import load_gemini_api_key, store_gemini_api_key
 from core.macros import load_macros, add_macro, remove_macro
-from core.app_settings import load_settings
+from core.app_settings import get_clipboard_actions_enabled, load_settings
 from core.app_paths import resolve_app_paths
 from core.gemini_credential_validator import validate_gemini_api_key
 
@@ -1600,6 +1600,45 @@ class SettingsOverlay(QWidget):
         self._awake_sw.toggled.connect(self._on_toggle_awake)
         b.addWidget(self._row(t("settings.keep_awake"), self._awake_sw))
 
+        # Auto-start on login toggle (honest: hidden behind an unsupported note
+        # on OSes where the adapter reports it can't register a startup entry).
+        if bool(self._state.get("autostart_supported")):
+            self._autostart_sw = ToggleSwitch(bool(self._state.get("autostart_enabled")))
+            self._autostart_sw.toggled.connect(self._on_toggle_autostart)
+            b.addWidget(self._row(t("settings.autostart"), self._autostart_sw))
+        else:
+            self._autostart_sw = None
+            row = self._row(t("settings.autostart"),
+                            self._lbl(t("settings.autostart_unsupported"), 8, color=C.TEXT_DIM))
+            b.addWidget(row)
+
+        # Clipboard quick-actions toggle
+        self._clip_sw = ToggleSwitch(bool(self._state.get("clipboard_actions_enabled", True)))
+        self._clip_sw.toggled.connect(self._on_toggle_clipboard)
+        b.addWidget(self._row(t("settings.clipboard"), self._clip_sw))
+
+        b.addWidget(self._sep())
+
+        # Assistant identity — name and how it addresses you.
+        b.addWidget(self._lbl(t("settings.assistant"), 9, bold=True, color=C.PRI))
+        _input_style = (
+            f"QLineEdit {{ background: {C.PANEL2}; color: {C.TEXT}; "
+            f"border: 1px solid {C.BORDER_B}; border-radius: 6px; padding: 4px 8px; }}"
+            f"QLineEdit:focus {{ border: 1px solid {C.PRI}; }}"
+        )
+        b.addWidget(self._lbl(t("settings.assistant_name"), 8, color=C.TEXT_DIM))
+        self._asst_name_input = QLineEdit(str(self._state.get("assistant_name", "Jarvis")))
+        self._asst_name_input.setFixedHeight(30)
+        self._asst_name_input.setStyleSheet(_input_style)
+        b.addWidget(self._asst_name_input)
+        b.addWidget(self._lbl(t("settings.your_name"), 8, color=C.TEXT_DIM))
+        self._user_name_input = QLineEdit(str(self._state.get("user_name", "")))
+        self._user_name_input.setFixedHeight(30)
+        self._user_name_input.setStyleSheet(_input_style)
+        b.addWidget(self._user_name_input)
+        b.addWidget(self._mini_btn(t("settings.save"), self._save_assistant))
+        b.addWidget(self._lbl(t("settings.assistant_restart_note"), 7, color=C.TEXT_DIM))
+
         b.addWidget(self._sep())
 
         # Language
@@ -1811,6 +1850,33 @@ class SettingsOverlay(QWidget):
     def _on_toggle_awake(self, enabled: bool):
         try:
             self._dispatch("toggle_keep_awake", enabled=enabled)
+        except Exception:
+            pass
+
+    def _on_toggle_autostart(self, enabled: bool):
+        res = None
+        try:
+            res = self._dispatch("toggle_autostart", enabled=enabled)
+        except Exception:
+            res = None
+        # Honest reflection: if the OS change was not verified, revert the switch
+        # so it never shows "on" for a startup entry that was not registered.
+        if (not isinstance(res, dict) or res.get("status") is not True) and self._autostart_sw is not None:
+            self._autostart_sw.setChecked(not enabled, animate=False)
+
+    def _on_toggle_clipboard(self, enabled: bool):
+        try:
+            self._dispatch("toggle_clipboard_actions", enabled=enabled)
+        except Exception:
+            pass
+
+    def _save_assistant(self):
+        try:
+            self._dispatch(
+                "save_assistant_config",
+                assistant_name=self._asst_name_input.text(),
+                user_name=self._user_name_input.text(),
+            )
         except Exception:
             pass
 
@@ -2076,6 +2142,95 @@ class SettingsOverlay(QWidget):
         self.closed.emit()
 
 
+class ClipboardPanel(QWidget):
+    """Floating panel shown when text (10+ chars) is copied — offers one-click
+    Jarvis actions (translate / summarise / explain / fix). The copied text is
+    only sent to the assistant when the user clicks an action; the panel auto-
+    dismisses after 8 seconds. Labels and command templates are bilingual."""
+
+    action_requested = pyqtSignal(str)
+    _W, _H = 326, 112
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            ClipboardPanel {{
+                background: rgba(0, 8, 14, 0.97);
+                border: 1px solid {C.BORDER_B};
+                border-radius: 6px;
+            }}
+        """)
+        self.setFixedWidth(self._W)
+        self._clip_text = ""
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 6, 8, 7)
+        lay.setSpacing(4)
+
+        hdr = QHBoxLayout(); hdr.setSpacing(4)
+        icon_lbl = QLabel(f"◈  {t('clipboard.detected')}")
+        icon_lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        icon_lbl.setStyleSheet(f"color: {C.ACC2}; background: transparent;")
+        hdr.addWidget(icon_lbl); hdr.addStretch()
+        x_btn = QPushButton("✕")
+        x_btn.setFixedSize(16, 16)
+        x_btn.setFont(QFont("Courier New", 8))
+        x_btn.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none;")
+        x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        x_btn.clicked.connect(self.hide)
+        hdr.addWidget(x_btn)
+        lay.addLayout(hdr)
+
+        self._preview = QLabel()
+        self._preview.setFont(QFont("Courier New", 8))
+        self._preview.setStyleSheet(f"""
+            color: {C.TEXT}; background: {C.PANEL2};
+            border: 1px solid {C.BORDER}; border-radius: 3px; padding: 4px 6px;
+        """)
+        self._preview.setWordWrap(False)
+        self._preview.setFixedHeight(28)
+        lay.addWidget(self._preview)
+
+        btn_row = QHBoxLayout(); btn_row.setSpacing(4)
+        _bs = (f"QPushButton {{ background: {C.PANEL2}; color: {C.TEXT_MED}; "
+               f"border: 1px solid {C.BORDER}; border-radius: 2px; }}"
+               f"QPushButton:hover {{ color: {C.PRI}; border-color: {C.BORDER_B}; }}")
+        for label_key, cmd_key in [
+            ("clipboard.translate", "clipboard.cmd_translate"),
+            ("clipboard.summarise", "clipboard.cmd_summarise"),
+            ("clipboard.explain",   "clipboard.cmd_explain"),
+            ("clipboard.fix",       "clipboard.cmd_fix"),
+        ]:
+            b = QPushButton(t(label_key))
+            b.setFixedHeight(22)
+            b.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(_bs)
+            b.clicked.connect(lambda _, k=cmd_key: self._trigger(k))
+            btn_row.addWidget(b)
+        lay.addLayout(btn_row)
+
+        self._dismiss_timer = QTimer(self)
+        self._dismiss_timer.setSingleShot(True)
+        self._dismiss_timer.timeout.connect(self.hide)
+        self.hide()
+
+    def _trigger(self, cmd_key: str):
+        if self._clip_text:
+            self.action_requested.emit(t(cmd_key).format(text=self._clip_text[:800]))
+        self.hide()
+
+    def show_clipboard(self, text: str):
+        self._clip_text = text
+        preview = text[:58].replace('\n', ' ')
+        if len(text) > 58:
+            preview += "…"
+        self._preview.setText(f'"{preview}"')
+        self.show(); self.raise_()
+        self._dismiss_timer.start(8000)
+
+
 class MainWindow(QMainWindow):
     _log_sig     = pyqtSignal(str)
     _state_sig   = pyqtSignal(str)
@@ -2085,6 +2240,7 @@ class MainWindow(QMainWindow):
     _camera_sig     = pyqtSignal(bytes)   # show camera frame preview (small overlay)
     _cam_stream_sig = pyqtSignal(bool)   # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)  # live camera frame → HUD area
+    _clipboard_sig  = pyqtSignal(str)    # clipboard text changed (thread-safe)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2228,6 +2384,12 @@ class MainWindow(QMainWindow):
 
         # Camera preview overlay (child of central widget, positioned in resizeEvent)
         self._cam_preview = _CameraPreview(self.centralWidget())
+
+        # Clipboard intelligence — floating quick-action panel (bottom-center).
+        self._clipboard_panel = ClipboardPanel(self.centralWidget())
+        self._clipboard_panel.action_requested.connect(self._on_clipboard_action)
+        self._clipboard_sig.connect(self._show_clipboard_panel)
+        QApplication.clipboard().dataChanged.connect(self._on_clipboard_changed)
 
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
@@ -2621,6 +2783,9 @@ class MainWindow(QMainWindow):
             cw.height() - ph - 28,
             pw, ph,
         )
+        # Clipboard panel — bottom-center of the window
+        if hasattr(self, "_clipboard_panel") and self._clipboard_panel.isVisible():
+            self._position_clipboard_panel()
 
     def _update_metrics(self):
         snap = _metrics.snapshot()
@@ -3129,6 +3294,38 @@ class MainWindow(QMainWindow):
         ov.closed.connect(lambda: setattr(self, "_settings_overlay", None))
         ov.show()
         self._settings_overlay = ov
+
+    # ── Clipboard intelligence ────────────────────────────────────────────────
+    def _on_clipboard_changed(self):
+        """Clipboard changed — show the quick-action panel for substantial text.
+        Gated by the clipboard_actions_enabled setting so it can be turned off."""
+        try:
+            if not get_clipboard_actions_enabled():
+                return
+            text = QApplication.clipboard().text().strip()
+            if len(text) >= 10:
+                self._clipboard_sig.emit(text)
+        except Exception:
+            pass
+
+    def _show_clipboard_panel(self, text: str):
+        self._clipboard_panel.show_clipboard(text)
+        self._position_clipboard_panel()
+
+    def _position_clipboard_panel(self):
+        cw = self.centralWidget()
+        pw = ClipboardPanel._W
+        ph = self._clipboard_panel.sizeHint().height() or ClipboardPanel._H
+        x = (cw.width() - pw) // 2
+        y = cw.height() - ph - 12
+        self._clipboard_panel.setGeometry(x, y, pw, ph)
+        self._clipboard_panel.raise_()
+
+    def _on_clipboard_action(self, cmd: str):
+        if self.on_text_command:
+            threading.Thread(
+                target=self.on_text_command, args=(cmd,), daemon=True
+            ).start()
 
     def _do_interrupt(self):
         if self.on_interrupt:

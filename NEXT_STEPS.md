@@ -34,6 +34,21 @@ The following external gates must be cleared before any customer release:
 
 ## Immediate Next Steps
 
+0a. Manually verify the three ported Mark-XLIX features in the full Mac app:
+   - **Auto-start**: ⚙ → toggle **Launch at login** ON; confirm
+     `~/Library/LaunchAgents/com.jarvis.assistant.plist` is created (RunAtLoad,
+     correct interpreter + main.py path); toggle OFF confirms it is removed. Log
+     out/in once to confirm it actually launches, then decide whether to keep it.
+   - **Clipboard intelligence**: copy 10+ chars of text; confirm the floating panel
+     appears bottom-center with Translate/Summarise/Explain/Fix; click one and
+     confirm Jarvis acts on the copied text; confirm it auto-dismisses after 8s;
+     toggle it off in settings and confirm the panel stops appearing.
+   - **Assistant customization**: ⚙ → set an assistant name + your name → Save;
+     restart; confirm Jarvis refers to itself by the new name and addresses you by
+     your name. (Note: `core/prompt.txt` still mentions Jarvis by name; the
+     `[IDENTITY]` injection is authoritative, but consider softening prompt.txt if
+     a renamed assistant sounds inconsistent.)
+
 0. Manually verify the new mobile remote-control feature in the full Mac app:
    - With explicit approval, rebuild the venv in a non-hidden runtime directory
      outside Desktop, symlink project `.venv` to it, and confirm the read-only Qt

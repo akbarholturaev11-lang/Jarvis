@@ -16,6 +16,33 @@ except ImportError:
 
 _OS = platform.system()
 
+_ACCESSIBILITY_HINT = (
+    "macOS Accessibility permission is required. Enable it for Terminal "
+    "(or the JARVIS app) in System Settings > Privacy & Security > Accessibility, "
+    "then fully quit and restart the app."
+)
+_AUTOMATION_HINT = (
+    "macOS Automation permission is required. Allow Terminal (or the JARVIS app) "
+    "to control the browser in System Settings > Privacy & Security > Automation, "
+    "then restart the app."
+)
+
+
+def _permission_from_text(text: str):
+    """Classify an osascript failure as 'accessibility' | 'automation' | None."""
+    s = (text or "").lower()
+    if "-25211" in s or "assistive access" in s or "accessibility" in s:
+        return "accessibility"
+    if (
+        "-1743" in s
+        or "-1744" in s
+        or "not authori" in s
+        or "not allowed to send apple events" in s
+    ):
+        return "automation"
+    return None
+
+
 _BROWSER_APP_NAMES = {
     "chrome": "Google Chrome",
     "google chrome": "Google Chrome",
@@ -72,6 +99,11 @@ def _send_macos_media_pause() -> tuple[bool, str]:
     ok, detail = _run_osascript(script, timeout=2.0)
     if ok:
         return True, "System Events media play/pause key sent."
+
+    # When Accessibility is denied, pyautogui.press() silently no-ops on macOS
+    # and would fake a success — so surface the permission requirement instead.
+    if _permission_from_text(detail) == "accessibility":
+        return False, _ACCESSIBILITY_HINT
 
     if _PYAUTOGUI:
         try:

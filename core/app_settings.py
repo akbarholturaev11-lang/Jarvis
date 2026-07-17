@@ -79,3 +79,44 @@ def get_keep_awake_enabled() -> bool:
 def set_keep_awake_enabled(enabled: bool) -> bool:
     update_settings({"keep_awake_enabled": bool(enabled)})
     return bool(enabled)
+
+
+def get_clipboard_actions_enabled() -> bool:
+    """Whether the clipboard-intelligence quick-action panel is active."""
+    val = load_settings().get("clipboard_actions_enabled", True)
+    return bool(val)
+
+
+def set_clipboard_actions_enabled(enabled: bool) -> bool:
+    update_settings({"clipboard_actions_enabled": bool(enabled)})
+    return bool(enabled)
+
+
+_DEFAULT_ASSISTANT_NAME = "Jarvis"
+
+
+def get_assistant_config() -> dict:
+    """Assistant display name and how the assistant should address the user.
+
+    Defaults to the JARVIS brand name and empty user name (language-aware
+    addressing). Both are non-secret settings stored in config/settings.json.
+    """
+    data = load_settings().get("assistant")
+    name = ""
+    user = ""
+    if isinstance(data, dict):
+        name = str(data.get("assistant_name") or "").strip()
+        user = str(data.get("user_name") or "").strip()
+    return {
+        "assistant_name": name or _DEFAULT_ASSISTANT_NAME,
+        "user_name": user,
+    }
+
+
+def save_assistant_config(assistant_name: str, user_name: str) -> dict:
+    cfg = {
+        "assistant_name": (str(assistant_name or "").strip() or _DEFAULT_ASSISTANT_NAME),
+        "user_name": str(user_name or "").strip(),
+    }
+    update_settings({"assistant": cfg})
+    return cfg
