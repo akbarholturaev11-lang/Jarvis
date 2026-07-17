@@ -22,6 +22,11 @@ Current next steps for MARK XLVIII - AkbarCustom in `~/Desktop/Jarvis`.
 - Stage 9 records 21 `pass`, 9 `not_available`, 0 `fail` across the 30-scenario
   map. It always reports `production_ready=false` and
   `production_verified=false`; local evidence is not production evidence.
+- Client config provisioning is complete: `ops.gen_secrets` emits a non-secret
+  `client-trust.json` (entitlement + release public keys) and
+  `ops.build_client_config` builds the pinned HTTPS `config/product.json` from it,
+  validated through the real client loader. The purchase flow's remaining blocker
+  is the external VPS + domain + TLS deployment, not missing client-config code.
 
 ## Remaining Internal Implementation Gaps
 

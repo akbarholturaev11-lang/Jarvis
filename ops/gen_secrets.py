@@ -46,6 +46,12 @@ DEFAULT_ENTITLEMENT_KEY_ID = "entitlement-key-001"
 DEFAULT_RELEASE_KEY_ID = "release-key-001"
 DEFAULT_ENV_FILENAME = "backend.env"
 INITIAL_PASSWORD_FILENAME = "initial-admin-password.txt"
+# Non-secret public trust material for building the client ``product.json``. The
+# entitlement public key is derived here because generation is the only moment it
+# is known alongside the release public key; the client can never see the private
+# key. See ``ops.build_client_config``.
+CLIENT_TRUST_FILENAME = "client-trust.json"
+CLIENT_TRUST_SCHEMA = "jarvis.product-client-trust.v1"
 _MAX_PASSWORD_FILE_BYTES = 4096
 _PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 
@@ -80,6 +86,10 @@ class SecretBundle:
     files: dict[str, Path]
     initial_admin_password_file: Path | None
     permission_notes: list[str] = field(default_factory=list)
+    client_trust: dict[str, object] = field(default_factory=dict)
+
+    def render_client_trust(self) -> str:
+        return json.dumps(self.client_trust, indent=2, sort_keys=True) + "\n"
 
     def render_env(self) -> str:
         lines = [
@@ -136,10 +146,23 @@ def generate_secret_bundle(
     pepper_path = out_dir / "activation.pepper"
     mfa_path = out_dir / "admin-mfa.key"
     password_path = out_dir / INITIAL_PASSWORD_FILENAME if generated else None
+    client_trust_path = out_dir / CLIENT_TRUST_FILENAME
+
+    # Public (non-secret) trust material the client pins in ``product.json``.
+    entitlement_public_keys = {entitlement_key_id: _b64url(_raw_public(entitlement_key))}
+    release_public_keys = {release_key_id: _b64url(_raw_public(release_key))}
+    client_trust: dict[str, object] = {
+        "schema": CLIENT_TRUST_SCHEMA,
+        "entitlement_public_keys": entitlement_public_keys,
+        "release_public_keys": release_public_keys,
+    }
 
     output_paths = [entitlement_path, release_private_path, pepper_path, mfa_path]
     if password_path is not None:
         output_paths.append(password_path)
+    # The trust file is public, but keep it owner-only next to the secrets so a
+    # single deployment step produces both the backend env and the client trust.
+    output_paths.append(client_trust_path)
     if write_files:
         require_permission_applied(
             ensure_private_directory(out_dir),
@@ -169,17 +192,24 @@ def generate_secret_bundle(
                 write_secret_text(password_path, password + "\n"),
                 INITIAL_PASSWORD_FILENAME,
             )
+        _record(
+            write_secret_text(
+                client_trust_path,
+                json.dumps(client_trust, indent=2, sort_keys=True) + "\n",
+            ),
+            CLIENT_TRUST_FILENAME,
+        )
 
     files.update(
         entitlement_key=entitlement_path,
         release_signing_key=release_private_path,
         activation_pepper=pepper_path,
         admin_mfa_key=mfa_path,
+        client_trust=client_trust_path,
     )
     if password_path is not None:
         files["initial_admin_password"] = password_path
 
-    release_public_keys = {release_key_id: _b64url(_raw_public(release_key))}
     hosts = ",".join(item.strip() for item in allowed_hosts.split(",") if item.strip())
     env: dict[str, str] = {
         "JARVIS_RELEASE_PUBLIC_KEYS_JSON": json.dumps(release_public_keys),
@@ -205,6 +235,7 @@ def generate_secret_bundle(
         files=files,
         initial_admin_password_file=password_path,
         permission_notes=notes,
+        client_trust=client_trust,
     )
 
 
@@ -284,6 +315,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     emit(f"[ok] wrote owner-only environment file: {env_file} ({result.status})")
+    client_trust_file = bundle.files.get("client_trust")
+    if client_trust_file is not None:
+        emit(
+            "[ok] wrote non-secret client trust material: "
+            f"{client_trust_file} (build config/product.json with "
+            "python -m ops.build_client_config)"
+        )
     if bundle.initial_admin_password_file is not None:
         emit(
             "[ok] wrote the one-time bootstrap password to owner-only file: "

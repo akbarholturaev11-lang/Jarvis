@@ -106,10 +106,32 @@ store immediately before process start.
 ## Client configuration
 
 The non-secret client `product.json` contains only the HTTPS API origin and
-pinned entitlement/release public keys. Start from
-`config/product.example.json`, replace every placeholder, validate it in a
-controlled build environment and pass it to the macOS build script via
-`--product-config`. The real `config/product.json` is gitignored.
+pinned entitlement/release public keys. It is built from the public trust
+material `ops.gen_secrets` writes next to the secrets as `client-trust.json`
+(the entitlement public key is derived at generation time — the only moment it is
+known alongside the release public key without exposing any private key):
+
+```bash
+python -m ops.build_client_config \
+    --trust-file /srv/jarvis/secrets/client-trust.json \
+    --api-base-url https://api.example.com \
+    --out config/product.json
+```
+
+The tool validates the origin as HTTPS, sets `allow_insecure_localhost` to
+`false`, and round-trips the result through the real client loader before
+writing. Pass the produced file to the macOS build script via `--product-config`.
+The real `config/product.json` is gitignored;
+`config/product.example.json` is only a schema reference.
+
+For local development only, `--allow-insecure-localhost` permits an `http`
+loopback origin (paired with `python -m ops.dev_tls` for an `https` localhost);
+never use it for a customer-facing build.
+
+When rotating the entitlement or release key, `ops.rotate` prints the new public
+key id/value; add it to `config/product.json` (or
+`JARVIS_RELEASE_PUBLIC_KEYS_JSON`) alongside the current one during the overlap
+window before switching the active private key.
 
 ## Artifact publishing
 

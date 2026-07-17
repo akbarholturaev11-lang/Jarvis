@@ -71,6 +71,23 @@ sudo cp deploy/systemd/jarvis-backend.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now jarvis-backend
 ```
 
+## Build the client config
+
+`ops.gen_secrets` also writes `client-trust.json` (non-secret entitlement +
+release public keys). Turn it into the pinned client `config/product.json` with
+the real API origin, then bundle that file into the desktop build:
+
+```bash
+python -m ops.build_client_config \
+    --trust-file /srv/jarvis/secrets/client-trust.json \
+    --api-base-url https://api.example.com \
+    --out config/product.json
+```
+
+The origin must be HTTPS and `allow_insecure_localhost` stays `false` for any
+customer build. See [`docs/PRODUCT_BACKEND_OPERATIONS.md`](../docs/PRODUCT_BACKEND_OPERATIONS.md)
+for key rotation and the development-only `--allow-insecure-localhost` flag.
+
 ## Hosting note (cross-platform)
 
 The backend runtime enforces **POSIX** owner-only permissions on its secret

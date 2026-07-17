@@ -1,5 +1,50 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-17 - Client config provisioning bridge (purchase flow)
+
+### Problem
+
+The purchase flow could not reach the backend from the desktop client: there was
+no `config/product.json` and no supported way to build one, because the
+entitlement **public** key was never emitted by provisioning. `ops.gen_secrets`
+only wrote the entitlement private key server-side, so an operator had no way to
+obtain the public key the client must pin. The client therefore stayed
+permanently "offline" (`Статус оплаты недоступен без сети`) even with a running,
+correctly provisioned backend. This is the initial-provisioning half of the gap;
+`ops.rotate` already emits `public_values` for later key rotations.
+
+### Fix
+
+- `ops/gen_secrets.py`: additionally writes a non-secret `client-trust.json`
+  (schema `jarvis.product-client-trust.v1`) next to the secrets, containing the
+  entitlement + release **public** keys derived at generation time — the only
+  moment the entitlement public key is known without exposing the private key.
+  Secret-writing behaviour is unchanged; only additive, non-secret output.
+- New `ops/build_client_config.py`: builds the strict `jarvis.product-client.v1`
+  `config/product.json` from `client-trust.json` + a real `--api-base-url`,
+  validating the origin as HTTPS, defaulting `allow_insecure_localhost=false`,
+  and round-tripping the result through the real client loader before an atomic
+  write. A development-only `--allow-insecure-localhost` flag pairs with
+  `ops.dev_tls`.
+- Docs: `docs/PRODUCT_BACKEND_OPERATIONS.md` and `deploy/README.md` now document
+  the gen_secrets → build_client_config → `--product-config` flow and rotation.
+
+### Verification
+
+- New `tests/test_build_client_config.py` (12 tests, 11 subtests) including a
+  trust-chain proof: a signature from the backend entitlement private key
+  verifies under the public key the client pins.
+- Full worktree suite: `825 passed, 538 subtests` with the main-repo venv Python.
+- `py_compile` clean on both changed/new `ops` modules.
+
+### Constraints kept
+
+- No secret is printed or committed; `config/product.json`, `*.key`,
+  `backend.env`, `activation.pepper`, `/secrets/` stay gitignored.
+- Real deployment remains an honest external blocker: a customer-facing purchase
+  flow still needs a VPS, a real HTTPS domain, real TLS, and the contract's
+  legal/signing gates. Not claimed as deployed.
+
 ## 2026-07-17 - Product release readiness truth pass (BOSQICH 10)
 
 ### Documentation boundary
