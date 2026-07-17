@@ -412,7 +412,10 @@ class DashboardServer:
 
     # ── one-time key management ───────────────────────────────────────────
 
-    def new_key(self, expiry_secs: int = 600) -> str:
+    def new_key(self, expiry_secs: int = 900) -> str:
+        # 15-min window. The QR/PIN key is valid for its whole TTL (see /auto-login):
+        # it is not consumed on first use, so a phone that opens the link twice still
+        # lands in the app instead of hitting a one-time "Link Expired".
         now = time.time()
         self._pending_keys = {k: v for k, v in self._pending_keys.items() if v > now}
         key = ''.join(secrets.choice(_KEY_CHARS) for _ in range(6))
@@ -623,10 +626,33 @@ class DashboardServer:
                                 status_code=401)
 
         @app.get("/auto-login")
-        async def auto_login(key: str = ""):
-            """QR code target — validates one-time key, creates session, redirects phone."""
+        async def auto_login(request: Request, key: str = ""):
+            """QR code target — validates the pairing key, creates a session, redirects
+            the phone.
+
+            The key is NOT consumed on first hit: it stays valid for its full TTL so an
+            iOS Camera double-open / Safari prefetch / reload / back-navigation lands in
+            the app instead of a one-time "Link Expired". Invalid or expired keys are
+            rate-limited per IP (same guard as /login) because /auto-login is reachable
+            over the public tunnel."""
+            client_ip = request.client.host if request.client else "?"
             now = time.time()
-            if not key or key not in self._pending_keys or self._pending_keys[key] <= now:
+            valid = bool(key) and key in self._pending_keys and self._pending_keys[key] > now
+            if not valid:
+                # Only genuinely bad/expired keys count toward the brute-force limit;
+                # a repeated hit on a still-valid key succeeds below and never gets here.
+                if not self._login_allowed(client_ip):
+                    return HTMLResponse("""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
+<style>
+  body{background:#07090f;color:#dde3ed;font-family:sans-serif;
+       display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center}
+  h2{color:#f87171;margin-bottom:12px}p{color:#5e6a7e;font-size:14px}
+</style></head>
+<body><div><h2>Too Many Attempts</h2>
+<p>Wait a moment, then press <strong style="color:#dde3ed">Remote Control</strong> in JARVIS for a new QR code.</p>
+</div></body></html>""", status_code=429)
+                self._login_fail(client_ip)
                 return HTMLResponse("""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width">
 <style>
@@ -637,8 +663,9 @@ class DashboardServer:
 <body><div><h2>Link Expired</h2>
 <p>Press <strong style="color:#dde3ed">Remote Control</strong> in JARVIS to get a new QR code.</p>
 </div></body></html>""")
+            self._login_reset(client_ip)
 
-            del self._pending_keys[key]
+            # Key intentionally kept (valid for its full TTL) — not deleted here.
             tok     = secrets.token_urlsafe(32)
             dev_tok = secrets.token_urlsafe(32)
             self._tokens.add(tok)

@@ -168,8 +168,12 @@
       align-items: flex-end; justify-content: center;
       background: rgba(3,5,10,0.62); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
       opacity: 0; transition: opacity 0.22s ease;
+      /* Closed (opacity:0) the fixed full-screen backdrop is invisible but would
+         still swallow every tap on the page — disable its pointer events until
+         it is actually shown, then re-enable them so the sheet stays tappable. */
+      pointer-events: none;
     }
-    .sheet-back.show { opacity: 1; }
+    .sheet-back.show { opacity: 1; pointer-events: auto; }
     .sheet {
       width: 100%; max-width: 520px; background: #0c0f17; border: 1px solid var(--border);
       border-radius: 20px 20px 0 0; padding: 20px 18px calc(20px + env(safe-area-inset-bottom));
