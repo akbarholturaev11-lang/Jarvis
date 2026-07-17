@@ -1,5 +1,48 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-17 - Fix 3 real-log bugs: action normalization, dead vision model, Qt timer thread-safety
+
+### Problem
+
+Real test log surfaced: (1) `computer_settings` returned `Unknown action: 'increase'`
+when Gemini sent `{"action":"increase","description":"volume"}`; (2)
+`models/gemini-2.5-flash-lite is no longer available`, and `_screen_find` masked the
+404 as "element not found"; (3) `QObject::killTimer: Timers cannot be stopped from
+another thread`; (4) `[Reminder] Event bridge error: RuntimeError` logged with no
+traceback.
+
+### Fix
+
+- **Action normalization** (`actions/computer_settings.py`): added
+  `_canonicalize_action()` — maps `increase/decrease/raise/lower/... + volume|brightness`
+  to `volume_up/volume_down/brightness_up/brightness_down`, and `mute/unmute/silence`
+  to mute/unmute — only when the target is unambiguous; an ambiguous direction word
+  returns a `please specify volume or brightness` failure (never a blind guess). The
+  `computer_settings` tool schema (`main.py`) and `core/prompt.txt` now list the
+  canonical action vocabulary.
+- **Central model config** (`core/model_config.py`, new): `vision_model()` /
+  `intent_model()` resolve from env (`JARVIS_VISION_MODEL` / `JARVIS_INTENT_MODEL`),
+  then `config/settings.json`, then default `gemini-2.5-flash`. Replaced the dead
+  `gemini-2.5-flash-lite` in `computer_control._screen_find`, `computer_settings._detect_action`
+  and `flight_finder`. `_screen_find` now raises `ScreenVisionError` on model/API
+  failure (with `is_model_unavailable_error` detecting 404/NOT_FOUND) so
+  screen_find/screen_click return `Screen vision model unavailable/configuration error`
+  instead of masking it as "element not found".
+- **Qt timer thread-safety** (`ui.py`): `RemoteKeyOverlay.mark_connected()` (invoked
+  from the dashboard background thread) now emits `_connected_sig`; the timer stop +
+  widget updates run in the `_apply_connected` slot on the widget's own Qt thread.
+- **Reminder log** (`main.py`): the event-bridge handler now logs the exception
+  message + full `traceback.print_exc()` instead of only the type name.
+
+### Constraints kept
+
+- Minimal patches; working commands unchanged; no dependency changes.
+- New tests: `test_computer_settings.py` (normalization), `test_model_config.py`,
+  `test_screen_vision.py` (404 vs real not-found), `test_remote_overlay_timer.py`
+  (worker-thread emit → timer stop runs on the main Qt thread). Full suite: 513 passed.
+- Real smoke: `increase+volume` → `Volume set to 66% (verified: 56% -> 66%)` then
+  restored; models resolve to `gemini-2.5-flash`. Not committed/pushed.
+
 ## 2026-07-17 - Mobile remote control: fix frozen dashboard + QR "Link Expired"
 
 ### Problem

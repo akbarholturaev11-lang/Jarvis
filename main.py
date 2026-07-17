@@ -441,9 +441,9 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "The action to perform"},
-                "description": {"type": "STRING", "description": "Natural language description of what to do"},
-                "value":       {"type": "STRING", "description": "Optional value: volume level, text to type, etc."}
+                "action":      {"type": "STRING", "description": "Canonical action name, e.g. volume_up, volume_down, volume_set, mute, unmute, brightness_up, brightness_down, dark_mode, toggle_wifi, lock_screen, screenshot, copy, paste, new_tab, close_tab, refresh_page, minimize, maximize, restart, shutdown. For an 'increase'/'decrease' style command, ALSO pass description='volume' or description='brightness' so the target is unambiguous."},
+                "description": {"type": "STRING", "description": "Natural language description / target of the action (e.g. 'volume' or 'brightness' for increase/decrease)"},
+                "value":       {"type": "STRING", "description": "Optional value: volume level (0-100), text to type, etc."}
             },
             "required": []
         }
@@ -2452,7 +2452,8 @@ class JarvisLive:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(f"[Reminder] Event bridge error: {type(exc).__name__}")
+                print(f"[Reminder] Event bridge error: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
                 await asyncio.sleep(0.5)
 
     # ── System monitor ──────────────────────────────────────────────────────────

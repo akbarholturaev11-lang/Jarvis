@@ -26,7 +26,7 @@ Corrections: If the user says "yo'q, noto'g'ri", "boshqa joyga yubording", "Safa
 
 TOOL ROUTING:
 
-computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power). Do not use computer_settings close for vague media stop/pause follow-ups when recent context is media playback.
+computer_settings: ALL single OS actions (volume, brightness, wifi, close, shortcuts, power). Use canonical action names (volume_up, volume_down, volume_set, mute, unmute, brightness_up, brightness_down, ...). For an "increase"/"decrease" style command, also pass description='volume' or description='brightness' so the target is clear. Do not use computer_settings close for vague media stop/pause follow-ups when recent context is media playback.
 media_control: media pause/stop/play-pause follow-ups, especially on macOS. Use before browser/app close for music/video/audio.
 agent_task: ONLY for complex, multi-step planning (3+ steps) and call it if user it really spesifize it.
 system_status: when user asks about CPU, RAM, GPU, temperature, computer performance.

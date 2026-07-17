@@ -9,6 +9,7 @@ from pathlib import Path
 
 from core.credential_service import require_gemini_api_key
 from core.app_paths import resolve_app_paths
+from core.model_config import intent_model
 
 try:
     import pyautogui
@@ -600,7 +601,7 @@ Rules:
 - Return ONLY the JSON, no explanation, no markdown."""
 
     try:
-        resp = _client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+        resp = _client.models.generate_content(model=intent_model(), contents=prompt)
         text = re.sub(r"```(?:json)?", "", resp.text).strip().rstrip("`").strip()
         return json.loads(text)
     except Exception as e:
@@ -831,6 +832,50 @@ def _handle_brightness(action: str) -> str:
     return f"Could not change brightness: {res['stderr'] or 'osascript error'}."
 
 
+# ── Canonical action normalization ──────────────────────────────────────────
+# Gemini sometimes emits a bare direction word (e.g. {"action":"increase",
+# "description":"volume"}). Map those to real handler actions, but only when the
+# volume/brightness target is unambiguous — never guess an unknown action.
+
+_DIRECTION_WORDS = {
+    "increase": "up", "raise": "up", "up": "up", "higher": "up", "boost": "up",
+    "decrease": "down", "lower": "down", "down": "down", "reduce": "down",
+}
+_MUTE_WORDS = {"mute": "mute", "silence": "mute", "unmute": "unmute"}
+_VOLUME_HINTS = ("volume", "sound", "audio", "ovoz", "tovush", "ses", "громкост", "звук")
+_BRIGHTNESS_HINTS = ("bright", "yorqin", "yorug", "parlaq", "яркост")
+
+
+def _canonicalize_action(action: str, description: str, value) -> str | None:
+    """Resolve an ambiguous directional/mute command to a canonical action using
+    a clear volume/brightness context. Non-directional actions pass through
+    unchanged. Returns None when a directional/mute word has no clear target, so
+    the caller fails honestly instead of guessing."""
+    a = (action or "").lower().strip()
+    is_dir = a in _DIRECTION_WORDS
+    is_mute = a in _MUTE_WORDS
+    if not is_dir and not is_mute:
+        return a
+
+    ctx = f"{description or ''} {'' if value is None else value}".lower()
+    has_vol = any(h in ctx for h in _VOLUME_HINTS)
+    has_bri = any(h in ctx for h in _BRIGHTNESS_HINTS)
+
+    if is_mute:
+        # mute/unmute are audio by nature; reject only an explicit brightness-only
+        # context, which would be nonsensical.
+        if has_bri and not has_vol:
+            return None
+        return _MUTE_WORDS[a]
+
+    # Directional: require exactly one clear target.
+    if has_vol and not has_bri:
+        return f"volume_{_DIRECTION_WORDS[a]}"
+    if has_bri and not has_vol:
+        return f"brightness_{_DIRECTION_WORDS[a]}"
+    return None
+
+
 def computer_settings(
     parameters: dict = None,
     response=None,
@@ -855,6 +900,14 @@ def computer_settings(
 
     if not action:
         return "No action could be determined."
+
+    canonical = _canonicalize_action(action, description, value)
+    if canonical is None:
+        return (
+            f"Ambiguous action '{raw_action}': please specify volume or brightness "
+            "(e.g. 'volume up' or 'brightness down')."
+        )
+    action = canonical
 
     print(f"[Settings] Action: {action}  Value: {value}  OS: {_OS}")
     if player:

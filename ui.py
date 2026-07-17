@@ -1058,6 +1058,9 @@ class RemoteKeyOverlay(QWidget):
     """Floating overlay — QR code for instant phone pairing + manual key fallback."""
 
     closed = pyqtSignal()
+    # Emitted by mark_connected() so the timer/widget updates always run on the
+    # Qt (owner) thread, even when the phone connects from a background thread.
+    _connected_sig = pyqtSignal()
 
     _OW, _OH = 400, 465
 
@@ -1179,6 +1182,9 @@ class RemoteKeyOverlay(QWidget):
 
         self._ctimer = QTimer(self)
         self._ctimer.timeout.connect(self._tick)
+        # Queued (auto) connection: a cross-thread emit runs the slot on this
+        # widget's thread, so QTimer is never stopped from another thread.
+        self._connected_sig.connect(self._apply_connected)
         self._ctimer.start(1000)
         self._tick()
 
@@ -1229,7 +1235,11 @@ class RemoteKeyOverlay(QWidget):
             self._do_close()
 
     def mark_connected(self) -> None:
-        """Call from any thread when a phone successfully connects."""
+        """Thread-safe: marshal onto the Qt thread before touching the timer/UI."""
+        self._connected_sig.emit()
+
+    def _apply_connected(self) -> None:
+        """Slot — runs on the widget's own Qt thread."""
         self._ctimer.stop()
         self._key_lbl.setText(t("remote.connected"))
         self._key_lbl.setStyleSheet(f"""

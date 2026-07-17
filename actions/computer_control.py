@@ -17,6 +17,12 @@ from pathlib import Path
 
 from core.credential_service import require_gemini_api_key
 from core.app_paths import resolve_app_paths
+from core.model_config import vision_model, is_model_unavailable_error
+
+
+class ScreenVisionError(RuntimeError):
+    """Raised when the screen-vision model is unavailable or misconfigured, so a
+    model/config failure is never masked as a plain "element not found"."""
 
 try:
     import pyautogui
@@ -312,49 +318,57 @@ def _focus_window(title: str) -> str:
     return f"focus_window: unknown OS '{os_name}'"
 
 def _screen_find(description: str) -> tuple[int, int] | None:
+    """Locate a UI element on screen. Returns (x, y), or None only for a genuine
+    "element not found". Raises ScreenVisionError for API/model/config failures so
+    they are not masked as not-found."""
     api_key = _get_api_key()
     if not api_key:
-        print("[ComputerControl] ⚠️ No API key for screen_find")
-        return None
+        raise ScreenVisionError("No API key configured for screen vision.")
+
+    from google import genai
+    from google.genai import types as gtypes
+
+    _require_pyautogui()
+    w, h  = pyautogui.size()
+    img   = pyautogui.screenshot()
+    buf   = io.BytesIO()
+    img.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
+
+    model = vision_model()
+    client = genai.Client(api_key=api_key)
+    prompt = (
+        f"This is a screenshot of a {w}×{h} pixel screen. "
+        f"Locate the UI element described as: '{description}'. "
+        f"Reply with ONLY the center coordinates as: x,y "
+        f"If the element is not visible, reply: NOT_FOUND"
+    )
 
     try:
-        from google import genai
-        from google.genai import types as gtypes
-
-        _require_pyautogui()
-        w, h  = pyautogui.size()
-        img   = pyautogui.screenshot()
-        buf   = io.BytesIO()
-        img.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
-
-        client = genai.Client(api_key=api_key)
-        prompt = (
-            f"This is a screenshot of a {w}×{h} pixel screen. "
-            f"Locate the UI element described as: '{description}'. "
-            f"Reply with ONLY the center coordinates as: x,y "
-            f"If the element is not visible, reply: NOT_FOUND"
-        )
-
         response = client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=model,
             contents=[
                 gtypes.Part.from_bytes(data=image_bytes, mime_type="image/png"),
                 prompt,
             ],
         )
-
-        text = (response.text or "").strip()
-        if "NOT_FOUND" in text.upper():
-            return None
-
-        match = re.search(r"(\d+)\s*,\s*(\d+)", text)
-        if match:
-            return int(match.group(1)), int(match.group(2))
-
     except Exception as e:
-        print(f"[ComputerControl] ⚠️ screen_find failed: {e}")
+        if is_model_unavailable_error(e):
+            raise ScreenVisionError(
+                f"vision model '{model}' is unavailable (404/NOT_FOUND). "
+                f"Set JARVIS_VISION_MODEL to a supported vision model. ({e})"
+            ) from e
+        raise ScreenVisionError(f"screen vision request failed: {e}") from e
 
+    text = (response.text or "").strip()
+    if "NOT_FOUND" in text.upper():
+        return None
+
+    match = re.search(r"(\d+)\s*,\s*(\d+)", text)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+
+    # Model responded but produced no coordinates → genuine miss, not a config error.
     return None
 
 def computer_control(
@@ -469,12 +483,18 @@ def computer_control(
             return _screenshot(params.get("path"))
 
         if action == "screen_find":
-            coords = _screen_find(params.get("description", ""))
+            try:
+                coords = _screen_find(params.get("description", ""))
+            except ScreenVisionError as e:
+                return f"Screen vision model unavailable/configuration error: {e}"
             return f"{coords[0]},{coords[1]}" if coords else "NOT_FOUND"
 
         if action == "screen_click":
             desc   = params.get("description", "")
-            coords = _screen_find(desc)
+            try:
+                coords = _screen_find(desc)
+            except ScreenVisionError as e:
+                return f"Screen vision model unavailable/configuration error: {e}"
             if coords:
                 time.sleep(0.2)
                 _click(x=coords[0], y=coords[1])

@@ -9,6 +9,7 @@ from pathlib import Path
 from config import is_windows, is_mac, is_linux
 from core.credential_service import require_gemini_api_key
 from core.app_paths import resolve_app_paths
+from core.model_config import intent_model
 
 def _get_base_dir() -> Path:
     return resolve_app_paths().resource_root
@@ -64,7 +65,7 @@ def _parse_date(raw: str) -> str:
         from google import genai as _genai
         _client  = _genai.Client(api_key=_get_api_key())
         response = _client.models.generate_content(
-            model="gemini-2.5-flash-lite",
+            model=intent_model(),
             contents=(
                 f"Today is {today.strftime('%Y-%m-%d')}. "
                 f"Convert this date expression to YYYY-MM-DD: '{raw}'. "

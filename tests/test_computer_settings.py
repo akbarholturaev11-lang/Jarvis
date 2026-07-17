@@ -211,6 +211,49 @@ class MediaControlPermissionTests(unittest.TestCase):
         self.assertFalse(verified)
 
 
+class ActionNormalizationTests(unittest.TestCase):
+    def test_increase_volume_maps_to_volume_up(self):
+        self.assertEqual(cs._canonicalize_action("increase", "volume", None), "volume_up")
+
+    def test_decrease_volume_maps_to_volume_down(self):
+        self.assertEqual(cs._canonicalize_action("decrease", "volume", None), "volume_down")
+
+    def test_increase_brightness_maps_to_brightness_up(self):
+        self.assertEqual(cs._canonicalize_action("increase", "brightness", None), "brightness_up")
+
+    def test_decrease_brightness_maps_to_brightness_down(self):
+        self.assertEqual(cs._canonicalize_action("decrease", "brightness", None), "brightness_down")
+
+    def test_mute_audio_maps_to_mute(self):
+        self.assertEqual(cs._canonicalize_action("mute", "audio", None), "mute")
+        self.assertEqual(cs._canonicalize_action("unmute", "volume", None), "unmute")
+
+    def test_ambiguous_direction_returns_none(self):
+        self.assertIsNone(cs._canonicalize_action("increase", "", None))
+        self.assertIsNone(cs._canonicalize_action("decrease", "make it nicer", None))
+
+    def test_canonical_action_passes_through(self):
+        self.assertEqual(cs._canonicalize_action("volume_up", "", None), "volume_up")
+        self.assertEqual(cs._canonicalize_action("copy", "", None), "copy")
+
+    def test_end_to_end_increase_volume_is_verified(self):
+        vols = iter(["30", "40"])
+        with mock.patch.object(cs, "_OS", "Darwin"), \
+             mock.patch.object(cs.subprocess, "run", make_fake_run({
+                 "set volume output volume": FakeCompleted(0),
+                 "output volume of": lambda: FakeCompleted(0, next(vols)),
+             })):
+            result = cs.computer_settings(parameters={"action": "increase", "description": "volume"})
+        self.assertEqual(infer_result_status("computer_settings", result), ("success", True))
+
+    def test_end_to_end_ambiguous_increase_is_failed(self):
+        with mock.patch.object(cs, "_OS", "Darwin"), \
+             mock.patch.object(cs.subprocess, "run", make_fake_run({})):
+            result = cs.computer_settings(parameters={"action": "increase"})
+        self.assertIn("please specify", result.lower())
+        self.assertEqual(infer_result_status("computer_settings", result), ("failed", False))
+
+
 class InferStatusVocabularyTests(unittest.TestCase):
     """The three states must be distinguishable by the shared classifier."""
 
