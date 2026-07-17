@@ -5,7 +5,8 @@
 > development workflow. This file is the **map** (layers, dependency graph, do-not-
 > edit-blindly list), not the rules. Read the skill before any change.
 
-This is the project map and local markdown knowledge graph for the JARVIS AkbarCustom fork.
+This is the project map and local markdown knowledge graph for the JARVIS
+AkbarCustom fork at `~/Desktop/Jarvis`.
 
 No external Graphiti/Gravity dependency is installed for this foundation step. The markdown graph below is the initial safe knowledge map.
 
@@ -52,7 +53,10 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - `PROJECT_MEMORY.md`
 
 7. Config layer
-   - `config/api_keys.json`
+   - OS credential stores through `core/credential_service.py` and
+     `core/secure_store.py`
+   - `config/api_keys.json` (protected historical migration input only; never an
+     active credential fallback)
    - `config/settings.json`
    - `config/device_profile.json` (local, gitignored)
    - `config/device_profile.example.json`
@@ -62,7 +66,8 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - `config/certs/`
 
 8. Local runtime
-   - `.venv/`
+   - `.venv/` (ignored local symlink in the primary workspace; the verified Mac
+     development venv lives outside Desktop)
    - Playwright browsers
    - Mac permissions:
      - Microphone
@@ -71,7 +76,11 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
      - Camera
 
 9. Product/release layer
-   - Desktop facade and exact-version gate: `core/product_runtime.py`
+   - Packaged product identity and paths: `core/runtime_product.py`,
+     `core/app_paths.py`
+   - Desktop activation/payment/update facade and exact-version gate:
+     `core/product_runtime.py`, `core/product_gate.py`,
+     `core/product_bootstrap.py`
    - Device proof, activation, purchase, signed update and rollback contracts:
      `core/device_identity.py`, `core/product_activation.py`,
      `core/product_purchase.py`, `core/product_updates.py`,
@@ -84,12 +93,18 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
      (health/readiness/metrics/HTTPS/correlation-ID middleware),
      `product_backend/observability.py` (JSON logging + redaction + metrics),
      `product_backend/migrations.py` (schema versioning)
-   - Cross-platform ops tooling: `ops/` (`gen_secrets`, `validate_config`,
-     `backup`, `restore`, `migrate`, `rotate`, `dev_tls`)
+   - Deployment ops tooling: `ops/` (`gen_secrets`, `validate_config`, `backup`,
+     `restore`, `migrate`, `rotate`, `dev_tls`); security-sensitive mutation is
+     POSIX-only and native Windows returns honest `not_available`
    - Deployment recipes: `deploy/` (systemd, Docker + compose, nginx/Caddy,
      `env/backend.env.example`); runbook `docs/PRODUCTION_DEPLOYMENT.md`
-   - macOS packaging plan: `packaging/macos/`,
-     `scripts/build_macos_release.py`, `requirements-build.txt`
+   - macOS unsigned packaging pipeline: `packaging/macos/`,
+     `scripts/build_macos_release.py`, `scripts/release_pipeline.py`,
+     `requirements-build.txt`, `.github/workflows/macos-release.yml`
+   - Stage 9 deterministic evidence catalog/runner:
+     `tests/product_release_e2e_support.py`,
+     `scripts/run_product_release_e2e.py`,
+     `docs/E2E_PRODUCT_VALIDATION.md`
 
 ## Dependency Graph
 
@@ -123,7 +138,8 @@ main.py
 -> core/platform_adapters/linux.py
 -> core/i18n.py
 -> core/prompt.txt
--> config/api_keys.json
+-> core/credential_service.py
+-> core/secure_store.py
 -> config/settings.json
 -> config/device_profile.json
 ```
@@ -132,8 +148,11 @@ More detailed runtime relationship:
 
 ```text
 main.py
--> loads config/api_keys.json
+-> asks core/credential_service.py for the Gemini credential
+-> uses the OS secure store as authority
+-> treats config/api_keys.json only as a one-time migration source
 -> loads core/prompt.txt
+-> core/product_bootstrap.py evaluates core/product_runtime.py before onboarding
 -> creates JarvisUI from ui.py
 -> opens Gemini Live session
 -> streams microphone audio to Gemini
@@ -149,11 +168,10 @@ main.py
 ### Nodes
 
 - User: Akbar
-- Project: `Mark-XLVIII-AkbarCustom`
+- Project: `Jarvis` / `Mark-XLVIII-AkbarCustom`
 - Original: `FatihMakes/Mark-XLVIII`
 - GitHub remote: `https://github.com/akbarholturaev11-lang/Jarvis.git`
-- Original local test copy: `~/Desktop/Mark-XLVIII`
-- Custom local copy: `~/Desktop/Mark-XLVIII-AkbarCustom`
+- Active local copy: `~/Desktop/Jarvis`
 - Runtime: Python 3.12
 - AI backend: Gemini Live API
 - UI: PyQt6
@@ -176,7 +194,9 @@ main.py
 - Platform adapters: `core/platform_adapters/`
 - Media control action: `actions/media_control.py`
 - UI localization: `core/i18n.py`
-- Secret config: `config/api_keys.json`
+- Secure Gemini credential authority: `core/credential_service.py` ->
+  `core/secure_store.py` -> native OS store
+- Legacy credential migration input: `config/api_keys.json`
 - Safe local settings: `config/settings.json`
 - Local device profile: `config/device_profile.json`
 - Safe device profile template: `config/device_profile.example.json`
@@ -209,8 +229,8 @@ main.py
 - Platform adapters detect OS-specific facts through `base.py`, `macos.py`, `windows.py`, and `linux.py`.
 - `actions/media_control.py` sends safe media pause/play-pause commands on macOS and only reports verified success when playback state can be confirmed.
 - `main.py` reads the Gemini key through `core/credential_service.py`; the OS
-  secure store is authoritative and `config/api_keys.json` is legacy read-only
-  fallback.
+  secure store is authoritative and `config/api_keys.json` is a one-time legacy
+  migration source. It is never an active plaintext fallback.
 - Frozen builds must pass `core/product_runtime.py` exact-version signed local
   entitlement verification before Gemini runtime starts; source runs are not gated.
 - `product_backend/` owns the one-plan account/license/device/release/payment/
@@ -227,12 +247,20 @@ main.py
   boundary. `api_queries.py` owns bounded account/license/release admin reads.
 - Payment destinations are loaded only from an external owner-only JSON file;
   they are never committed and are returned only after verified device proof.
+- `scripts/run_product_release_e2e.py` executes deduplicated local evidence for
+  the 30 required release scenarios. Its recorded matrix is 21 `pass`, 9
+  `not_available`, 0 `fail`, while `production_ready` and
+  `production_verified` always remain false.
+- `.github/workflows/macos-release.yml` builds/tests/uploads unsigned artifacts
+  only and accepts no production signing secrets. The signing adapter is a
+  non-mutating planner; `packaging/macos/sign_artifact.sh --execute` fails with
+  honest `not_available` until the final signed-app/DMG/notarization executor is
+  audited.
 - `core/i18n.py` reads and writes the UI language setting in `config/settings.json`.
 - `config/settings.json` stores safe non-secret settings such as `ui_language` and only supports `ru` / `en`.
 - `memory_manager.py` saves user facts to `memory/long_term.json`.
 - `memory_manager.py` formats memory context for prompts.
 - `setup.py` installs requirements and Playwright browsers.
-- `setup.py` can create or depend on `config/api_keys.json`.
 - `core/prompt.txt` controls assistant behavior and tool-routing rules.
 - `AI_RULES.md` controls future AI coding assistant behavior.
 - `CLAUDE.md` gives startup/during/after workflow for Claude/Codex agents.
@@ -240,10 +268,30 @@ main.py
 - `CHANGELOG_AKBAR.md` records implementation history for AkbarCustom.
 - `NEXT_STEPS.md` tracks immediate planned work.
 
+## Product Release Boundary Map
+
+- Locally implemented/tested: exact-version entitlement and payment flow,
+  secure credential migration/storage contracts, MFA/admin PWA, synthetic macOS
+  updater transaction, unsigned macOS packaging, hardened single-process
+  deployment interfaces, and the Stage 9 evidence harness.
+- Internal gaps: production signing executor, fixed signed macOS updater helper,
+  one unified audit projection, native mobile/background push, Windows/Linux
+  packaging/updaters, and PostgreSQL/shared session-grant-rate/private object
+  storage for multiple instances.
+- External blockers: real domain/server/TLS, externally held production secrets
+  and signing keys, Apple Developer ID/notary credentials, clean-Mac evidence and
+  representative physical mobile-device checks.
+- Legal/license blockers: upstream CC BY-NC commercial rights, the PyQt6
+  distribution model, and rights to the product name/branding/icons/assets.
+
+The local E2E matrix is 21 `pass`, 9 `not_available`, 0 `fail`; it is not
+production verification or commercial clearance.
+
 ## Do Not Edit Blindly
 
 - `main.py` is HIGH RISK. It controls Gemini Live, audio, reconnects, tool declarations, and dispatch.
-- `config/api_keys.json` is SECRET. Never print, commit, or edit it unless Akbar explicitly asks.
+- `config/api_keys.json` is a protected legacy secret source used only by the
+  credential migration path. Never print, commit, or manually edit it.
 - `config/device_profile.json` is LOCAL OPERATIONAL METADATA. It is gitignored because it can contain local paths/app facts. Commit only the example schema.
 - `config/briefing_sources.json` and `config/local_env.zsh` are LOCAL ZERNO SETUP. They are gitignored and must never be staged; commit only `config/briefing_sources.example.json`.
 - `.venv/` is DO NOT TOUCH. It is local runtime state.
@@ -262,7 +310,11 @@ main.py
   no adapter may claim install success before exact target entitlement,
   private-copy verification, atomic mutation, fresh-nonce health proof and
   rollback are all independently verified. The macOS development adapter must
-  never be selected by source defaults or any frozen runtime.
+  never be selected by source defaults or any frozen runtime. Production signing
+  execution must stay `not_available` until an audited executor rebuilds the DMG
+  from the signed app, verifies the accepted notarization result and completes
+  final staple/Gatekeeper checks; the unsigned CI workflow must not receive
+  production credentials.
 - Real `config/product.json`, payment-instructions files, backend databases,
   signing keys, activation peppers and admin secrets are LOCAL/DEPLOYMENT data;
   never commit or print them.
@@ -272,11 +324,17 @@ main.py
   configured `JARVIS_TRUSTED_PROXIES` peer, never by default. `/metrics` must stay
   Bearer-gated and off by default. `product_backend/observability.py` must keep
   redacting secret-like fields before any log line.
-- `ops/*` tooling must never fake POSIX permissions on non-POSIX hosts — it
-  returns an honest `manual` status. Real generated secrets (`*.key`, `*.pem`,
-  `.env`, `*.sqlite3`) are gitignored; only `*.example` templates are committed.
+- Security-sensitive `ops/*` mutation must use POSIX owner/no-follow primitives
+  and fail before writing with `not_available` on native Windows. Cross-database
+  backup requires a stopped service plus `--confirm-service-stopped`; restore
+  requires a fresh target and must never overlay with `--force`. Manifest hashes
+  prove corruption integrity, not authenticity, so the backup store is a trusted
+  owner-only boundary. Real generated secrets (`*.key`, `*.pem`, `.env`,
+  `*.sqlite3`) are gitignored; only `*.example` templates are committed.
   `deploy/env/backend.env.example` and the reverse-proxy configs carry only
-  placeholders — never real hosts, keys, or tokens.
+  placeholders — never real hosts, keys, or tokens. nginx has the shipped edge
+  rate limit; stock Caddy requires an external/provider or separately reviewed
+  rate limiter before public use.
 - `config/macros.json` is LOCAL user data (gitignored) — user command macros; do not commit. `config/settings.json` is committed but non-secret; write it only through `core/app_settings.py` / `core/i18n.py` so unrelated keys are preserved.
 - `core/remote_tunnel.py` must never store cloudflared credentials in the repo (they live in `~/.cloudflared`) and must report honest `not_installed`/`failed` rather than a fake public URL.
 - `core/power_manager.py` + adapter `prevent_sleep`/`release_sleep` must return honest `unsupported` on OSes/tools that can't keep awake; never fake success.

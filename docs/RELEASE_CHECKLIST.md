@@ -3,6 +3,56 @@
 No release is customer-ready unless every applicable item is checked with saved
 evidence.  A local unsigned DMG does not satisfy this checklist.
 
+An unchecked item is not implied by passing unit tests. Record each item as
+**implemented**, **enforced**, **tested locally**, or **production-verified** with
+its evidence. Record unavailable behavior as `not_available`, unfinished
+repository work as **internal gap**, operator/platform dependencies as
+**external blocker**, and rights/licensing as **legal blocker**. No current
+component is production-verified. Use [`PACKAGING.md`](PACKAGING.md),
+[`CLEAN_MAC_TEST.md`](CLEAN_MAC_TEST.md),
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md),
+[`../SECURITY.md`](../SECURITY.md), and [`../THREAT_MODEL.md`](../THREAT_MODEL.md)
+as the evidence index.
+
+## Release-readiness matrix
+
+This is the canonical per-function readiness matrix. Each cell is backed by
+repository code and tests, not by intent. **No function is production-verified**
+— that column is intentionally empty until real production infrastructure and
+signed/notarized artifacts exist.
+
+Legend: `✓` met · `◑` partial (see blocker) · `—` not met / not applicable.
+Columns: **Impl** implemented · **Enf** enforced (fails closed) · **Unit**
+unit-tested · **Integ** integration-tested · **E2E** covered by the Stage 9
+`scripts/run_product_release_e2e.py` harness · **Man** recorded local manual
+smoke · **Prod** production-verified · **Ext** an external/legal blocker gates
+production.
+
+| Function | Impl | Enf | Unit | Integ | E2E | Man | Prod | Ext | Primary blocker |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: | :-: | --- |
+| License gate | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Frozen clean-Mac run needs Developer ID signing (scenario 1 `not_available`) |
+| Payment + evidence | ✓ | ✓ | ✓ | ✓ | ✓ | ◑ | — | ✓ | Real payment/bank process; new-payment browser banner delivery `not_available` (scenario 7) |
+| Entitlement (exact version) | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | Production entitlement private-key custody |
+| Admin auth / MFA | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | Real deployment enrollment smoke; MFA master-key rotation is an internal gap |
+| Mobile admin (PWA) | ✓ | ✓ | ✓ | ✓ | ◑ | ✓ | — | ✓ | Trusted-TLS iOS/Android smoke; native clients + push `not_available` |
+| Secure storage | ✓ | ✓ | ✓ | ✓ | ✓ | — | — | ✓ | Real-host Keychain / Credential Manager / Secret Service smoke per OS |
+| Updater | ✓ | ✓ | ✓ | ✓ | ◑ | — | — | ✓ | Production install helper `not_available` (scenarios 23–27); needs signed/notarized/audited helper |
+| Packaging (macOS) | ✓ | — | ✓ | ◑ | — | ✓ | — | ✓ | Developer ID signing, notarization, stapling; Windows/Linux `not_available` |
+| Deployment (backend) | ✓ | ✓ | ✓ | ✓ | — | — | — | ✓ | Real domain/TLS/server + backup-restore and key-rotation drills |
+| Secrets hygiene | ✓ | ✓ | ✓ | ✓ | ◑ | ✓ | — | ✓ | Production key custody in a managed store (repository hygiene is verified) |
+| Cross-platform contract | ✓ | ✓ | ✓ | ✓ | ◑ | — | — | ✓ | Windows/Linux real-host smoke; Windows/Linux packaging + updater `not_available` |
+| Audit logs | ◑ | ✓ | ✓ | ✓ | ◑ | — | — | — | Unified product-wide audit view is an **internal gap**, not an external blocker |
+| Rollback | ✓ | ✓ | ✓ | ✓ | ◑ | — | — | ✓ | Production signed helper + clean-Mac and power-loss drills |
+
+Detailed per-function evidence: [`ADMIN_MFA.md`](ADMIN_MFA.md),
+[`MOBILE_ADMIN.md`](MOBILE_ADMIN.md), [`UPDATE_ROLLBACK.md`](UPDATE_ROLLBACK.md),
+[`PACKAGING.md`](PACKAGING.md), [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md),
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md),
+[`../SECURITY.md`](../SECURITY.md), and [`../THREAT_MODEL.md`](../THREAT_MODEL.md).
+The consolidated blocker lists live in [`../SECURITY.md`](../SECURITY.md)
+(internal / external / legal). The overall commercial decision is **NO-GO** until
+every gate below is cleared with retained evidence.
+
 ## Commercial and identity gates
 
 - [ ] Upstream CC BY-NC commercial permission/relicensing or rights-clean replacement documented.
@@ -37,7 +87,13 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 - [ ] PyInstaller dependency/native-library report is reviewed.
 - [ ] `JARVIS.app` launches without Terminal, Python or dependency installation.
 - [ ] App reports the exact expected product/version/build mechanically.
-- [ ] Gemini onboarding and secure local key storage work without a bundled secret file.
+- [ ] Frozen startup enforces license/purchase/activation before Gemini
+      onboarding; no-license and wrong-version states cannot construct the main
+      assistant runtime.
+- [ ] Gemini onboarding and secure local key storage work without a bundled
+      secret file; any historical `config/api_keys.json` value is migrated once,
+      verified in the native store, and removed from plaintext rather than used
+      as an ongoing fallback.
 - [ ] Core voice, audio, dashboard and required macOS permission paths are manually tested.
 
 ## Mobile admin gate
@@ -49,6 +105,11 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 - [ ] Background privacy cleanup, logout/remote revoke, token expiry, offline
       denial, external-navigation blocking and 390/412px layouts pass on real
       target browsers over HTTPS.
+- [ ] A payment created after the visible queue baseline produces the expected
+      in-browser pending banner; contract tests alone are not delivery evidence.
+- [ ] Payment decisions, MFA security events and device replacement history are
+      available through one authorized, durable product-wide audit view. This is
+      currently an **internal gap**.
 - [ ] Native iOS/Android and push status remain `not_available` until their own
       security and real-device verification gates pass.
 
@@ -61,13 +122,18 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 - [ ] Hardened runtime and required entitlements are reviewed.
 - [ ] Apple notarization succeeds and the ticket is stapled.
 - [ ] `spctl` and staple validation pass on the exact distributed DMG/app.
+- [ ] The final app is signed before the final DMG is built/signed; an audited
+      executor parses an `Accepted` notarization result and verifies the stapled
+      final bytes. The repository currently has a non-executing planner only;
+      `--execute` is `not_available`.
 
 ## Install and clean-device verification
 
 - [ ] A clean supported Mac downloads and opens the final DMG.
 - [ ] Dragging `JARVIS.app` to Applications works.
 - [ ] First launch passes Gatekeeper without bypass instructions.
-- [ ] Onboarding asks only for Gemini key plus clear permission guidance.
+- [ ] First launch shows the license/purchase/activation gate before Gemini key
+      onboarding, then clear permission guidance only after entitlement succeeds.
 - [ ] Optional integrations remain optional in Settings.
 - [ ] Reboot/relaunch preserves settings, secure secrets and purchased-version access.
 
@@ -96,4 +162,7 @@ evidence.  A local unsigned DMG does not satisfy this checklist.
 - [ ] Release is published only after all platform artifacts and evidence are attached.
 - [ ] Download authorization and audit events are verified in production configuration.
 - [ ] Rollback/support instructions and known limitations are documented.
+- [ ] Production HTTPS/domain/reverse-proxy policy, edge limiting, monitoring,
+      owner-only secrets and a stopped-service backup/fresh-target restore drill
+      are verified on the real deployment. Local recipes are not sufficient.
 - [ ] Final release approval explicitly records that all commercial gates are cleared.

@@ -1,5 +1,39 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-17 - Product release readiness truth pass (BOSQICH 10)
+
+### Documentation boundary
+
+- Added a single canonical per-function **release-readiness matrix** to
+  `docs/RELEASE_CHECKLIST.md`. It rates the 13 audited functions (license gate,
+  payment, entitlement, admin auth/MFA, mobile admin, secure storage, updater,
+  packaging, deployment, secrets, cross-platform, audit logs, rollback) across
+  `implemented`, `enforced`, `unit-tested`, `integration-tested`, `E2E-tested`,
+  `manually-tested`, `production-verified`, and `externally-blocked`, each cell
+  backed by repository code and tests. No function is production-verified.
+- Added `docs/ADMIN_MFA.md` documenting the RFC 6238 TOTP MFA, sealed secrets,
+  single-use recovery codes, durable password rotation, and the session/CSRF
+  boundary, with its honest evidence status and residual risk. Cross-linked it
+  from `SECURITY.md` and `docs/PRODUCT_SYSTEM_ARCHITECTURE.md`.
+- Confirmed the vocabulary already separates `implemented`, `enforced`,
+  `tested locally`, `production-verified`, `not_available`, `internal gap`,
+  `external blocker`, and `legal blocker` across the architecture, operations,
+  packaging, updater, mobile-admin, security, threat-model, project memory/map
+  and next-step documents; nothing unfinished is marked ready.
+- Added `SECURITY.md`, `THREAT_MODEL.md`, `docs/PACKAGING.md` and
+  `docs/CLEAN_MAC_TEST.md`. The clean-Mac checklist is explicitly NOT RUN and
+  contains no fabricated evidence.
+- Kept internal engineering gaps separate from Apple/domain/device/operator
+  dependencies and from the unresolved upstream/PyQt6/branding legal gates.
+
+### Verification
+
+- Full pytest suite (`813 passed`, `527 subtests`), the targeted release/E2E
+  suites (`14 passed`), and the Stage 9 harness
+  (`scripts/run_product_release_e2e.py`: 21 `pass`, 9 `not_available`, 0 `fail`,
+  `production_ready=false`) were re-run on this snapshot. `git diff --check`,
+  a tracked-file secret scan, and a build-artifact scan were clean.
+
 ## 2026-07-17 - Deterministic product-release E2E validation (BOSQICH 9)
 
 ### Added

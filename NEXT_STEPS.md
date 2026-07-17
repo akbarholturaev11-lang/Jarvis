@@ -1,142 +1,101 @@
 # NEXT_STEPS.md
 
-Current next steps for MARK XLVIII - AkbarCustom.
+Current next steps for MARK XLVIII - AkbarCustom in `~/Desktop/Jarvis`.
 
-## Product Release Gates
+## Verified Local Product Foundation
 
-The local product foundation is implemented: exact-version offline entitlement,
-one-device binding/replacement history, manual payment approval, one-time
-activation, signed update discovery/download, bilingual release information,
-private payment-instructions config, admin panel, and an unsigned macOS DMG plan.
-The admin panel is also an installable responsive PWA with an isolated MFA
-boundary, persistent customer/license/release reads and in-app notifications;
-native iOS/Android and background push remain `not_available`.
+- Exact-version offline entitlement, one-device binding/replacement history,
+  manual payment approval, activation, signed update discovery/download, secure
+  Gemini credential migration/storage contracts, MFA, and the responsive Admin
+  PWA are implemented and locally tested at their documented evidence level.
+- The macOS updater transaction is locally tested on synthetic `.app` bundles,
+  but frozen production install remains `not_available` without the fixed signed
+  helper.
+- A real unsigned `JARVIS.app` (624 MB) and
+  `JARVIS-0.1.0-build1-macos-arm64.dmg` (240 MB) were built and smoke-tested on
+  2026-07-16. They launch without system Python, Terminal or the source `.venv`;
+  the ad-hoc signature is rejected by Gatekeeper and is not distributable.
+- Stage 8 provides locally tested HTTPS/host/proxy/logging/health/migration and
+  deployment interfaces. Secure backup/restore and secret mutation are POSIX
+  only; backup requires a stopped service, restore requires a fresh target, and
+  manifest hashes are integrity evidence rather than authenticity.
+- Stage 9 records 21 `pass`, 9 `not_available`, 0 `fail` across the 30-scenario
+  map. It always reports `production_ready=false` and
+  `production_verified=false`; local evidence is not production evidence.
 
-Stage 8 (production backend deployment + ops tooling) is implemented: the ASGI
-factory has an operational layer (`/healthz`, `/readyz`, Bearer-gated `/metrics`,
-HTTPS-only policy + HSTS, correlation IDs, redacted structured JSON access logs),
-schema migration/verification (`product_backend/migrations.py`), cross-platform
-`ops/` tooling (secret generation, fail-closed config validation, backup/restore,
-migrate, key rotation, local TLS dev env), and `deploy/` recipes (systemd,
-Docker + compose, nginx/Caddy, env reference). See `docs/PRODUCTION_DEPLOYMENT.md`.
-What remains is operator-supplied and cannot be produced here: a real registered
-domain + valid TLS certificate, a provisioned server/VPN, and the real secret
-material in a managed secret store. Horizontal scale still needs the documented
-PostgreSQL/shared session-grant-rate-limit migration; the runtime is single
-SQLite process today.
+## Remaining Internal Implementation Gaps
 
-The following external gates must be cleared before any customer release:
+1. Implement and independently audit the final macOS signing/notarization
+   executor. The current signing adapter only plans commands,
+   `packaging/macos/sign_artifact.sh --execute` mechanically returns
+   `not_available`, and CI intentionally builds unsigned artifacts without
+   production signing secrets.
+2. Implement and audit the fixed signed macOS updater helper and its
+   safe-shutdown/privilege protocol. Keep the frozen adapter `not_available`
+   until helper signature, notarization and rollback evidence all pass.
+3. Add one authenticated product-wide audit projection and a browser-visible
+   post-baseline pending-payment notification; these account for E2E scenarios 7
+   and 30 remaining unavailable.
+4. Add transactional admin-MFA master-key rotation and automated evidence/audit
+   retention enforcement. Current rotation tooling generates material and
+   guidance; it does not perform every live cutover.
+5. Build native/background-push mobile interfaces if required. The responsive
+   PWA and visible-online polling are implemented; native iOS/Android and push
+   providers remain `not_available`.
+6. Deliver Windows and Linux packages plus atomic updater helpers. Their neutral
+   contract exists, but the platform adapters honestly return `not_available`.
+7. Before multi-instance deployment, replace SQLite/in-memory session, grant and
+   rate state with PostgreSQL/shared stores and reviewed private object storage.
 
-1. Obtain commercial rights for the upstream CC BY-NC code/assets and confirm the
-   PyQt6 distribution license model.
-2. Confirm cleared product name, icon and final bundle identifier.
-3. Supply production HTTPS origin, release public keys, entitlement signing key,
-   activation pepper, admin auth material, the owner-only admin MFA master key
-   (`JARVIS_ADMIN_MFA_KEY_FILE`, fail-closed and mandatory by default), any
-   `JARVIS_TRUSTED_PROXIES` in front of the API, optional
-   `JARVIS_ADMIN_ALLOWED_NETWORKS` CIDRs/VPN boundary, and owner-only payment
-   instructions. Enroll each admin operator's authenticator before go-live,
-   store recovery codes offline, and rotate the bootstrap password through the
-   authenticated admin password-change flow.
-4. Provide real Apple Developer ID credentials and run the now-implemented
-   signing/notarization pipeline end-to-end. The hardened-runtime entitlements
-   (`packaging/macos/entitlements.plist`), the env-driven Developer ID signing +
-   nested-code order + `codesign`/`spctl` verify + `notarytool`/`stapler` planner
-   (`core/platform_adapters/release_signing.py`), and the secret-gated CI signing
-   job exist, but no real Developer ID identity, notary profile, notarization,
-   staple or Gatekeeper result has been produced yet.
-5. Implement and independently audit the fixed signed privileged macOS helper's
-   safe-shutdown/request protocol. The strict archive, backup, atomic local
-   development swap, health and rollback transaction are implemented, but frozen
-   production builds still honestly report install `not_available`.
-6. Run the pinned PyInstaller build on a controlled macOS build environment and
-   complete clean-Mac install, activation, permission, offline, payment, update,
-   rollback and uninstall tests. The self-contained build/sign/DMG pipeline
-   (`packaging/macos/*.sh`, `scripts/release_pipeline.py`, `packaging/macos/Jarvis.spec`,
-   `.github/workflows/macos-release.yml`) and its validation tests are complete,
-   but the actual freeze is still blocked by missing PyInstaller in this build
-   environment — no `JARVIS.app`/DMG has been produced and no build success is
-   claimed.
+## External Operational Blockers
 
-## Known Bugs
+- A registered domain, valid TLS, provisioned server/VPN and production-like
+  backup storage.
+- Production entitlement/release keys, activation pepper, admin credentials,
+  MFA key and payment instructions held outside the repository.
+- Apple Developer ID certificate/private key and notarization account/profile.
+- A clean Mac plus representative iOS/Android browsers for fresh Keychain save
+  and restart, install, activation, offline, payment, MFA, update, forced
+  rollback and revoke checks.
+- A real production deployment/restart/restore/key-cutover exercise. If Caddy is
+  selected, add provider/WAF or separately reviewed rate limiting; stock Caddy
+  has none. nginx already has the example edge limit.
+
+## Legal And License Blockers
+
+1. Obtain upstream CC BY-NC commercial permission/relicensing or replace affected
+   material with a rights-clean implementation.
+2. Select and document a lawful PyQt6 distribution model.
+3. Clear the product name, bundle identifier, branding, icons, copy and bundled
+   asset rights.
+
+No customer release may be described as ready until these legal gates and all
+applicable signing/production verification gates are closed.
+
+## Exact Product Next Order
+
+1. Complete the signing executor and fixed updater helper without embedding any
+   credential.
+2. Close the unified audit/notification, retention and key-rotation gaps.
+3. Add Windows/Linux packaging and decide whether native mobile/push is required.
+4. When operators provide external infrastructure and credentials, deploy with
+   the nginx path (or add a reviewed Caddy rate limiter), enroll real MFA, run a
+   stopped-service backup/fresh-target restore drill, and verify key cutovers.
+5. Produce a Developer-ID-signed/notarized/stapled DMG and run the full clean-Mac
+   30-scenario exercise, including forced rollback. Only then update
+   `production_verified` claims.
+
+## Known Runtime Bug
 
 - Jarvisda Zerno orqali statistika eshitganda ovoz chiqmayapti.
-- macOS metadata current Desktop `.venv` ichidagi Qt pluginlarga `UF_HIDDEN`
-  flagini qayta qo‘ymoqda; bir martalik repair barqaror emas va Cocoa startupni
-  bloklaydi.
 
-## Immediate Next Steps
+The historical Desktop-vended Qt `UF_HIDDEN` issue was mitigated by moving the
+development venv to `~/Library/Application Support/JARVIS/venv` and using a local
+`.venv` symlink in the primary workspace. It is not a current known blocker;
+keep the launcher preflight mandatory and do not recreate the real venv under
+Desktop.
 
-0. Manually verify the new mobile remote-control feature in the full Mac app:
-   - With explicit approval, rebuild the venv in a non-hidden runtime directory
-     outside Desktop, symlink project `.venv` to it, and confirm the read-only Qt
-     preflight remains stable across repeated processes.
-   - Double-click `scripts/launch_jarvis.command`; confirm `logs/launcher.log`
-     records `Qt runtime preflight: OK` and the app reaches `LISTENING`.
-   - Press the corner ⚙ gear → settings window opens with remote on/off, Show QR/PIN,
-     keep-awake, language RU/EN, paired devices (revoke), connection status, and
-     command automation.
-   - Pair a phone via QR/PIN; add the JARVIS PWA to the home screen; confirm it opens
-     standalone.
-   - `brew install cloudflared`, toggle **Remote access** ON, and confirm the QR shows
-     a `trycloudflare.com` URL reachable from mobile data. With cloudflared absent,
-     confirm the honest `not_installed` message and LAN-only behavior.
-   - Let the Mac idle → confirm keep-awake holds; put it to short sleep → confirm the
-     phone shows *Reconnecting…* (not kicked to login) and resumes on wake.
-   - Build a macro from capabilities on the phone and in the settings window; confirm
-     one tap runs the composed multi-action command and it appears on both surfaces.
-
-0.1 Verify admin MFA (BOSQICH 4) against a real `runtime.py` deployment (not only
-   the in-process test server): export the full `JARVIS_*` env including an
-   owner-only `JARVIS_ADMIN_MFA_KEY_FILE`, start the backend, and confirm
-   password-only login lands on the enrollment screen, the QR activates a real
-   authenticator app, recovery-code login works once, an idle session expires,
-   `revoke-all` signs the operator out everywhere, and starting the backend
-   without the MFA key file fails closed. Confirm password change survives a
-   process restart, revokes every existing session, and an excluded client IP
-   cannot reach any admin API when a CIDR allowlist is configured.
-
-0.2 Verify Mobile Admin PWA (BOSQICH 5) on representative real iOS and Android
-   browsers over production-like LAN HTTPS: install it, approve/reject test
-   evidence, inspect audit/customer/license/device views, background every
-   sensitive dialog, revoke the session remotely, and confirm offline mode
-   shows no previously loaded admin data. This is a PWA check and must not be
-   recorded as native iOS/Android verification.
-
-0.3 Self-contained macOS build (BOSQICH 7) — LOCAL UNSIGNED BUILD VALIDATED on
-   2026-07-16. A real `JARVIS.app` (624 MB) + `JARVIS-0.1.0-build1-macos-arm64.dmg`
-   (240 MB) were built with the pinned PyInstaller 6.21.0 in an isolated build
-   venv; the frozen app launched with no system Python/`.venv`/Terminal, showed
-   the license gate, loaded the PyQt6 cocoa plugin, wrote nothing into the bundle
-   and shipped no secrets; the DMG mounts with a drag-to-Applications shortcut and
-   the copied app also runs. `codesign` shows an ad-hoc signature (`spctl:
-   rejected`), so it is NOT distribution ready. Still required:
-   - Run the signed path with real Developer ID credentials
-     (`bash packaging/macos/sign_artifact.sh --execute`) and confirm
-     `codesign`/`spctl`/`notarytool`/`stapler` all pass.
-   - Install the DMG to `/Applications` on a clean Mac user account and complete
-     activation, permission, offline, payment, update, rollback and uninstall
-     tests.
-   NOTE: this is macOS-only. It is NOT cross-platform packaging — the desktop
-   client still needs separate Windows and Linux distributables (0.4, 0.5).
-
-0.4 Windows packaging (NEXT STAGE — currently `not_available`). Deliver a
-   self-contained `.exe` (frozen PyInstaller build) plus an installer
-   (Inno Setup or MSIX). Implement `WindowsReleaseAdapter.plan_build` on a
-   Windows build host with Windows hidden imports and PyQt6 plugins; route
-   writable data to `%APPDATA%`/`%LOCALAPPDATA%` (already in `core/app_paths.py`),
-   never inside the program bundle; add an Authenticode signing cert + timestamp
-   and a Windows atomic-replacement/rollback updater helper. The adapter returns
-   honest `not_available` until this exists — see `docs/RELEASE_PACKAGING.md`.
-
-0.5 Linux packaging (NEXT STAGE — currently `not_available`). Deliver an AppImage
-   and/or a `.deb` package. Implement `LinuxReleaseAdapter.plan_build` on a Linux
-   build host (PyInstaller + `appimagetool`, or `dpkg-deb`), audit the Qt/xcb
-   runtime deps for a portable AppImage, use the XDG writable paths already in
-   `core/app_paths.py`, and add a signing story (GPG for `.deb`, embedded/detached
-   signature for AppImage) plus an atomic update/rollback helper. The adapter
-   returns honest `not_available` until this exists.
-
+## Separate Personal Runtime Verification
 
 1. Long-run test Gemini Live reconnect / `APIError 1006` recovery on Mac.
 2. Test Mac permissions:
@@ -194,5 +153,6 @@ The following external gates must be cleared before any customer release:
 
 - Do not install Graphiti/Gravity-style external dependencies unless Akbar explicitly asks and the benefit is clear.
 - Do not refactor runtime logic during context-foundation work.
-- Do not change API key config.
+- Do not manually edit `config/api_keys.json`; it is migration-only. Use
+  `core/credential_service.py` for credential lifecycle changes.
 - Do not modify `.venv/`.

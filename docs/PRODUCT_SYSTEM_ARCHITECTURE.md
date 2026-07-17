@@ -8,6 +8,16 @@ authority is the exact semantic version; a higher semantic version requires a
 separate payment and approval, while a higher build of the same semantic version
 uses the existing entitlement.
 
+Unless a row explicitly says otherwise, the status below means **implemented**,
+**enforced**, and **tested locally**. No component is
+**production-verified**. `not_available` identifies an honest runtime result,
+`internal gap` identifies repository work still missing, `external blocker`
+identifies operator/platform evidence still required, and `legal blocker`
+identifies the unresolved distribution-rights gates. See
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md),
+[`../SECURITY.md`](../SECURITY.md), and
+[`../THREAT_MODEL.md`](../THREAT_MODEL.md) for the evidence and threat boundary.
+
 ```text
 Desktop app
   ├─ OS secure store: Gemini key, device private key, active license ID
@@ -22,7 +32,8 @@ FastAPI product backend
   ├─ release price, EN/RU features/fixes and artifact publishing
   ├─ private payment evidence + manual approval audit
   ├─ one-time activation credentials + entitlement signer
-  └─ signed update metadata + single-use artifact download grants
+  ├─ signed update metadata + header-carried single-use download grants
+  └─ HTTPS/host/proxy policy + health/readiness/metrics + redacted JSON logs
 ```
 
 Mobile Admin Phase 1 is the separate installable `/admin/` PWA: MFA/session
@@ -33,8 +44,10 @@ wrappers and push providers are `not_available`.
 ## Desktop layers
 
 - `core/credential_service.py` stores Gemini credentials in the platform secure
-  store. The historical `config/api_keys.json` path is read-only compatibility;
-  no new onboarding write goes there.
+  store. The historical `config/api_keys.json` path is a bounded, one-time
+  migration source only: a verified migration removes the legacy key and the
+  secure store becomes authoritative. It is not a continuing plaintext fallback,
+  and no new onboarding write goes there.
 - `core/device_identity.py` owns a generated Ed25519 per-install key. Only the
   private key is stored securely; the public fingerprint is the server binding.
 - `core/entitlement_certificate.py` verifies canonical signed exact-version
@@ -93,35 +106,67 @@ wrappers and push providers are `not_available`.
   `api_queries.py` supplies bounded persistent admin directories.
 - `product_backend/runtime.py` assembles a single-process SQLite deployment from
   explicit environment configuration and owner-only secret files.
+- `product_backend/api_operational.py`, `observability.py`, `ops/`, and `deploy/`
+  provide the fail-closed HTTPS/host/proxy policy, probes, bearer-gated metrics,
+  redacted structured logs, POSIX backup/restore/migration tools, and reference
+  deployment recipes. These are locally tested contracts, not a deployed
+  production service.
 
-## Manual sales lifecycle
+## Fresh-purchase and update lifecycle
 
-1. Admin creates an account and one-plan license.
-2. The desktop generates a device public fingerprint; admin binds that initial
-   target to the license. Moving to another computer requires an explicit admin
-   replacement that deactivates the old binding and retains its history.
-3. Customer submits bounded PNG/JPEG/WebP payment evidence using a one-time
-   device proof grant.
-4. Admin reviews and approves or rejects. Only approval creates the exact-version
-   entitlement and append-only decision record.
-5. Admin issues a one-time activation key. The raw key is returned once; only a
-   keyed digest remains in the activation database.
-6. The bound desktop proves possession of its device key, receives a signed
-   certificate and caches it for indefinite offline use of that exact version.
-7. A later semantic version repeats payment and approval. Declining it does not
-   affect the installed older version.
+1. A fresh desktop generates an Ed25519 device key and proves possession against
+   a published, signed initial-installer target. The server returns its own price,
+   currency, EN/RU release notes, and owner-configured payment instructions.
+2. A valid bounded PNG/JPEG/WebP submission atomically creates or reuses the
+   pseudonymous purchase account, one-plan license and initial device binding,
+   then records a pending payment. The opaque purchase identity is stored only as
+   a digest. This step creates **no entitlement**.
+3. An MFA-authenticated admin privately reviews the evidence and approves or
+   rejects it. Only approval creates the exact-version entitlement and append-only
+   payment-decision audit record; reject/resubmit and approval retries are bounded
+   and idempotent.
+4. The activation path issues/consumes a one-time credential, proves the bound
+   device key, returns a signed exact-version certificate and caches it for
+   indefinite offline use. Raw activation material is returned only once and is
+   not stored by the backend.
+5. A later paid semantic version uses the existing license/device proof path and
+   repeats payment and approval. Declining it does not affect the installed older
+   version. Device replacement is an explicit admin action that removes only the
+   old device's future server authority, not its already installed offline copy.
 
 ## Honest current limitations
 
 - The backend runtime is a single-process SQLite MVP, not a multi-region service.
+- Production deployment is **not production-verified**: no operator-owned domain,
+  trusted public TLS endpoint, deployed reverse proxy, monitored server, restore
+  drill, or real key-rotation cutover has been exercised here. The deployment
+  recipes and local TLS environment are **tested locally** only.
 - Real temporary-filesystem macOS `.app` replacement and rollback are tested
   through an explicit development-only adapter. Production replacement remains
   `not_available` until a signed/notarized helper, safe shutdown protocol and
   clean-Mac verification exist.
-- Windows/Linux packaging, secure credential backends and installer helpers are
-  `not_available` where not verified.
+- macOS, Windows Credential Manager and Linux Secret Service secure-store adapters
+  are implemented and covered by contract/negative tests; a real host smoke for
+  each native backend remains an **external blocker**. A missing native service
+  returns `not_available`. Windows/Linux packaging and updater helpers remain
+  `not_available`.
+- Mobile Admin notifications are implemented as visible, online PWA polling and
+  tested at the contract level, but delivery of a newly created payment into a
+  real browser banner was not exercised by the Stage 9 harness. Background push
+  and native iOS/Android clients are `not_available`.
+- The Admin PWA exposes the append-only payment approval/rejection audit. MFA
+  events and device replacement history persist in separate stores/projections;
+  a single product-wide audit query and UI are an **internal gap**.
 - A real deployment origin, release public key, entitlement private key,
   activation pepper, payment destination/instructions and admin credentials must
   be supplied externally.
 - Commercial distribution remains blocked by the rights, PyQt6, branding and
   signing gates in `PRODUCT_RELEASE_CONTRACT.md`.
+
+The canonical per-function readiness matrix is in
+[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md). Packaging, clean-Mac, updater,
+admin-MFA and mobile detail is maintained in [`PACKAGING.md`](PACKAGING.md),
+[`RELEASE_PACKAGING.md`](RELEASE_PACKAGING.md),
+[`CLEAN_MAC_TEST.md`](CLEAN_MAC_TEST.md),
+[`UPDATE_ROLLBACK.md`](UPDATE_ROLLBACK.md), [`ADMIN_MFA.md`](ADMIN_MFA.md), and
+[`MOBILE_ADMIN.md`](MOBILE_ADMIN.md).

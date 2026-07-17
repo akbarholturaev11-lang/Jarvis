@@ -13,6 +13,17 @@ The responsive PWA can be installed from a supported mobile browser, but that is
 not evidence that a native wrapper, App Store build, Play Store build or mobile
 push provider exists.
 
+The same-origin PWA boundary is **implemented**, mechanically **enforced**, and
+**tested locally** by unit/integration tests plus a 390×844 Playwright Chromium
+smoke over self-signed local HTTPS. No mobile surface is
+**production-verified**. Trusted public TLS and representative iOS/Android
+browsers are **external blockers**; native wrappers/background push are
+`not_available`; end-to-end notification delivery and a unified audit view have
+the **internal gaps** described below. See
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md),
+[`../SECURITY.md`](../SECURITY.md), and
+[`../THREAT_MODEL.md`](../THREAT_MODEL.md).
+
 ## Enforced web boundary
 
 - Admin authentication remains server-owned: subject, password and TOTP or a
@@ -59,6 +70,12 @@ that background push delivery exists. Adding one later requires an explicit
 provider interface, permission UX, revocation, payload minimization and tests;
 payment evidence or customer data must never be placed in a push payload.
 
+The polling source, baseline suppression, visibility/offline stop conditions and
+bilingual banner contract are tested locally. The Stage 9 harness did **not**
+create a new post-baseline payment and observe its delivery into a live browser
+banner, so that delivery remains an **internal verification gap** rather than a
+PASS claim.
+
 ## Admin capabilities in Phase 1
 
 - Payment queue, private screenshot review, approve/reject and rejection reason.
@@ -66,7 +83,9 @@ payment evidence or customer data must never be placed in a push payload.
   before release creation or publication.
 - Persisted customer and license directories, exact-version entitlement summary,
   account/license creation, device binding/replacement and one-time activation.
-- Read-only audit history.
+- Read-only payment approval/rejection audit history. MFA events and device
+  replacement history are persisted separately, but one product-wide audit query
+  and UI do not yet exist; unified audit remains an **internal gap**.
 - MFA enrollment, recovery-code lifecycle, recent re-authentication, password
   rotation and session revoke/revoke-all.
 
@@ -99,6 +118,12 @@ meet every item below before its status can change from `not_available`:
    must never be recorded as a passing native test.
 
 ## Verification still required outside source tests
+
+The local Chromium smoke verified the login boundary, restored read-only MFA
+session, English/Russian rendering, 390×844 no-overflow layout, blocked external
+navigation and offline data denial. Chromium refused service-worker installation
+under the self-signed certificate; this is expected and means installability and
+offline shell behavior were not production-verified.
 
 - Install the PWA from production-like LAN HTTPS on representative iOS and
   Android browsers and confirm the manifest/icon/scope.

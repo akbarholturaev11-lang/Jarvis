@@ -216,3 +216,11 @@ After local automated evidence is green, an operator still needs to record:
 6. confirmation that legal/commercial rights gates are cleared.
 
 None of those checks may be inferred from this harness output.
+
+## Related readiness records
+
+- [Product release contract and canonical status matrix](PRODUCT_RELEASE_CONTRACT.md)
+- [Packaging readiness](PACKAGING.md)
+- [Clean Mac test record](CLEAN_MAC_TEST.md)
+- [Security policy](../SECURITY.md)
+- [Threat model](../THREAT_MODEL.md)

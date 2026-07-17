@@ -7,6 +7,16 @@ release.  The repository now has a platform-neutral release adapter contract and
 a macOS-first unsigned local PyInstaller/DMG plan.  It does not yet have a signed,
 notarized, commercially cleared, clean-device-verified DMG.
 
+The macOS build contract is **implemented** and **tested locally** with one
+historical unsigned/ad-hoc artifact run. Bundle and manifest safety checks are
+**enforced** by the local pipeline. No packaging target is
+**production-verified**. Production signing execution is an **internal gap** and
+returns `not_available`; Apple credentials/notarization and a clean supported Mac
+are **external blockers**; rights and distribution licensing are **legal
+blockers**. See [`PACKAGING.md`](PACKAGING.md),
+[`CLEAN_MAC_TEST.md`](CLEAN_MAC_TEST.md), and
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md).
+
 **Scope:** only the **macOS** packaging pipeline is implemented (and validated
 locally as an unsigned/ad-hoc dev build).  This is **not** a cross-platform
 packaging deliverable.  The JARVIS desktop client needs a separate distributable
@@ -14,7 +24,7 @@ per operating system, and only macOS exists today:
 
 | Target | Required distributable | Packaging status | Update install |
 | --- | --- | --- | --- |
-| macOS | `.app` + DMG | `available` only when the local unsigned prerequisites pass | `not_available` |
+| macOS | `.app` + DMG | implemented/tested locally as unsigned/ad-hoc development output | `not_available` |
 | Windows | self-contained `.exe` + installer | `not_available` | `not_available` |
 | Linux | AppImage and/or `.deb` | `not_available` | `not_available` |
 | Unknown | — | `not_available` | `not_available` |
@@ -41,9 +51,11 @@ preservation or rollback.
 - `packaging/macos/Jarvis.spec` — explicit non-secret PyInstaller resource list,
   hidden imports (Google GenAI SDK, PyQt6 plugins, cryptography, PIL, cv2, uvicorn)
   and the updater-helper modules, plus an optional dev-only `JARVIS_APP_ICON`.
-- `packaging/macos/entitlements.plist` — hardened-runtime entitlements (JIT /
-  unsigned-memory / library-validation for a frozen CPython + PyQt6 app, plus
-  microphone, camera, Apple Events and network) with **no** App Sandbox.
+- `packaging/macos/entitlements.plist` — provisional hardened-runtime
+  entitlements. JIT and DYLD-environment exceptions are absent; unsigned
+  executable memory and disabled library validation remain enabled pending a
+  clean-Mac frozen-runtime audit. Microphone, camera, Apple Events and network
+  match existing capabilities; there is **no** App Sandbox.
 - `core/platform_adapters/release_signing.py` — side-effect-free Developer ID
   signing + notarization planner: env-only public labels, nested-code-first
   ordering, `codesign --options runtime`/`spctl`/`notarytool`/`stapler`, and an
@@ -56,9 +68,9 @@ preservation or rollback.
   steps (`clean`, `build_app`, `build_dmg`, `generate_manifest`, `verify_app`,
   `sign_artifact`, `smoke_launch`, `cleanup`, `build_all`), each a thin driver
   over the same `MacOSReleaseAdapter` plan, signing planner and manifest builder.
-- `.github/workflows/macos-release.yml` — CI that runs the packaging unit tests,
-  builds/verifies/uploads an unsigned artifact, and runs signing/notarization
-  **only** when the protected Developer ID secrets are present (never logged).
+- `.github/workflows/macos-release.yml` — CI that runs packaging tests and
+  builds/verifies/uploads an explicitly unsigned development artifact. It accepts
+  no production signing secrets and has no signing/notarization executor.
 
 The adapters resolve the source resource root through `AppPaths`.  The spec
 places the committed prompt, safe settings, example configuration and dashboard
@@ -144,8 +156,9 @@ bash packaging/macos/build_all.sh   # clean → build_app → build_dmg → mani
 
 Each step refuses to fake success: `build_app` fails honestly when PyInstaller is
 absent, `generate_manifest` fails until the DMG exists, and `verify_app` fails if
-any secret file (`api_keys.json`, `long_term.json`, private configs, `*.key`,
-`*.pem`, …) is found inside the bundle.
+any protected secret file or private-key material is found inside the bundle.
+Public CA certificate bundles may legitimately use `.pem`; extension alone is
+not treated as proof of a secret.
 
 ## Signing, notarization and the credential interface
 
@@ -163,6 +176,14 @@ result. With them, it plans nested-code-first `codesign --options runtime
 `codesign --verify`, `spctl --assess`, `notarytool submit --wait`,
 `stapler staple`/`validate` and a final `spctl` install assessment.
 
+This is planning only. `scripts/release_pipeline.py sign --execute` and
+`packaging/macos/sign_artifact.sh --execute` mechanically return
+`not_available` before Python execution or artifact mutation. The repository
+does not yet implement the required final order of signing the app, rebuilding
+and signing the DMG, parsing an `Accepted` notarization response, stapling, and
+verifying the exact distributed bytes. A complete plan always has
+`signed=false` and is not evidence of signing.
+
 ## Remaining integration gates
 
 The following are not solved by the packaging skeleton:
@@ -170,21 +191,28 @@ The following are not solved by the packaging skeleton:
 1. The pinned PyInstaller 6.21.0 build was run locally on 2026-07-16 in an
    isolated build venv and produced a working unsigned `JARVIS.app` (624 MB) and
    DMG (240 MB) that launches from its embedded interpreter to the license gate
-   with the PyQt6 cocoa plugin. A full frozen-runtime audit of every optional
-   path (audio, camera, Playwright browsers, remote-tunnel tools) on a clean Mac
-   user account is still advisable before release.
+   with the PyQt6 cocoa plugin. That named manual run observed no system Python,
+   `.venv`, or Terminal dependency; the current automated `smoke` step proves
+   only bundle structure and reports those claims `not_verified`. A full
+   frozen-runtime audit of audio, camera, browsers, remote-tunnel tools and all
+   permissions on a clean Mac user account remains required.
 2. A final product icon/name/bundle identifier requires cleared branding rights;
    `make_icns.sh` only produces a provisional dev icon from the committed PWA art.
-3. The Developer ID signing / hardened-runtime / notarization / stapling /
-   Gatekeeper pipeline is now **implemented as a planner + entitlements + CI job**,
-   but it has never been run with a real Developer ID identity, notary profile or
-   Apple notarization service; no signed, notarized, stapled artifact exists yet.
+3. Developer ID signing/notarization is implemented only as a side-effect-free
+   planner plus provisional entitlements. CI builds unsigned output only.
+   Production execution is an **internal gap**, and no real Developer ID,
+   notarization, staple or Gatekeeper-accepted artifact exists.
 4. Update download/staging and a durable rollback contract exist, but the real
    signed atomic application-replacement helper is not implemented on any platform.
 5. The final artifact has not been installed and exercised on a clean supported
    Mac user account/device.
 6. The upstream CC BY-NC, PyQt6 distribution and other commercial gates in
    `docs/PRODUCT_RELEASE_CONTRACT.md` remain blockers.
+
+The historical local artifact result does not satisfy the clean-Mac checklist,
+production signing, production updater, or commercial-distribution gates. The
+authoritative current status is recorded in [`CLEAN_MAC_TEST.md`](CLEAN_MAC_TEST.md)
+and [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ## Windows and Linux packaging — roadmap and blockers (NOT implemented)
 

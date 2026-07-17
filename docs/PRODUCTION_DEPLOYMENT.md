@@ -6,6 +6,24 @@ HTTPS server. It complements [`PRODUCT_BACKEND_OPERATIONS.md`](PRODUCT_BACKEND_O
 (business/entitlement invariants). It documents a target deployment; the
 commercial-distribution gates in the contract still apply.
 
+## Current evidence status
+
+The environment schema, fail-closed runtime, HTTPS/host/proxy middleware,
+health/readiness/metrics, redacted logs, migrations, POSIX ops tools and reference
+recipes are **implemented** and **tested locally**. The runtime mechanically
+**enforces** HTTPS configuration and owner-only secret/data boundaries. No part
+of this deployment is **production-verified**: this repository has not deployed
+an operator-owned domain/TLS endpoint, nginx/Caddy/systemd/Docker service,
+monitoring stack, backup restore drill, or live key rotation. Those are
+**external blockers**. PostgreSQL/shared state, automatic evidence retention,
+authenticated backup manifests and unified product audit are **internal gaps**;
+native Windows ops mutation is `not_available`; commercial rights are **legal
+blockers**.
+
+Security controls and executable local evidence are cross-referenced in
+[`../SECURITY.md`](../SECURITY.md), [`../THREAT_MODEL.md`](../THREAT_MODEL.md),
+and [`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md).
+
 ## 1. Topology
 
 ```
@@ -49,6 +67,11 @@ python -m ops.validate_config --env-file /etc/jarvis/backend.env   # exit != 0 b
 policy, secret-file permissions) and then assembles the real app, exercising
 every runtime guard, and closes it. The systemd unit runs it as `ExecStartPre`,
 so a misconfiguration prevents the service from starting.
+
+`ops.gen_secrets`, backup, restore and rotation output use create-only owner
+files and POSIX no-follow/ownership checks. They do not print secret values.
+Native Windows execution returns `not_available`; generate and operate these
+files on the reviewed Linux/macOS host or container boundary.
 
 Secrets live **outside the repository** in a managed secret store, materialized
 as owner-only files immediately before start. `.gitignore` explicitly excludes
@@ -206,6 +229,12 @@ schema); a database stamped newer than the runtime understands fails closed.
   what). If a retention limit is required, archive rows older than the policy
   window to cold storage before pruning; never delete audit rows for a payment
   still inside its dispute window.
+
+The Admin PWA currently queries this payment-decision audit only. MFA events and
+device replacement history are separately persisted; aggregation into one
+authorized, durable product-wide audit stream is an **internal gap**. Do not
+claim complete end-to-end audit coverage until that view and its retention/export
+policy exist.
 
 ## 9. Key rotation
 

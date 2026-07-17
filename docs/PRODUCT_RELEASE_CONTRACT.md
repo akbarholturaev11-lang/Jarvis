@@ -2,10 +2,30 @@
 
 ## Status
 
-This document records Akbar's approved product target for license, payment,
-update, packaging, and release work. It is a contract for future implementation;
-it does **not** claim that the commerce backend, admin panel, updater, signed app,
-or DMG currently exists or that commercial distribution is legally cleared.
+This document is the normative product contract. Parts of the supporting system
+are now **implemented**, **enforced**, and **tested locally**, but nothing in this
+repository is **production-verified** and the commercial gates below remain
+blocking. The current evidence is summarized in
+[`PRODUCT_SYSTEM_ARCHITECTURE.md`](PRODUCT_SYSTEM_ARCHITECTURE.md),
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md), and
+[`CLEAN_MAC_TEST.md`](CLEAN_MAC_TEST.md).
+
+The documentation uses these terms deliberately:
+
+- **implemented** — code or an interface exists;
+- **enforced** — the runtime fails closed at that boundary;
+- **tested locally** — automated or named local smoke evidence exists;
+- **production-verified** — verified on final production infrastructure and
+  artifacts; no component currently has this status;
+- **not_available** — the product returns an honest unavailable result;
+- **internal gap** — repository work is still missing;
+- **external blocker** — operator infrastructure, credentials, devices, or
+  platform services are required;
+- **legal blocker** — rights or licensing must be cleared before distribution.
+
+Security and release-readiness status is tracked in
+[`../SECURITY.md`](../SECURITY.md), [`../THREAT_MODEL.md`](../THREAT_MODEL.md),
+[`PACKAGING.md`](PACKAGING.md), and [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ## Business model
 
@@ -38,6 +58,13 @@ release artifacts under the same version entitlement.
   and post-install health have been verified.
 - A failed update must preserve or restore the last known working version and must
   not erase user settings, local secrets, or personal data.
+
+The implemented fresh-purchase path may atomically create a pseudonymous account,
+one-plan license, initial device binding, and pending payment after the device has
+proved possession of its generated key. This enrollment is **not** an
+entitlement: pending and rejected submissions remain non-entitled, and only a
+later MFA-authenticated admin approval creates the exact-version entitlement.
+Existing-license update purchases reuse the already bound license/device path.
 
 ## Device and offline model
 
@@ -133,5 +160,8 @@ sale, or safely distributable to customers.
 - Every new visible fixed UI string remains bilingual English + Russian.
 - License, payment, update, and release capabilities remain platform-neutral or
   return an explicit truthful status.
+- Historical `config/api_keys.json` data is accepted only as a bounded,
+  one-time migration source into the OS secure store. It is never an ongoing
+  runtime fallback or a destination for new onboarding writes.
 - Do not report any product flow as working until its code, tests, and real artifact
   checks verify it.

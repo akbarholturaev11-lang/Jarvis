@@ -7,22 +7,23 @@
 
 ## Project Identity
 
-MARK XLVIII - AkbarCustom is Akbar's personal Mac AI assistant experiment and customized version of `FatihMakes/Mark-XLVIII`.
-
-This repository is for personal testing, custom rules, UI changes, AI context files, project memory, and future Akbar-specific features. Do not assume this is a commercial product unless Akbar explicitly says so.
+MARK XLVIII - AkbarCustom is Akbar's personal AI-assistant fork of
+`FatihMakes/Mark-XLVIII`. Productization work is authorized and uses a
+cross-platform contract, but the repository is not commercially cleared for
+sale or public distribution.
 
 ## Origins And Local Paths
 
 - Original repo: `FatihMakes/Mark-XLVIII`
 - AkbarCustom GitHub repo: `https://github.com/akbarholturaev11-lang/Jarvis.git`
-- Local custom path: `~/Desktop/Mark-XLVIII-AkbarCustom`
-- Original test path: `~/Desktop/Mark-XLVIII`
+- Active local custom path: `~/Desktop/Jarvis`
 
-The original test version and AkbarCustom version are separate. AkbarCustom is the active customization workspace.
+`~/Desktop/Jarvis` is the active customization workspace. Isolated Git
+worktrees may exist below its ignored `.worktrees/` directory.
 
 ## Current Mac Install Status
 
-Current known status as of 2026-07-12:
+Current known status as of 2026-07-17:
 
 - Project cloned.
 - Python 3.12 virtual environment exists.
@@ -89,9 +90,10 @@ Current known status as of 2026-07-12:
   before `main.py`, detects the known `UF_HIDDEN` plugin-discovery fault, rejects
   Qt path/platform overrides and external plugin symlinks, and blocks startup on
   a failed real-Cocoa GUI smoke test. Explicitly approved repair can use the
-  helper's path-confined `--repair-hidden-flags` mode, but that mode is temporary
-  in the current Desktop venv. `actions/screen_processor.py` lazy-loads OpenCV
-  behind a thread-safe lock only when camera capture is requested.
+  helper's path-confined `--repair-hidden-flags` mode, but that mode remains a
+  diagnostic fallback rather than the durable fix.
+  `actions/screen_processor.py` lazy-loads OpenCV behind a thread-safe lock only
+  when camera capture is requested.
 
 ## Known Problems
 
@@ -102,7 +104,9 @@ Current known status as of 2026-07-12:
   - Accessibility
   - Screen Recording
   - Camera
-- `config/api_keys.json` is local and must never be committed.
+- `config/api_keys.json` is a protected historical migration source only. New
+  onboarding and normal reads use the OS secure store; successful migration
+  removes the Gemini key from the JSON file. It must never be committed.
 - `config/device_profile.json` is local operational metadata and must never be committed. It may contain private local paths or installed app facts. Commit only `config/device_profile.example.json`.
 - `config/briefing_sources.json` and `config/local_env.zsh` are local Zerno setup files and must never be committed. The committed source template is `config/briefing_sources.example.json`.
 - `memory/long_term.json` is local personal memory and must never be committed.
@@ -112,11 +116,12 @@ Current known status as of 2026-07-12:
   after removing launcher Qt env overrides and passed minimal `QApplication`, unit
   tests, terminal launch, and launcher startup. Keep the launcher free of manual
   `QT_PLUGIN_PATH`, `QT_QPA_PLATFORM_PLUGIN_PATH`, and `QT_QPA_PLATFORM` overrides.
-- The full unit suite and preflight logic pass, but the current Desktop `.venv`
-  remains operationally blocked because external macOS metadata repeatedly
-  re-applies `UF_HIDDEN` to plugin files. Fresh live Cocoa launch and iPhone PWA
-  pairing are not verified; Codex's final GUI action was also blocked by its
-  external usage limit.
+- The active development venv is intentionally outside Desktop at
+  `~/Library/Application Support/JARVIS/venv`; the primary workspace `.venv` is
+  only a local symlink to it, and isolated worktrees need not contain that
+  symlink. The historical `UF_HIDDEN` failure is not a current known blocker,
+  but every source launch must still pass `scripts/check_qt_runtime.py`. A clean,
+  independent Mac remains unverified.
 
 ## Current Purpose
 
@@ -128,12 +133,12 @@ Current known status as of 2026-07-12:
 
 ## Current Next Goal
 
-For product work, clear the commercial rights/PyQt6/branding gates, choose the
-final bundle identifier and HTTPS backend origin, supply production signing
-public/private key material through the documented external secret boundary,
-then implement the signed macOS atomic update helper and verify a signed,
-notarized artifact on a clean Mac. Zerno/full-app personal briefing verification
-remains a separate existing runtime task.
+For product work, close the remaining internal release gaps: an audited macOS
+signing/notarization executor, a fixed signed updater helper, a unified audit
+projection, and Windows/Linux packages. Separately, operators must provide a
+real HTTPS deployment, Apple credentials and clean-device evidence, while the
+upstream/PyQt6/branding legal gates must be cleared before distribution.
+Zerno/full-app personal briefing verification remains a separate runtime task.
 
 ## Architecture Summary
 
@@ -158,12 +163,14 @@ remains a separate existing runtime task.
   `UF_HIDDEN`, rejects Qt overrides/external plugin symlinks, checks the per-OS
   platform plugin, and smoke-tests the real Cocoa platform before the launcher
   executes `main.py`. Its optional approval-only repair mode clears only
-  `UF_HIDDEN` inside the canonical venv but is not a durable fix for the current
-  Desktop location.
+  `UF_HIDDEN` inside the canonical venv and remains diagnostic; the verified
+  layout keeps the actual development venv outside Desktop.
 - `core/platform_adapters/` contains the reusable platform interface and macOS/Windows/Linux adapters for OS info, app/browser/message detection, default browser, media control, launch method, active window capability, screen/camera/audio/clipboard/UI automation capability, and permissions.
 - `memory/memory_manager.py` stores and formats long-term user memory in `memory/long_term.json`.
 - `core/prompt.txt` controls assistant behavior, language, and tool routing rules.
-- `config/api_keys.json` stores local secret configuration and must not be touched unless Akbar explicitly asks.
+- `core/credential_service.py` and `core/secure_store.py` own Gemini credential
+  reads and writes. `config/api_keys.json` is accepted only as a protected,
+  one-time legacy migration input and is never an active fallback store.
 - `config/device_profile.json` stores local safe operational metadata and is gitignored.
 - `config/device_profile.example.json` is the committed schema/template.
 
@@ -189,7 +196,7 @@ Zerno setup is intentionally two-input: `bash scripts/setup_zerno_stats.sh` asks
 
 The startup greeting retains the existing read-only use of long-term memory for the user's saved name/language. That memory is not a briefing statistics source and is never passed into `actions/personal_briefing.py`.
 
-## Productization Foundation (2026-07-13)
+## Productization Foundation (updated 2026-07-17)
 
 Productization work is authorized under `docs/PRODUCT_RELEASE_CONTRACT.md`, but
 commercial distribution is still blocked by upstream CC BY-NC rights, the PyQt6
@@ -203,13 +210,16 @@ server-side device binding, and old installed versions have no remote kill path.
 
 Durable product layers:
 
-- `core/app_paths.py`, `runtime_product.py`, `credential_service.py` and
-  `secure_store.py` keep packaged resources immutable and user data/secrets in OS
-  locations. New Gemini onboarding writes only to secure storage; the historical
-  `config/api_keys.json` is a read-only fallback.
-- `core/device_identity.py`, `entitlement_certificate.py`,
-  `entitlement_cache.py`, `product_activation.py`, `product_purchase.py`,
-  `product_updates.py`, `update_transaction.py` and `macos_update.py` implement generated Ed25519
+- `core/app_paths.py` and `core/runtime_product.py` own immutable resource/writable
+  OS-path and packaged identity resolution. `core/product_runtime.py` is the
+  desktop activation, payment and update orchestration facade.
+  `core/credential_service.py` and `core/secure_store.py` make the OS secure store
+  authoritative; `config/api_keys.json` is migration-only and its Gemini key is
+  removed only after a verified secure-store write/read round trip.
+- `core/device_identity.py`, `core/entitlement_certificate.py`,
+  `core/entitlement_cache.py`, `core/product_activation.py`,
+  `core/product_purchase.py`, `core/product_updates.py`,
+  `core/update_transaction.py` and `core/macos_update.py` implement generated Ed25519
   device proof, signed exact-version offline authority, manual payment evidence,
   verified update staging, strict macOS app archives, persisted backup, atomic
   development replacement, nonce health proof and durable rollback recovery.
@@ -225,10 +235,17 @@ Durable product layers:
   stream in constant memory, payment images have a decoded-pixel budget, future
   installers must copy/re-hash into private storage, and login/body limits apply
   before expensive authentication work.
-- `packaging/macos/`, `scripts/build_macos_release.py`, pinned
-  `requirements-build.txt` and platform release adapters provide an unsigned
-  local macOS app/DMG plan with secret exclusion and
-  strict build metadata. Windows/Linux report honest `not_available`.
+- `packaging/macos/`, `scripts/build_macos_release.py`,
+  `scripts/release_pipeline.py`, pinned `requirements-build.txt` and platform
+  release adapters provide the unsigned macOS app/DMG pipeline. A real local
+  `JARVIS.app` (624 MB) and `JARVIS-0.1.0-build1-macos-arm64.dmg` (240 MB) were
+  built and smoke-tested on 2026-07-16, including launch without system Python,
+  Terminal or the source `.venv`; this is local unsigned evidence only. The CI
+  workflow builds unsigned artifacts and accepts no production signing secrets.
+  `packaging/macos/sign_artifact.sh --execute` is mechanically
+  `not_available`; the signing module is a non-mutating readiness planner until
+  the final app-before-DMG/notarization sequence is audited. Windows/Linux
+  packaging remains honestly `not_available`.
 
 The backend flow is tested end-to-end: admin account/license/device provisioning,
 release and price, customer screenshot submission, manual approval, one-time
@@ -313,10 +330,11 @@ runtimes. Production macOS remains honest `not_available` until the fixed helper
 has an audited safe-shutdown/privileged protocol, Developer ID signing,
 notarization and clean-Mac evidence.
 
-## Production Backend Deployment + Ops (2026-07-16, BOSQICH 8)
+## Production Backend Deployment + Ops (2026-07-17, BOSQICH 8)
 
-The backend is prepared for a real HTTPS server without changing the entitlement
-model. New durable layers:
+The backend has a production-like HTTPS deployment contract without changing
+the entitlement model. It has not been verified on a real domain/server. Durable
+layers:
 
 - `product_backend/api_operational.py` installs an OUTERMOST ASGI
   `OperationalMiddleware` (added last in `create_product_backend_app`, so it wraps
@@ -339,26 +357,54 @@ model. New durable layers:
   (`user_version = 4`); others use idempotent `CREATE TABLE IF NOT EXISTS`.
   `verify` fails closed; `migrate_commerce_database` applies the real repository
   forward migration; a schema newer than the runtime is rejected.
-- `ops/` cross-platform tooling (stdlib + cryptography): `gen_secrets`,
-  `validate_config` (fail-closed; assembles the real app), `backup`/`restore`
-  (online SQLite `.backup` snapshot + SHA-256 `manifest.json`, verified restore
-  that refuses to overwrite without force), `migrate`, `rotate` (key rotation with
-  honest overlap/re-enrol side effects), `dev_tls` (self-signed cert + uvicorn
-  TLS for a local production-like environment). POSIX applies `0600`/`0700`;
-  Windows returns an honest `manual` NTFS-ACL status (never a faked mode), so the
-  hardened runtime host must be Linux/macOS (Windows via container), while the
-  tooling itself is cross-platform.
+- `ops/` provides `gen_secrets`, fail-closed `validate_config`,
+  `backup`/`restore`, `migrate`, `rotate` and local `dev_tls`. Security-sensitive
+  mutation is implemented only with POSIX owner/no-follow primitives on
+  Linux/macOS; native Windows fails before writing with honest
+  `not_available`. A cross-database backup requires the backend to be stopped and
+  explicit `--confirm-service-stopped`. Restore verifies every required DB,
+  evidence object, hash, schema and SQLite integrity into a fresh nonexistent
+  target, then publishes it atomically; overlay/`--force` restore is
+  `not_available`. Manifest SHA-256 values provide corruption integrity, not
+  authenticity, so backup storage itself is a trusted owner-only boundary.
 - `deploy/` recipes: sandboxed systemd unit with `ExecStartPre` config
   validation, slim non-root Docker image + compose (backend port unpublished),
-  nginx + Caddy TLS proxies (HSTS, trusted host, edge rate limit, admin IP
-  allowlist, health passthrough, `/metrics` denied publicly), and
+  nginx + Caddy TLS proxies (HSTS, trusted host, admin IP allowlist, health
+  passthrough, `/metrics` denied publicly), and
   `env/backend.env.example` (canonical config reference). `docs/PRODUCTION_DEPLOYMENT.md`
   is the runbook (topology, config, retention, key rotation, single-process
-  constraint + multi-instance PostgreSQL/shared-state plan).
+  constraint + multi-instance PostgreSQL/shared-state plan). nginx includes an
+  edge rate limit; stock Caddy does not, so Caddy requires a provider/WAF or a
+  separately reviewed rate-limit module before public exposure.
 
 Secrets stay outside the repo: `*.key`/`*.pem`/`*.sqlite3`/`.env*` are gitignored;
 only `*.example` templates are committed. This is deployment tooling, not a
 commercial-clearance claim — the `PRODUCT_RELEASE_CONTRACT.md` gates still apply.
+
+## Product Release E2E Status (2026-07-17, BOSQICH 9)
+
+`scripts/run_product_release_e2e.py` maps the required 30-step product flow to
+deduplicated local evidence groups and writes private JSON/Markdown reports. The
+recorded local matrix is 21 `pass`, 9 `not_available`, 0 `fail`; unavailable
+rows are 1, 7, 15, 23-27 and 30. A local passing test never upgrades a known
+availability gap: reports always retain `production_ready=false` and
+`production_verified=false`. See `docs/E2E_PRODUCT_VALIDATION.md` for the exact
+scenario/evidence map.
+
+## Product Release Status Boundaries
+
+- **Internal implementation gaps:** production signing execution, the fixed
+  signed macOS updater helper, unified product-wide audit projection, native
+  mobile/background push, Windows/Linux distributables, and multi-instance
+  PostgreSQL/shared state/private object storage.
+- **External operational blockers:** real domain/server/TLS, production secrets
+  and signing keys in an external store, Apple Developer ID/notary credentials,
+  clean-Mac validation, and representative real-device/mobile deployment checks.
+- **Legal/license blockers:** upstream CC BY-NC commercial rights, the lawful
+  PyQt6 distribution model, and cleared product name/branding/icons/assets.
+
+None of these categories is production-verified or commercially cleared merely
+because the local implementation and test evidence pass.
 
 ## AI Assistant Rule
 

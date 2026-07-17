@@ -5,6 +5,21 @@
 > constraint, multi-instance plan, local TLS dev env, and the `ops/` +
 > `deploy/` tooling), see [`PRODUCTION_DEPLOYMENT.md`](PRODUCTION_DEPLOYMENT.md).
 
+## Evidence status
+
+The fail-closed runtime, operational middleware, schema checks, POSIX tooling and
+deployment recipes are **implemented** and **tested locally**. HTTPS/host/proxy,
+MFA, private-evidence and secret-file boundaries are mechanically **enforced**.
+No component is **production-verified**: a real domain/TLS endpoint, production
+server, edge controls, monitoring, restore drill and key cutover are
+**external blockers**. PostgreSQL/shared state, automatic retention, unified
+product audit, and authenticated backup manifests remain **internal gaps**.
+Native Windows mutating ops return `not_available`.
+
+See [`../SECURITY.md`](../SECURITY.md), [`../THREAT_MODEL.md`](../THREAT_MODEL.md),
+and [`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md) for the security and
+local-evidence boundary.
+
 ## Runtime model
 
 Use the ASGI factory; importing the module does not create files or load keys:
@@ -52,6 +67,8 @@ present:
 - `JARVIS_ADMIN_MFA_KEY_FILE`: absolute, regular, owner-only (`0600`), 32–128
   random bytes used to derive TOTP encryption and recovery-code HMAC keys. The
   production factory will not start without it.
+- `JARVIS_REQUIRE_HTTPS`: must be present and explicitly true. False, malformed,
+  or missing values fail before the backend data directory is created.
 
 Optional security policy:
 
@@ -109,8 +126,18 @@ replace an existing key ID with different key material.
 ## Backup, monitoring and retention
 
 - Back up every SQLite database (commerce, device challenges, activation, MFA
-  and admin credentials) and private payment evidence together from a quiesced
-  process or a database-aware snapshot.
+  and admin credentials) and private payment evidence together during a real
+  stopped-service maintenance window. `ops.backup` requires explicit
+  `--confirm-service-stopped`; the flag is an operator assertion, not a process
+  lock.
+- `ops.backup`/`ops.restore` use POSIX owner/no-follow primitives and are
+  **tested locally** on the supported host path. Native Windows execution is
+  `not_available`. Restore publishes only into a fresh nonexistent target;
+  overlay/force restore is `not_available`.
+- The manifest's size and SHA-256 values provide **integrity detection, not
+  authenticity**. Keep backups owner-only and immutable or authenticate them
+  with a separately managed signature/MAC before transport. Never restore an
+  untrusted archive merely because its hashes are internally consistent.
 - Monitor authentication capacity errors, repeated 401/409/429 responses,
   artifact integrity failures, payment evidence storage errors and SQLite disk
   space/locking.
@@ -130,3 +157,8 @@ grants. Multiple workers would not share sessions, rate limits or download
 grants. A production multi-instance deployment requires PostgreSQL migrations,
 a shared bounded session/grant/rate-limit store, object storage with private
 streaming reads, centralized audit/metrics and operational key rotation.
+
+The currently exposed Admin audit view covers payment approvals/rejections.
+MFA events and device replacement history are separately persisted; a unified,
+queryable product-wide audit surface is an **internal gap**, not a
+production-verified capability.

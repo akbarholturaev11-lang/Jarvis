@@ -9,6 +9,16 @@ Developer-ID-signed and notarized helper plus an independently audited
 shutdown/privilege protocol. No source or frozen build can silently select the
 development adapter.
 
+Here **implemented**/**enforced** means the code boundary exists and fails
+closed, while **tested locally** means deterministic temporary-filesystem tests.
+No updater component is **production-verified**. The helper protocol/executor is
+an **internal gap**; Developer ID/notarization and a clean supported Mac are
+**external blockers**; commercial rights remain **legal blockers**. The current
+clean-device and Stage 9 evidence is indexed in
+[`CLEAN_MAC_TEST.md`](CLEAN_MAC_TEST.md),
+[`E2E_PRODUCT_VALIDATION.md`](E2E_PRODUCT_VALIDATION.md), and
+[`../THREAT_MODEL.md`](../THREAT_MODEL.md).
+
 | Area | Status |
 | --- | --- |
 | Signed manifest, artifact hash/size and exact source/target verification | Implemented and tested |
@@ -21,7 +31,7 @@ development adapter.
 | Durable journal, interrupted recovery and verified rollback | Implemented and tested locally |
 | Production signed helper assessment | Implemented and fail-closed |
 | Real `/Applications` install, safe process shutdown and privileged helper | `not_available` pending signed/notarized helper |
-| Clean-Mac Gatekeeper update/rollback | Not production-verified |
+| Clean-Mac Gatekeeper update/rollback | external blocker; not production-verified |
 | Windows/Linux installation | Honest `not_available` |
 
 ## Security invariants
@@ -90,6 +100,13 @@ This is a real local filesystem transaction, not evidence that a production
 signed app can update itself while running. Final verification requires a clean
 supported Mac, final signed artifacts, an installed notarized helper and saved
 `codesign`, `spctl`, stapler, interruption and rollback evidence.
+
+The interruption and power-loss cases in the suite are deterministic journal and
+fault-injection tests. No physical power-loss test, live process shutdown, final
+DMG install, or `/Applications` rollback has run. The 2026-07-16 unsigned local
+app/DMG smoke did not exercise this production update path, and Stage 9 scenarios
+23–27 therefore remain `not_available` even though their development-adapter
+evidence groups pass.
 
 ## External completion steps
 
