@@ -387,29 +387,42 @@ def resolve_messaging_route(
             "status": "needs_confirmation",
             "reason": "No messaging app was provided.",
         }
-    installed = set(installed_messaging_ids(profile))
-    if app_id not in installed:
-        return {
-            "status": "failed",
-            "app": app_id,
-            "reason": f"Messaging app not found in DeviceProfile: {platform_name}.",
-        }
+    detected = app_id in set(installed_messaging_ids(profile))
     if not receiver:
         return {
             "status": "needs_confirmation",
             "app": app_id,
+            "detected": detected,
             "reason": "Recipient/contact is not verified.",
         }
     if not confirmed:
+        reason = (
+            "Message sending requires explicit confirmation and verification."
+            if detected
+            else f"'{platform_name}' is not a verified messaging app on this device; "
+            "sending anyway requires explicit confirmation."
+        )
         return {
             "status": "needs_confirmation",
             "app": app_id,
-            "reason": "Message sending requires explicit confirmation and verification.",
+            "detected": detected,
+            "reason": reason,
         }
+    # Confirmed: allow the send flow to attempt for ANY named app so the user can
+    # message anything under explicit confirmation. A detected app is a normal
+    # attempt; an undetected one is best-effort and the send action must report it
+    # as unverified — never a fake success.
+    reason = (
+        "Messaging app is installed; send flow may attempt after verification."
+        if detected
+        else f"'{platform_name}' was not verified in DeviceProfile; attempting a "
+        "best-effort desktop send that cannot be verified."
+    )
     return {
         "status": "ok",
         "app": app_id,
-        "reason": "Messaging app is installed; send flow may attempt after verification.",
+        "detected": detected,
+        "reason": reason,
     }
 
 

@@ -34,6 +34,25 @@ The following external gates must be cleared before any customer release:
 
 ## Immediate Next Steps
 
+0b. Manually verify message sending + permission onboarding in the full Mac app:
+   - On launch (first run / `permissions_onboarded` false), confirm the
+     **PERMISSIONS** checklist auto-appears listing Accessibility, Automation,
+     Screen Recording, Microphone, Camera with live statuses; each "OPEN SETTINGS"
+     jumps to the exact System Settings pane; Screen Recording triggers the real
+     macOS prompt. Grant Accessibility + Automation to the launcher (Terminal/iTerm
+     or the JARVIS app), then fully restart.
+   - Also reachable from ⚙ → **PERMISSIONS**; RE-CHECK updates statuses; DONE stops
+     the auto-nag.
+   - With Accessibility granted: say "send a WhatsApp/Telegram message to <contact>"
+     → confirm JARVIS asks to confirm, then on confirmation opens the app, finds the
+     chat, types, and sends. Confirm an app NOT in DeviceProfile (e.g. Slack) is
+     allowed under confirmation (best-effort, reported unverified).
+   - With Accessibility denied: confirm send returns the honest "grant Accessibility"
+     message instead of silently failing.
+   - NOTE: the confirm→send handshake depends on Gemini re-calling `send_message`
+     with `confirmed=true`; if it loops on "Tasdiqlaysizmi?", tighten the prompt
+     guidance in `core/prompt.txt`.
+
 0a. Manually verify the three ported Mark-XLIX features in the full Mac app:
    - **Auto-start**: ⚙ → toggle **Launch at login** ON; confirm
      `~/Library/LaunchAgents/com.jarvis.assistant.plist` is created (RunAtLoad,

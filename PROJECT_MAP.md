@@ -30,6 +30,7 @@ No external Graphiti/Gravity dependency is installed for this foundation step. T
    - Narrow runtime warning policy in `core/runtime_warnings.py`
    - Cross-platform keep-awake facade in `core/power_manager.py`
    - Cross-platform launch-at-login facade in `core/autostart_manager.py` (over the adapters' `autostart_status`/`set_autostart`)
+   - Cross-platform OS-permission onboarding facade in `core/permissions_manager.py` (over the adapters' `permission_status`/`request_permission`/`open_permission_pane`)
    - Cloudflare remote-access tunnel in `core/remote_tunnel.py`
    - Safe settings read/modify/write in `core/app_settings.py`
    - Command-automation capability registry + macro store in `core/capabilities.py` and `core/macros.py`

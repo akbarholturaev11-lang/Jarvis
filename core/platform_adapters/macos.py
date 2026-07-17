@@ -27,6 +27,50 @@ _BROWSER_BUNDLES = {
     "opera": ("com.operasoftware.Opera",),
 }
 
+_PERMISSION_PANES = {
+    "accessibility": "Privacy_Accessibility",
+    "automation": "Privacy_Automation",
+    "screen_recording": "Privacy_ScreenCapture",
+    "microphone": "Privacy_Microphone",
+    "camera": "Privacy_Camera",
+}
+
+# Cache the dynamically-loaded AVFoundation AVCaptureDevice class (the pyobjc
+# framework binding is not installed, but the system framework is present on every
+# Mac and can be loaded through the base `objc` runtime).
+_AVCAPTURE_CACHE: dict = {"tried": False, "cls": None}
+
+
+def _avcapture_status(media_type: str) -> str:
+    """Real macOS authorization for 'soun' (microphone) / 'vide' (camera).
+
+    Returns granted / denied / unknown. This reads the status only — it never
+    prompts. Any failure falls back to an honest 'unknown', never a guess.
+    """
+    try:
+        if not _AVCAPTURE_CACHE["tried"]:
+            _AVCAPTURE_CACHE["tried"] = True
+            import objc
+            from Foundation import NSBundle
+
+            bundle = NSBundle.bundleWithPath_(
+                "/System/Library/Frameworks/AVFoundation.framework"
+            )
+            if bundle is not None and bundle.load():
+                _AVCAPTURE_CACHE["cls"] = objc.lookUpClass("AVCaptureDevice")
+        cls = _AVCAPTURE_CACHE["cls"]
+        if cls is None:
+            return "unknown"
+        # AVAuthorizationStatus: 0 notDetermined, 1 restricted, 2 denied, 3 authorized
+        raw = int(cls.authorizationStatusForMediaType_(media_type))
+        if raw == 3:
+            return "granted"
+        if raw in (1, 2):
+            return "denied"
+        return "unknown"  # notDetermined — never asked yet
+    except Exception:
+        return "unknown"
+
 _DEFAULT_BROWSER_BUNDLE_MAP = {
     "com.apple.safari": "safari",
     "com.google.chrome": "chrome",
@@ -286,6 +330,103 @@ class MacOSAdapter(PlatformAdapter):
             return None, "LaunchAgent removal could not be verified."
         except Exception as e:
             return False, f"Auto-start change failed: {e}"
+
+    # ── OS permission onboarding (macOS TCC) ──────────────────────────────────
+    def permission_status(self, name: str) -> str:
+        if name == "accessibility":
+            return self._accessibility_probe()
+        if name == "automation":
+            return self._automation_probe()
+        if name == "screen_recording":
+            return self._screen_recording_probe()
+        if name == "microphone":
+            return _avcapture_status("soun")
+        if name == "camera":
+            return _avcapture_status("vide")
+        return "unknown"
+
+    def request_permission(self, name: str) -> tuple[bool | None, str]:
+        if name == "screen_recording":
+            # This shows the real system prompt the first time it is undecided.
+            try:
+                import Quartz  # type: ignore
+
+                Quartz.CGRequestScreenCaptureAccess()
+            except Exception:
+                pass
+            return self.open_permission_pane(name)
+        if name == "accessibility":
+            # A System Events call surfaces the accessibility prompt/deep link the
+            # first time; a short timeout keeps a pending prompt from blocking.
+            self._run(
+                [
+                    "osascript",
+                    "-e",
+                    'tell application "System Events" to get name of first process',
+                ],
+                timeout=2.0,
+            )
+            return self.open_permission_pane(name)
+        return self.open_permission_pane(name)
+
+    def open_permission_pane(self, name: str) -> tuple[bool, str]:
+        pane = _PERMISSION_PANES.get(name)
+        if not pane:
+            return False, f"No macOS settings pane is mapped for {name}."
+        url = f"x-apple.systempreferences:com.apple.preference.security?{pane}"
+        proc = self._run(["open", url], timeout=5.0)
+        if proc and proc.returncode == 0:
+            return True, f"Opened the macOS {name} settings pane."
+        detail = (proc.stderr if proc else "") or "open command failed"
+        return False, detail.strip()
+
+    def _accessibility_probe(self) -> str:
+        proc = self._run(
+            [
+                "osascript",
+                "-e",
+                'tell application "System Events" to get name of first process',
+            ],
+            timeout=3.0,
+        )
+        if not proc:
+            return "unknown"
+        if proc.returncode == 0:
+            return "granted"
+        err = (proc.stderr or "").lower()
+        if "-25211" in err or "assistive access" in err or "accessibility" in err:
+            return "denied"
+        return "unknown"
+
+    def _automation_probe(self) -> str:
+        # Reading a Finder property requires the Automation grant for Finder. A
+        # short timeout means a first-run prompt resolves to "unknown", not a hang.
+        proc = self._run(
+            ["osascript", "-e", 'tell application "Finder" to get name'],
+            timeout=2.0,
+        )
+        if not proc:
+            return "unknown"
+        if proc.returncode == 0:
+            return "granted"
+        err = (proc.stderr or "").lower()
+        if (
+            "-1743" in err
+            or "-1744" in err
+            or "not authori" in err
+            or "not allowed to send apple events" in err
+        ):
+            return "denied"
+        return "unknown"
+
+    def _screen_recording_probe(self) -> str:
+        try:
+            import Quartz  # type: ignore
+
+            # Preflight does NOT prompt; it just reports the current grant.
+            return "granted" if Quartz.CGPreflightScreenCaptureAccess() else "denied"
+        except Exception:
+            return "unknown"
 
     def _launch_agent_path(self, label: str) -> Path:
         return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"

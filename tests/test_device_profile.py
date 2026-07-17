@@ -176,13 +176,26 @@ class DeviceProfileTests(unittest.TestCase):
         self.assertEqual(route["status"], "ok")
         self.assertEqual(route["app"], "telegram")
 
-    def test_messaging_missing_app_fails_honestly(self):
+    def test_messaging_undetected_app_allowed_under_confirmation(self):
+        # The user may message ANY named app under explicit confirmation; an app
+        # not verified in DeviceProfile is a best-effort attempt (detected=False),
+        # never a hard failure and never a fake success.
         profile = _profile(messaging=["telegram"])
 
         route = resolve_messaging_route(profile, "WhatsApp", "Ali", confirmed=True)
 
-        self.assertEqual(route["status"], "failed")
-        self.assertIn("not found", route["reason"].lower())
+        self.assertEqual(route["status"], "ok")
+        self.assertEqual(route["app"], "whatsapp")
+        self.assertFalse(route["detected"])
+        self.assertIn("not verified", route["reason"].lower())
+
+    def test_messaging_undetected_app_asks_confirmation_first(self):
+        profile = _profile(messaging=["telegram"])
+
+        route = resolve_messaging_route(profile, "WhatsApp", "Ali", confirmed=False)
+
+        self.assertEqual(route["status"], "needs_confirmation")
+        self.assertFalse(route["detected"])
 
     def test_messaging_unverified_contact_asks_confirmation(self):
         profile = _profile(messaging=["telegram"])

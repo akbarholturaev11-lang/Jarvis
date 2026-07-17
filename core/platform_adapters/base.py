@@ -20,6 +20,16 @@ PERMISSION_REQUIRED = "permission_required"
 # (macOS LaunchAgent Label, Windows Run value name, Linux .desktop stem).
 AUTOSTART_LABEL = "com.jarvis.assistant"
 
+# Permissions JARVIS may need to operate fully. On macOS these are TCC-gated and
+# require an explicit user grant; other OSes do not gate them the same way.
+PERMISSION_NAMES = (
+    "accessibility",
+    "automation",
+    "screen_recording",
+    "microphone",
+    "camera",
+)
+
 
 BROWSER_CATALOG: dict[str, dict[str, Any]] = {
     "safari": {
@@ -352,6 +362,26 @@ class PlatformAdapter:
         label: str = AUTOSTART_LABEL,
     ) -> tuple[bool | None, str]:
         return None, f"Auto-start is unsupported on {self.os_key}."
+
+    # ── OS permission onboarding (macOS TCC; no-op contract elsewhere) ─────────
+    # Contract:
+    #   permission_status(name) -> "granted" | "denied" | "unknown" | "not_required"
+    #     "not_required" means this OS does not gate the capability behind a grant.
+    #   request_permission(name) -> (result, detail):
+    #     result True  → a real OS prompt was triggered or the settings pane opened.
+    #     result None  → nothing to do (already granted / not applicable).
+    #     result False → could not act.
+    #   open_permission_pane(name) -> (ok, detail) deep-links to the settings pane.
+    # Per-OS adapters override these; the base is the honest not-applicable fallback
+    # so Windows/Linux never claim a macOS-style grant they don't have.
+    def permission_status(self, name: str) -> str:
+        return "not_required"
+
+    def request_permission(self, name: str) -> tuple[bool | None, str]:
+        return None, f"Permission management is not applicable on {self.os_key}."
+
+    def open_permission_pane(self, name: str) -> tuple[bool, str]:
+        return False, f"Permission settings pane is not available on {self.os_key}."
 
     def _terminate_proc(self, token: object) -> None:
         """Best-effort terminate for adapters whose token is a subprocess handle."""

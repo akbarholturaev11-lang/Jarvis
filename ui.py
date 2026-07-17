@@ -45,7 +45,13 @@ from core.i18n import (
 from core.capabilities import list_capabilities
 from core.credential_service import load_gemini_api_key, store_gemini_api_key
 from core.macros import load_macros, add_macro, remove_macro
-from core.app_settings import get_clipboard_actions_enabled, load_settings
+from core.app_settings import (
+    get_clipboard_actions_enabled,
+    get_permissions_onboarded,
+    load_settings,
+    set_permissions_onboarded,
+)
+from core import permissions_manager
 from core.app_paths import resolve_app_paths
 from core.gemini_credential_validator import validate_gemini_api_key
 
@@ -1502,10 +1508,11 @@ class SettingsOverlay(QWidget):
     product_result = pyqtSignal(dict)
     _OW, _OH = 400, 560
 
-    def __init__(self, dispatch, open_qr, parent=None):
+    def __init__(self, dispatch, open_qr, open_permissions=None, parent=None):
         super().__init__(parent)
         self._dispatch = dispatch          # (action, **kwargs) -> result
         self._open_qr  = open_qr           # () -> None
+        self._open_permissions = open_permissions  # () -> None
         self._macro_builder = None
         self._payment_ready = False
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -1602,6 +1609,9 @@ class SettingsOverlay(QWidget):
 
         # QR / PIN pairing
         b.addWidget(self._mini_btn(t("settings.qr_pair"), self._show_qr))
+
+        # Permission checklist (grant everything JARVIS needs)
+        b.addWidget(self._mini_btn(t("settings.open_permissions"), self._open_permissions_panel))
 
         b.addWidget(self._sep())
 
@@ -1905,6 +1915,14 @@ class SettingsOverlay(QWidget):
             self._open_qr()
         except Exception:
             pass
+
+    def _open_permissions_panel(self):
+        self._do_close()
+        if callable(self._open_permissions):
+            try:
+                self._open_permissions()
+            except Exception:
+                pass
 
     def _revoke_devices(self):
         try:
@@ -2241,6 +2259,161 @@ class ClipboardPanel(QWidget):
         self._dismiss_timer.start(8000)
 
 
+class PermissionsOverlay(QWidget):
+    """Startup checklist to grant the OS permissions JARVIS needs to work fully.
+    Each row shows a permission, what it enables, its current status, and a button
+    that opens the exact System Settings pane / triggers the OS prompt. Honest:
+    statuses come straight from permissions_manager (granted/denied/unknown/
+    not_required); nothing is faked. Bilingual via t()."""
+
+    closed = pyqtSignal()
+    _rechecked = pyqtSignal(dict)
+    _OW, _OH = 460, 560
+
+    _ROWS = [
+        ("accessibility", "perm.accessibility", "perm.accessibility_desc"),
+        ("automation", "perm.automation", "perm.automation_desc"),
+        ("screen_recording", "perm.screen_recording", "perm.screen_recording_desc"),
+        ("microphone", "perm.microphone", "perm.microphone_desc"),
+        ("camera", "perm.camera", "perm.camera_desc"),
+    ]
+
+    def __init__(self, statuses: dict, parent=None):
+        super().__init__(parent)
+        self._statuses = dict(statuses or {})
+        self._status_lbls: dict = {}
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            PermissionsOverlay {{
+                background: rgba(0, 4, 12, 0.97);
+                border: 1px solid {C.BORDER_B}; border-radius: 14px;
+            }}
+        """)
+        self._rechecked.connect(self._apply_statuses)
+        self._build()
+
+    def _lbl(self, txt, fs=9, bold=False, color=None):
+        w = QLabel(txt)
+        w.setFont(QFont("Courier New", fs, QFont.Weight.Bold if bold else QFont.Weight.Normal))
+        w.setStyleSheet(f"color: {color or C.TEXT}; background: transparent;")
+        w.setWordWrap(True)
+        return w
+
+    def _status_text(self, status: str) -> str:
+        return t({
+            "granted": "perm.status_granted",
+            "denied": "perm.status_denied",
+            "not_required": "perm.status_not_required",
+        }.get(status, "perm.status_unknown"))
+
+    def _status_color(self, status: str) -> str:
+        if status == "granted":
+            return C.GREEN
+        if status == "denied":
+            return "#f87171"
+        return C.TEXT_DIM
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 16, 22, 16)
+        lay.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.addWidget(self._lbl(f"🔐  {t('perm.title')}", 12, bold=True, color=C.PRI))
+        header.addStretch()
+        close = QPushButton("✕")
+        close.setFixedSize(26, 26)
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(f"""
+            QPushButton {{ background: transparent; color: {C.TEXT_MED};
+                          border: 1px solid {C.BORDER}; border-radius: 5px; }}
+            QPushButton:hover {{ color: #f87171; border: 1px solid #f87171; }}
+        """)
+        close.clicked.connect(self._do_done)
+        header.addWidget(close)
+        lay.addLayout(header)
+        lay.addWidget(self._lbl(t("perm.intro"), 8, color=C.TEXT_DIM))
+
+        for name, label_key, desc_key in self._ROWS:
+            lay.addWidget(self._perm_row(name, label_key, desc_key))
+
+        lay.addWidget(self._lbl(t("perm.restart_note"), 7, color=C.TEXT_DIM))
+        lay.addStretch()
+
+        footer = QHBoxLayout(); footer.setSpacing(8)
+        footer.addWidget(self._btn(t("perm.recheck"), self._recheck, primary=False))
+        footer.addStretch()
+        footer.addWidget(self._btn(t("perm.done"), self._do_done, primary=True))
+        fw = QWidget(); fw.setStyleSheet("background: transparent;"); fw.setLayout(footer)
+        lay.addWidget(fw)
+
+    def _btn(self, text, on_click, primary=True):
+        b = QPushButton(text)
+        b.setFixedHeight(30)
+        b.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        accent = C.PRI if primary else C.TEXT_MED
+        b.setStyleSheet(f"""
+            QPushButton {{ background: {C.PANEL}; color: {accent};
+                          border: 1px solid {accent}; border-radius: 5px; padding: 0 14px; }}
+            QPushButton:hover {{ background: {C.PRI_GHO}; }}
+        """)
+        b.clicked.connect(on_click)
+        return b
+
+    def _perm_row(self, name, label_key, desc_key):
+        status = self._statuses.get(name, "unknown")
+        outer = QVBoxLayout(); outer.setSpacing(1)
+        top = QHBoxLayout(); top.setSpacing(8)
+        top.addWidget(self._lbl(t(label_key), 9, bold=True, color=C.TEXT))
+        top.addStretch()
+        st = self._lbl(self._status_text(status), 8, color=self._status_color(status))
+        self._status_lbls[name] = st
+        top.addWidget(st)
+        # Offer the settings button for anything not confirmed granted.
+        if status != "granted" and status != "not_required":
+            btn = self._btn(t("perm.open_settings"), lambda _=False, n=name: self._grant(n))
+            btn.setFixedHeight(24)
+            top.addWidget(btn)
+        outer.addLayout(top)
+        outer.addWidget(self._lbl(t(desc_key), 7, color=C.TEXT_DIM))
+        wrap = QWidget(); wrap.setStyleSheet("background: transparent;"); wrap.setLayout(outer)
+        return wrap
+
+    def _grant(self, name: str):
+        # Trigger the OS prompt / open the pane (fast: 'open' returns at once),
+        # then re-probe status in the background.
+        try:
+            permissions_manager.request_permission(name)
+        except Exception:
+            pass
+        self._recheck()
+
+    def _recheck(self):
+        def worker():
+            try:
+                statuses = permissions_manager.all_statuses()
+            except Exception:
+                statuses = {}
+            self._rechecked.emit(statuses)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_statuses(self, statuses: dict):
+        self._statuses = dict(statuses or {})
+        for name, lbl in self._status_lbls.items():
+            status = self._statuses.get(name, "unknown")
+            lbl.setText(self._status_text(status))
+            lbl.setStyleSheet(f"color: {self._status_color(status)}; background: transparent;")
+
+    def _do_done(self):
+        try:
+            set_permissions_onboarded(True)
+        except Exception:
+            pass
+        self.hide()
+        self.closed.emit()
+
+
 class MainWindow(QMainWindow):
     _log_sig     = pyqtSignal(str)
     _state_sig   = pyqtSignal(str)
@@ -2251,6 +2424,7 @@ class MainWindow(QMainWindow):
     _cam_stream_sig = pyqtSignal(bool)   # True=start live stream, False=stop
     _cam_frame_sig  = pyqtSignal(bytes)  # live camera frame → HUD area
     _clipboard_sig  = pyqtSignal(str)    # clipboard text changed (thread-safe)
+    _permissions_sig = pyqtSignal(dict)  # show permission onboarding (thread-safe)
 
     def __init__(self, face_path: str):
         super().__init__()
@@ -2400,6 +2574,12 @@ class MainWindow(QMainWindow):
         self._clipboard_panel.action_requested.connect(self._on_clipboard_action)
         self._clipboard_sig.connect(self._show_clipboard_panel)
         QApplication.clipboard().dataChanged.connect(self._on_clipboard_changed)
+
+        # Permission onboarding — checked in the background so the osascript
+        # probes never block startup, then shown once if anything is missing.
+        self._permissions_overlay: "PermissionsOverlay | None" = None
+        self._permissions_sig.connect(self._show_permissions_overlay)
+        threading.Thread(target=self._startup_permission_check, daemon=True).start()
 
         self._overlay: SetupOverlay | None = None
         self._ready = self._check_config()
@@ -2781,6 +2961,13 @@ class MainWindow(QMainWindow):
         if self._settings_overlay and self._settings_overlay.isVisible():
             ow, oh = SettingsOverlay._OW, SettingsOverlay._OH
             self._settings_overlay.setGeometry(
+                (cw.width()  - ow) // 2,
+                (cw.height() - oh) // 2,
+                ow, oh,
+            )
+        if self._permissions_overlay and self._permissions_overlay.isVisible():
+            ow, oh = PermissionsOverlay._OW, PermissionsOverlay._OH
+            self._permissions_overlay.setGeometry(
                 (cw.width()  - ow) // 2,
                 (cw.height() - oh) // 2,
                 ow, oh,
@@ -3294,7 +3481,8 @@ class MainWindow(QMainWindow):
             return
         cw = self.centralWidget()
         dispatch = self.on_settings_action or (lambda *a, **k: None)
-        ov = SettingsOverlay(dispatch, self._open_remote, parent=cw)
+        ov = SettingsOverlay(dispatch, self._open_remote,
+                             open_permissions=self.open_permissions, parent=cw)
         ow, oh = SettingsOverlay._OW, SettingsOverlay._OH
         ov.setGeometry(
             (cw.width()  - ow) // 2,
@@ -3336,6 +3524,51 @@ class MainWindow(QMainWindow):
             threading.Thread(
                 target=self.on_text_command, args=(cmd,), daemon=True
             ).start()
+
+    # ── Permission onboarding ─────────────────────────────────────────────────
+    def _startup_permission_check(self):
+        """Background: show the permission checklist once on first run, or whenever
+        a needed permission is confirmed denied. Never blocks the Qt thread."""
+        try:
+            statuses = permissions_manager.all_statuses()
+        except Exception:
+            return
+        blocking = [n for n, s in statuses.items() if s == "denied"]
+        try:
+            onboarded = get_permissions_onboarded()
+        except Exception:
+            onboarded = False
+        actionable = any(s in ("denied", "unknown") for s in statuses.values())
+        if blocking or (not onboarded and actionable):
+            self._permissions_sig.emit(statuses)
+
+    def _show_permissions_overlay(self, statuses: dict):
+        if self._permissions_overlay is None:
+            self._permissions_overlay = PermissionsOverlay(statuses, self.centralWidget())
+            self._permissions_overlay.closed.connect(self._on_permissions_closed)
+        else:
+            self._permissions_overlay._apply_statuses(statuses)
+        cw = self.centralWidget()
+        ow, oh = PermissionsOverlay._OW, PermissionsOverlay._OH
+        self._permissions_overlay.setGeometry(
+            (cw.width() - ow) // 2, (cw.height() - oh) // 2, ow, oh
+        )
+        self._permissions_overlay.show()
+        self._permissions_overlay.raise_()
+
+    def _on_permissions_closed(self):
+        if self._permissions_overlay:
+            self._permissions_overlay.hide()
+
+    def open_permissions(self):
+        """Open the permission checklist on demand (e.g. from the settings panel)."""
+        def worker():
+            try:
+                statuses = permissions_manager.all_statuses()
+            except Exception:
+                statuses = {}
+            self._permissions_sig.emit(statuses)
+        threading.Thread(target=worker, daemon=True).start()
 
     def _do_interrupt(self):
         if self.on_interrupt:

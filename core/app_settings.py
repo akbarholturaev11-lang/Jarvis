@@ -92,6 +92,17 @@ def set_clipboard_actions_enabled(enabled: bool) -> bool:
     return bool(enabled)
 
 
+def get_permissions_onboarded() -> bool:
+    """Whether the user has already been through the permission checklist once,
+    so startup does not re-open it on every launch."""
+    return bool(load_settings().get("permissions_onboarded", False))
+
+
+def set_permissions_onboarded(done: bool) -> bool:
+    update_settings({"permissions_onboarded": bool(done)})
+    return bool(done)
+
+
 _DEFAULT_ASSISTANT_NAME = "Jarvis"
 
 

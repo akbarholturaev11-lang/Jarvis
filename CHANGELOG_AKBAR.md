@@ -1,5 +1,71 @@
 # CHANGELOG_AKBAR.md
 
+## 2026-07-18 - Fix message sending + macOS permission onboarding
+
+### Problem
+
+Message sending "worked in upstream Mark-XLIX but errored / couldn't find the
+chat" locally. Investigation (our `send_message.py` is functionally identical to
+upstream, plus a `confirmed` gate) found the real causes:
+
+- **Restricted to detected apps.** `resolve_messaging_route` returned `failed`
+  ("Messaging app not found in DeviceProfile") for any app not in the detected
+  messaging list, so the user could not message an arbitrary app.
+- **Silent macOS permission failure.** Desktop messaging is driven by pyautogui
+  keystrokes (`Cmd+F` search → paste → Enter). macOS silently drops these unless
+  **Accessibility** is granted; the app opened but nothing was typed/found/sent,
+  with no honest explanation. (An early false lead — "messaging_apps empty" — was a
+  wrong-key read; the profile stores messaging under `apps.messaging` and Telegram/
+  WhatsApp/Messages/WeChat are correctly detected.)
+
+Akbar also asked that JARVIS be able to message **any** app under his confirmation,
+and that on launch it make it easy to grant **all** the permissions it needs.
+
+### Fix
+
+- **Any app under confirmation** (`core/device_profile.py::resolve_messaging_route`):
+  an app not verified in DeviceProfile is no longer a hard `failed`; with a receiver
+  it asks for confirmation, and when confirmed returns `ok` with `detected=False`
+  (a best-effort attempt the send action reports as unverified — never a fake send).
+- **Honest permission preflight** (`actions/send_message.py`): on macOS, a confirmed
+  `accessibility == "denied"` returns a clear, actionable message (grant Accessibility
+  in System Settings, restart) instead of typing into the void. `unknown`/`granted`
+  proceed and report their own unverified status.
+- **Permission onboarding** (new `core/permissions_manager.py` + adapter contract
+  `permission_status` / `request_permission` / `open_permission_pane` in
+  `platform_adapters`): macOS detects Accessibility & Automation (osascript),
+  Screen Recording (Quartz `CGPreflightScreenCaptureAccess`), and Microphone/Camera
+  from real `AVCaptureDevice authorizationStatusForMediaType:` (AVFoundation loaded
+  dynamically via the base `objc` runtime — no new dependency). Every status is read
+  from a real system API, never guessed. Each opens the exact
+  `x-apple.systempreferences:` pane / triggers the real prompt (Quartz
+  `CGRequestScreenCaptureAccess`). Windows/Linux → `not_required`.
+  - `ui.py` `PermissionsOverlay`: a bilingual checklist (Accessibility, Automation,
+    Screen Recording, Microphone, Camera) with per-item status + "Open Settings",
+    Re-check, and Done. Auto-shown once at startup (background probe, never blocks
+    the Qt thread) when a permission is denied or on first run; also opened from
+    Settings → PERMISSIONS. `permissions_onboarded` in settings.json stops nagging.
+
+### Constraints kept
+
+- No new dependencies (uses `open x-apple.systempreferences:`, osascript, and the
+  already-present Quartz binding). Cross-platform honest statuses; `main.py` untouched
+  (the relaxed route flows through the existing dispatch).
+- Truthful reporting: statuses are granted/denied/unknown/not_required; an
+  undetected app or missing permission is never reported as a successful send.
+- Bilingual EN+RU for every new UI string.
+
+### Verification
+
+- `py_compile` on all changed files → OK.
+- New tests: `test_permissions_manager.py`, `test_send_message.py`, updated
+  `test_device_profile.py` (any-app-under-confirmation). Full suite: 529 passed.
+- Offscreen Qt smoke: PermissionsOverlay builds + status/recheck; SettingsOverlay
+  PERMISSIONS button wired; full MainWindow constructs and `open_permissions()`
+  shows the overlay; send_message preflight returns the honest denied message.
+- Live probe on this Mac: Accessibility/Automation/Screen Recording = granted,
+  Mic/Camera = unknown. Real full-app runtime verification pending (see NEXT_STEPS).
+
 ## 2026-07-17 - Fix 3 real-log bugs: action normalization, dead vision model, Qt timer thread-safety
 
 ### Problem

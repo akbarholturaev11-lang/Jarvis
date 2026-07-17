@@ -270,6 +270,22 @@ def send_message(
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
+    # macOS drives messaging through simulated keystrokes, which the OS silently
+    # drops unless Accessibility is granted. Detect a definite denial and fail
+    # honestly with the fix, instead of opening the app and typing into the void.
+    if _get_os() == "mac":
+        try:
+            from core.permissions_manager import permission_status
+            if permission_status("accessibility") == "denied":
+                return (
+                    "Cannot send: macOS Accessibility permission is not granted, so keystrokes "
+                    "will not reach the app. Grant it to your terminal (or the JARVIS app) in "
+                    "System Settings > Privacy & Security > Accessibility, then fully restart the "
+                    "app and try again."
+                )
+        except Exception:
+            pass
+
     preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
     print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
     if player:
