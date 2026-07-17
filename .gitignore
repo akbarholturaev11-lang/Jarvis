@@ -35,3 +35,7 @@ product_backend/runtime/
 .env
 .env.*
 !.env.example
+
+# Local AI/worktree directories
+.agents/
+.worktrees/
